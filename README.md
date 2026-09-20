@@ -44,13 +44,15 @@ UI prototype: [proto/index.html](proto/index.html)
 
 ## Two ways to run it
 
-### Desktop app (macOS, local)
+### Desktop app (macOS · Apple Silicon)
 
 ```bash
 cd ui && pnpm install && pnpm build       # frontend first, produces dist
 ./mac/scripts/build-app.sh                # one command → mac/build/BeeBox.app
 open mac/build/BeeBox.app
 ```
+
+**Apple Silicon (`arm64`) only** — Intel Macs are not a supported target.
 
 Self-contained — frontend, fonts, and daemon all live inside the app, no
 external dependencies. The desktop shell is a thin Swift `WKWebView` layer (no
