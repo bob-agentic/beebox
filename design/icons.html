@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>BeeBox · 图标 v2(蜂巢 + 线性 A)</title>
+<style>
+  :root {
+    --bg: #0f0f13; --panel: #17171c; --panel-2: #1d1d24;
+    --fg: #e8e8ee; --dim: #a1a1b0; --faint: #6b6b7b;
+    --accent: #4ade80; --border: #26262f;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font: 14px/1.5 -apple-system, "SF Pro Text", system-ui, sans-serif;
+    padding: 40px clamp(20px, 5vw, 72px) 96px;
+  }
+  h1 { font-size: 22px; font-weight: 650; letter-spacing: -.01em; margin: 0 0 4px; }
+  .sub { color: var(--dim); margin: 0 0 8px; }
+  code { color: var(--accent); }
+  h2 {
+    font-size: 12px; letter-spacing: .09em; text-transform: uppercase;
+    color: var(--faint); margin: 44px 0 16px; font-weight: 600;
+    border-top: 1px solid var(--border); padding-top: 22px;
+  }
+  .grid { display: grid; gap: 18px; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+    padding: 22px 18px 16px; display: flex; flex-direction: column; align-items: center; gap: 14px;
+  }
+  /* No inset highlight: it painted a dark band along the bottom edge that
+     made the icon look top-heavy. Just a soft drop shadow, and the SVG fills
+     the whole rounded square edge-to-edge. */
+  .appmask { border-radius: 22.5%; overflow: hidden; box-shadow: 0 8px 24px rgba(0,0,0,.45); display: block; }
+  .appmask svg { display: block; }
+  .dockrow { display: flex; gap: 10px; margin-top: 6px; align-items: flex-end; justify-content: center; flex-wrap: wrap; }
+  .dockrow .appmask { box-shadow: 0 3px 8px rgba(0,0,0,.5); }
+  .meta { text-align: center; }
+  .meta .name { font-weight: 600; font-size: 13px; }
+  .meta .desc { color: var(--faint); font-size: 11.5px; margin-top: 2px; }
+  .row-small { display: flex; flex-wrap: wrap; gap: 22px; align-items: center; background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 24px; }
+  .ico-cell { display: flex; flex-direction: column; align-items: center; gap: 8px; width: 88px; }
+  .ico-cell span { color: var(--faint); font-size: 11px; }
+  .toolbar { position: sticky; top: 0; z-index: 5; display: flex; gap: 10px; align-items: center;
+    background: color-mix(in srgb, var(--bg) 86%, transparent); backdrop-filter: blur(8px);
+    padding: 12px 0 14px; }
+  .toolbar button {
+    background: var(--panel-2); color: var(--dim); border: 1px solid var(--border);
+    border-radius: 9px; padding: 6px 13px; font: inherit; font-size: 12.5px; cursor: pointer;
+  }
+  .toolbar button.on { color: var(--bg); background: var(--accent); border-color: var(--accent); font-weight: 600; }
+  body.light-tiles .tile.canvas { background: #f4f4f6; }
+  .tile.canvas { padding: 6px; border-radius: 12px; transition: background .15s; }
+  .note { color: var(--faint); font-size: 12px; margin-top: 12px; }
+</style>
+</head>
+<body>
+  <h1>BeeBox 图标 · 定稿</h1>
+  <p class="sub">已选 <b>④ 双层蜂巢</b>(外描边 + 内实心)。下面是定稿大图、Dock 各尺寸、以及配套的线性 UI 图标(蜂标同款六边形)。品牌绿 <code>#4ade80</code>。</p>
+
+  <div class="toolbar">
+    <span style="color:var(--faint);font-size:12px">线性图标底色:</span>
+    <button id="btn-dark" class="on" onclick="setTiles('dark')">深底</button>
+    <button id="btn-light" onclick="setTiles('light')">浅底</button>
+  </div>
+
+  <h2>App 主图标 · 蜂巢母题 8 变体(含 Dock 缩略预览)</h2>
+  <div class="grid" id="app-grid"></div>
+
+  <h2>UI 功能图标 · 线性极简(蜂标已重画)</h2>
+  <div class="row-small" id="ui-a"></div>
+
+  <p class="note">每个 app 图标下方是 64/40/28px 的 Dock 缩略预览——小尺寸下还认得出的才是好图标。</p>
+
+<script>
+const A  = '#4ade80';
+const A2 = '#16a34a';
+const INK = '#0f0f13';
+
+// backgrounds (128 canvas)
+const bgDark = `<rect width="128" height="128" fill="#17171c"/>`;
+const bgInk  = `<rect width="128" height="128" fill="#0d0d11"/>`;
+const bgGradGreen = id => `<defs><linearGradient id="${id}" x1="0" y1="0" x2="1" y2="1">
+  <stop offset="0" stop-color="#4ade80"/><stop offset="1" stop-color="#15803d"/></linearGradient></defs>
+  <rect width="128" height="128" fill="url(#${id})"/>`;
+const bgGradDark = id => `<defs><linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1">
+  <stop offset="0" stop-color="#20303a"/><stop offset="1" stop-color="#0b0f13"/></linearGradient></defs>
+  <rect width="128" height="128" fill="url(#${id})"/>`;
+
+// pointy-top hexagon path
+function hexPath(cx, cy, r) {
+  let p = '';
+  for (let i=0;i<6;i++){ const a=Math.PI/180*(60*i-90); p += (i? 'L':'M') + (cx+r*Math.cos(a)).toFixed(2) + ' ' + (cy+r*Math.sin(a)).toFixed(2) + ' '; }
+  return p + 'Z';
+}
+const hex = (cx,cy,r,attrs) => `<path d="${hexPath(cx,cy,r)}" ${attrs}/>`;
+
+// terminal prompt `>_`, laid out symmetrically about (cx,cy) so it sits
+// visually centred inside a hexagon. `scale` shrinks the whole glyph; the
+// chevron half-height and the underscore share one baseline offset so the
+// mark's bounding box is centred, not just its left edge.
+const prompt = (c, w, cx=64, cy=64, scale=1) => {
+  const ch = 12 * scale;   // chevron half-height
+  const cw = 15 * scale;   // chevron width
+  const gap = 7 * scale;   // gap between chevron tip and underscore
+  const ul = 20 * scale;   // underscore length
+  const total = cw + gap + ul;
+  const x0 = cx - total / 2;          // left edge of the whole glyph
+  const tip = x0 + cw;                // chevron tip x
+  // Underscore sits a touch above the chevron's very bottom so the mark's
+  // ink is balanced about cy, not bottom-heavy — otherwise `>_` reads as
+  // sitting low even when its bounding box is centred.
+  const uy = cy + ch * 0.72;
+  return `<polyline points="${x0.toFixed(1)},${(cy-ch).toFixed(1)} ${tip.toFixed(1)},${cy} ${x0.toFixed(1)},${(cy+ch).toFixed(1)}"
+      fill="none" stroke="${c}" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round"/>
+    <line x1="${(tip+gap).toFixed(1)}" y1="${uy.toFixed(1)}" x2="${(tip+gap+ul).toFixed(1)}" y2="${uy.toFixed(1)}"
+      stroke="${c}" stroke-width="${w}" stroke-linecap="round"/>`;
+};
+
+const APP = [
+  { name:'① 描边蜂巢 + 提示符', desc:'纯几何,最克制', svg:()=>`
+     ${bgDark}
+     ${hex(64,64,46, `fill="none" stroke="${A}" stroke-width="6" stroke-linejoin="round"`)}
+     ${prompt(A,6, 64,64,1)}` },
+
+  { name:'② 实心蜂巢 · 挖空提示符', desc:'剪影,Dock 醒目', svg:()=>`
+     ${bgDark}
+     ${hex(64,64,48, `fill="${A}"`)}
+     ${prompt(INK,7, 64,64,1.05)}` },
+
+  { name:'③ 绿底 · 深色蜂巢', desc:'品牌绿主色', svg:()=>`
+     ${bgGradGreen('g3')}
+     ${hex(64,64,46, `fill="${INK}"`)}
+     ${prompt(A,6, 64,64,1)}` },
+
+  { name:'④ 双层蜂巢', desc:'外描边+内实心,有层次', svg:()=>`
+     ${bgGradDark('g4')}
+     ${hex(64,64,48, `fill="none" stroke="${A}" stroke-width="4"`)}
+     ${hex(64,64,30, `fill="${A}" opacity=".16"`)}
+     ${prompt(A,6, 64,64,.9)}` },
+
+  { name:'⑤ 三连蜂巢', desc:'蜂窝感,多单元', svg:()=>`
+     ${bgInk}
+     ${hex(64,50,26, `fill="none" stroke="${A}" stroke-width="4.5"`)}
+     ${hex(41,78,26, `fill="none" stroke="${A}" stroke-width="4.5" opacity=".55"`)}
+     ${hex(87,78,26, `fill="${A}" opacity=".9"`)}
+     ${prompt(INK,4.5, 87,78,.55)}` },
+
+  { name:'⑥ 蜂巢里的光标', desc:'终端光标=蜂,巧', svg:()=>`
+     ${bgDark}
+     ${hex(64,64,46, `fill="none" stroke="${A}" stroke-width="5"`)}
+     <g transform="translate(-6 0)">
+       <rect x="55" y="46" width="9" height="36" rx="3" fill="${A}"/>
+       <rect x="69" y="74" width="18" height="8" rx="4" fill="${A}" opacity=".9"/>
+     </g>` },
+
+  { name:'⑦ 蜂巢 + B', desc:'字母标嵌六边形', svg:()=>`
+     ${bgGradGreen('g7')}
+     ${hex(64,64,48, `fill="${INK}"`)}
+     <text x="64" y="83" text-anchor="middle" font-family="SF Pro Display, system-ui, sans-serif"
+       font-size="52" font-weight="800" fill="${A}">B</text>` },
+
+  { name:'⑧ 描边蜂巢 + 暗示触角', desc:'一点点“蜂”,不具象', svg:()=>`
+     ${bgDark}
+     <g stroke="${A}" stroke-width="4" fill="none" stroke-linecap="round">
+       <line x1="52" y1="26" x2="58" y2="38"/><line x1="76" y1="26" x2="70" y2="38"/>
+       <circle cx="52" cy="24" r="3" fill="${A}"/><circle cx="76" cy="24" r="3" fill="${A}"/>
+     </g>
+     ${hex(64,68,42, `fill="none" stroke="${A}" stroke-width="6" stroke-linejoin="round"`)}
+     ${prompt(A,5.5, 64,68,.9)}` },
+];
+
+// UI icons — style A (Lucide-like): stroke 2, round
+const GLYPHS = ['new','share','close','split','bee','codex','terminal','settings','running','done'];
+const LABELS = { new:'新建', share:'分享', close:'关闭', split:'分屏', bee:'蜂标',
+  codex:'Codex', terminal:'终端', settings:'设置', running:'运行中', done:'完成' };
+
+function styleA(name) {
+  const s = `fill="none" stroke="${A}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"`;
+  const P = {
+    new: `<line x1="12" y1="5" x2="12" y2="19" ${s}/><line x1="5" y1="12" x2="19" y2="12" ${s}/>`,
+    share: `<circle cx="6" cy="12" r="2.6" ${s}/><circle cx="18" cy="6" r="2.6" ${s}/><circle cx="18" cy="18" r="2.6" ${s}/>
+            <line x1="8.3" y1="10.9" x2="15.7" y2="7.1" ${s}/><line x1="8.3" y1="13.1" x2="15.7" y2="16.9" ${s}/>`,
+    close: `<line x1="6" y1="6" x2="18" y2="18" ${s}/><line x1="18" y1="6" x2="6" y2="18" ${s}/>`,
+    split: `<rect x="4" y="4" width="16" height="16" rx="2.5" ${s}/><line x1="12" y1="4" x2="12" y2="20" ${s}/>`,
+    // bee redrawn: a small hex body + two short antennae — reads as bee AND ties to the app icon
+    bee: `<path d="${hexPath(12,13,6)}" ${s}/>
+          <line x1="12" y1="10.5" x2="12" y2="15.5" ${s}/>
+          <line x1="9.4" y1="13" x2="14.6" y2="13" ${s}/>
+          <line x1="9.5" y1="6" x2="10.8" y2="8.6" ${s}/><line x1="14.5" y1="6" x2="13.2" y2="8.6" ${s}/>`,
+    codex: `<polyline points="7,9 4,12 7,15" ${s}/><polyline points="17,9 20,12 17,15" ${s}/><line x1="13.5" y1="6.5" x2="10.5" y2="17.5" ${s}/>`,
+    terminal: `<rect x="3" y="4" width="18" height="16" rx="2.5" ${s}/><polyline points="7,10 10,12.5 7,15" ${s}/><line x1="12" y1="15" x2="16" y2="15" ${s}/>`,
+    settings: `<circle cx="12" cy="12" r="3" ${s}/><path d="M12 3.5v2.2M12 18.3v2.2M4.6 7.6l1.9 1.1M17.5 15.3l1.9 1.1M19.4 7.6l-1.9 1.1M6.5 15.3l-1.9 1.1" ${s}/><circle cx="12" cy="12" r="8.4" ${s} opacity=".5"/>`,
+    running: `<circle cx="12" cy="12" r="8" ${s}/><polyline points="12,8 12,12 15,14" ${s}/>`,
+    done: `<circle cx="12" cy="12" r="8" ${s}/><polyline points="8.5,12.5 11,15 15.5,9.5" ${s}/>`,
+  };
+  return P[name] || '';
+}
+
+// render — only the chosen icon (④, index 3), shown large + at Dock sizes.
+const CHOSEN = APP[3];
+const appGrid = document.getElementById('app-grid');
+{
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.style.maxWidth = '340px';
+  const big = `<div class="appmask"><svg width="200" height="200" viewBox="0 0 128 128">${CHOSEN.svg()}</svg></div>`;
+  const dock = [64,40,28,20].map(px =>
+    `<div class="appmask"><svg width="${px}" height="${px}" viewBox="0 0 128 128">${CHOSEN.svg()}</svg></div>`).join('');
+  card.innerHTML = `<div class="tile">${big}</div>
+    <div class="dockrow">${dock}</div>
+    <div class="meta"><div class="name">${CHOSEN.name}</div><div class="desc">大图 200px · Dock 64 / 40 / 28 / 20 px</div></div>`;
+  appGrid.appendChild(card);
+}
+// Expose the chosen icon's raw SVG markup for copy/export.
+window.__CHOSEN_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">${CHOSEN.svg()}</svg>`;
+
+const uiA = document.getElementById('ui-a');
+GLYPHS.forEach(g => {
+  const cell = document.createElement('div');
+  cell.className = 'ico-cell';
+  cell.innerHTML = `<div class="tile canvas"><svg width="32" height="32" viewBox="0 0 24 24">${styleA(g)}</svg></div><span>${LABELS[g]}</span>`;
+  uiA.appendChild(cell);
+});
+
+function setTiles(mode) {
+  document.body.classList.toggle('light-tiles', mode === 'light');
+  document.getElementById('btn-light').classList.toggle('on', mode === 'light');
+  document.getElementById('btn-dark').classList.toggle('on', mode === 'dark');
+}
+</script>
+</body>
+</html>

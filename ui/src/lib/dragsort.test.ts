@@ -1,0 +1,166 @@
+// Exercises the reorder action against real DOM nodes and real pointer events.
+// The interaction cannot be verified by eye from here, so the logic that
+// decides the new order is pinned down instead.
+
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { sortable } from './dragsort.svelte';
+
+/** Lays out `n` rows of fixed height in a container, with stable ids. */
+function makeList(n: number, axis: 'x' | 'y' = 'y') {
+  const parent = document.createElement('div');
+  document.body.replaceChildren(parent);
+
+  const size = 40;
+  const rows = Array.from({ length: n }, (_, i) => {
+    const el = document.createElement('div');
+    parent.appendChild(el);
+    // jsdom has no layout, so the geometry the action reads is stubbed.
+    const top = i * size;
+    el.getBoundingClientRect = () =>
+      ({
+        top: axis === 'y' ? top : 0,
+        bottom: axis === 'y' ? top + size : size,
+        left: axis === 'x' ? top : 0,
+        right: axis === 'x' ? top + size : size,
+        height: size,
+        width: size,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    el.setPointerCapture = () => {};
+    el.releasePointerCapture = () => {};
+    el.hasPointerCapture = () => false;
+    return el;
+  });
+
+  return { parent, rows, size };
+}
+
+function pointer(type: string, pos: number, axis: 'x' | 'y' = 'y') {
+  return new PointerEvent(type, {
+    bubbles: true,
+    button: 0,
+    pointerId: 1,
+    clientX: axis === 'x' ? pos : 0,
+    clientY: axis === 'y' ? pos : 0,
+  });
+}
+
+/** Presses on `row`, moves to `to`, releases. */
+function drag(row: HTMLElement, from: number, to: number, axis: 'x' | 'y' = 'y') {
+  row.dispatchEvent(pointer('pointerdown', from, axis));
+  const steps = 8;
+  for (let i = 1; i <= steps; i++) {
+    window.dispatchEvent(pointer('pointermove', from + ((to - from) * i) / steps, axis));
+  }
+  window.dispatchEvent(pointer('pointerup', to, axis));
+}
+
+describe('sortable', () => {
+  beforeEach(() => {
+    document.body.replaceChildren();
+  });
+
+  it('reports the new order after a downward drag', () => {
+    const { rows } = makeList(3);
+    const commit = vi.fn();
+    rows.forEach((el, i) =>
+      sortable(el, { id: i + 1, order: () => [1, 2, 3], commit }),
+    );
+
+    // First row, dragged past the last.
+    drag(rows[0], 20, 110);
+
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(commit.mock.calls[0][0]).toEqual([2, 3, 1]);
+  });
+
+  it('reports the new order after an upward drag', () => {
+    const { rows } = makeList(3);
+    const commit = vi.fn();
+    rows.forEach((el, i) =>
+      sortable(el, { id: i + 1, order: () => [1, 2, 3], commit }),
+    );
+
+    drag(rows[2], 100, 10);
+
+    expect(commit.mock.calls[0][0]).toEqual([3, 1, 2]);
+  });
+
+  it('works along the x axis, for a tab strip', () => {
+    const { rows } = makeList(3, 'x');
+    const commit = vi.fn();
+    rows.forEach((el, i) =>
+      sortable(el, { id: i + 1, axis: 'x', order: () => [1, 2, 3], commit }),
+    );
+
+    drag(rows[0], 20, 110, 'x');
+
+    expect(commit.mock.calls[0][0]).toEqual([2, 3, 1]);
+  });
+
+  it('does not fire on a click', () => {
+    // A few pixels of movement is a click, not a drag — otherwise selecting a
+    // row would reorder the list.
+    const { rows } = makeList(3);
+    const commit = vi.fn();
+    rows.forEach((el, i) =>
+      sortable(el, { id: i + 1, order: () => [1, 2, 3], commit }),
+    );
+
+    drag(rows[0], 20, 22);
+
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('does not fire when the order is unchanged', () => {
+    const { rows } = makeList(3);
+    const commit = vi.fn();
+    rows.forEach((el, i) =>
+      sortable(el, { id: i + 1, order: () => [1, 2, 3], commit }),
+    );
+
+    // Moved far enough to count as a drag, but dropped back in place.
+    rows[1].dispatchEvent(pointer('pointerdown', 60));
+    window.dispatchEvent(pointer('pointermove', 75));
+    window.dispatchEvent(pointer('pointermove', 60));
+    window.dispatchEvent(pointer('pointerup', 60));
+
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('ignores a drag that starts on an excluded control', () => {
+    // The close button must stay clickable.
+    const { rows } = makeList(3);
+    const commit = vi.fn();
+    const x = document.createElement('span');
+    x.className = 'x';
+    rows[0].appendChild(x);
+    rows.forEach((el, i) =>
+      sortable(el, { id: i + 1, ignore: '.x', order: () => [1, 2, 3], commit }),
+    );
+
+    x.dispatchEvent(pointer('pointerdown', 20));
+    window.dispatchEvent(pointer('pointermove', 110));
+    window.dispatchEvent(pointer('pointerup', 110));
+
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('ignores a drag that starts in a rename field', () => {
+    const { rows } = makeList(3);
+    const commit = vi.fn();
+    const input = document.createElement('input');
+    rows[0].appendChild(input);
+    rows.forEach((el, i) =>
+      sortable(el, { id: i + 1, order: () => [1, 2, 3], commit }),
+    );
+
+    input.dispatchEvent(pointer('pointerdown', 20));
+    window.dispatchEvent(pointer('pointermove', 110));
+    window.dispatchEvent(pointer('pointerup', 110));
+
+    expect(commit).not.toHaveBeenCalled();
+  });
+});

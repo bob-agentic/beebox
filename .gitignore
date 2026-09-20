@@ -1,0 +1,40 @@
+# --- Rust (core) ---
+/core/target/
+
+# --- Node / frontend (ui) ---
+/ui/node_modules/
+/ui/dist/
+/ui/test-results/
+/ui/playwright-report/
+/ui/.vite/
+
+# --- Swift shell (mac) ---
+.build/
+# Assembled .app bundles — a build artifact, never committed.
+**/build/BeeBox.app/
+/mac/build/
+*.xcodeproj
+*.xcworkspace
+DerivedData/
+
+# --- macOS ---
+.DS_Store
+
+# --- editor ---
+.idea/
+.vscode/
+*.swp
+
+# --- tooling scratch / session artifacts (not part of the project) ---
+/.playwright-mcp/
+/.remember/
+
+# Rescued dumps from an unrelated incident, kept out of the repo.
+/RESCUED_*.txt
+
+# Icon exploration renders — the source of truth is mac/icons/.
+/icons-*.png
+/icon-final*.png
+HANDOVER.md
+AGENT_HOOKS_HANDOVER.md
+ARCHITECTURE.md

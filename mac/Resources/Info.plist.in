@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>BeeBox</string>
+  <key>CFBundleDisplayName</key><string>BeeBox</string>
+  <key>CFBundleExecutable</key><string>BeeBox</string>
+  <key>CFBundleIdentifier</key><string>dev.beebox.app</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>__VERSION__</string>
+  <key>CFBundleVersion</key><string>__VERSION__</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>LSMinimumSystemVersion</key><string>15.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <!-- The page is http:// and its socket is ws:// on the same origin, so
+         there is no mixed content to worry about. This key covers the
+         `localhost` hostname but NOT a literal 127.0.0.1 URL, which is why the
+         window loads http://localhost:<port>/ and the page's socket does too. -->
+    <key>NSAllowsLocalNetworking</key><true/>
+  </dict>
+</dict>
+</plist>

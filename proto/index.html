@@ -1,0 +1,704 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>BeeBox · 原型</title>
+<style>
+  :root {
+    --bg:#0f0f13; --panel:#17171c; --panel-2:#1d1d24; --border:#2b2b35;
+    --fg:#e8e8ee; --dim:#8b8b9a; --faint:#5a5a68;
+    --run:#4ade80; --wait:#fbbf24; --err:#f87171; --idle:#64748b; --done:#38bdf8;
+    --accent:#4ade80;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--bg);color:var(--fg);
+    font:13px/1.5 -apple-system,"PingFang SC","Segoe UI",sans-serif;
+    display:flex;flex-direction:column;overflow:hidden;
+  }
+  button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+
+  /* ================= 顶栏 ================= */
+  .titlebar{
+    height:38px;flex:0 0 38px;background:var(--panel);
+    border-bottom:1px solid var(--border);
+    display:flex;align-items:center;gap:10px;padding:0 10px;
+  }
+  .traffic{display:flex;gap:7px;margin-right:4px}
+  .traffic i{width:11px;height:11px;border-radius:50%;display:block}
+  .traffic i:nth-child(1){background:#ff5f57}
+  .traffic i:nth-child(2){background:#febc2e}
+  .traffic i:nth-child(3){background:#28c840}
+
+  /* 插件位（v2 实现，此处仅占位） */
+  .plugin-slot{
+    display:flex;align-items:center;gap:6px;
+    background:var(--panel-2);border:1px solid var(--border);
+    border-radius:6px;padding:3px 9px;font-size:11px;
+    max-width:200px;overflow:hidden;white-space:nowrap;
+  }
+  .plugin-slot .dot{width:6px;height:6px;border-radius:50%;background:var(--run);flex:0 0 auto}
+  .plugin-slot .label{color:var(--dim)}
+  .plugin-slot .val{color:var(--fg);font-family:ui-monospace,monospace}
+  .slot-hint{font-size:10px;color:var(--faint);border:1px dashed var(--border);
+    border-radius:6px;padding:3px 8px}
+
+  .titlebar .spacer{flex:1}
+  .tb-btn{padding:4px 9px;border-radius:6px;color:var(--dim);font-size:12px}
+  .tb-btn:hover{background:var(--panel-2);color:var(--fg)}
+
+  /* ================= 主体 ================= */
+  .body{flex:1;display:flex;min-height:0}
+
+  /* ---- 左侧 workspace ---- */
+  .sidebar{
+    width:206px;flex:0 0 206px;background:var(--panel);
+    border-right:1px solid var(--border);display:flex;flex-direction:column;
+  }
+  .sb-head{
+    padding:9px 11px;font-size:10px;letter-spacing:.09em;text-transform:uppercase;
+    color:var(--faint);display:flex;align-items:center;
+  }
+  .sb-head button{margin-left:auto;color:var(--faint);font-size:15px;line-height:1}
+  .sb-head button:hover{color:var(--fg)}
+  .ws-list{flex:1;overflow-y:auto;padding:0 6px}
+
+  .ws{
+    padding:7px 9px;border-radius:7px;margin-bottom:2px;cursor:pointer;
+    display:flex;flex-direction:column;gap:2px;
+  }
+  .ws:hover{background:var(--panel-2)}
+  .ws.active{background:var(--panel-2);box-shadow:inset 2px 0 0 var(--accent)}
+  .ws .row1{display:flex;align-items:center;gap:6px}
+  .ws .name{font-size:12.5px;font-weight:500;flex:1;overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap}
+  .ws .row2{display:flex;align-items:center;gap:5px;font-size:10.5px;color:var(--faint)}
+  .ws .branch{font-family:ui-monospace,monospace;overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap}
+  .ws .count{font-size:9.5px;color:var(--faint);background:var(--bg);
+    border-radius:9px;padding:1px 6px}
+
+  /* 状态点：hooks 事件驱动，仅此而已 */
+  .st{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
+  .st.run{background:var(--run);animation:pulse 1.5s ease-in-out infinite}
+  .st.wait{background:var(--wait);animation:blink 1s step-end infinite}
+  .st.err{background:var(--err)}
+  .st.idle{background:var(--idle)}
+  .st.done{background:var(--done)}
+  @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.45;transform:scale(.8)}}
+  @keyframes blink{0%,50%{opacity:1}51%,100%{opacity:.25}}
+
+  /* ---- 右侧主区 ---- */
+  .main{flex:1;display:flex;flex-direction:column;min-width:0}
+
+  .tabbar{
+    height:34px;flex:0 0 34px;background:var(--panel);
+    border-bottom:1px solid var(--border);display:flex;align-items:stretch;
+    padding:0 6px;gap:3px;overflow-x:auto;
+  }
+  .tab{
+    display:flex;align-items:center;gap:6px;padding:0 11px;
+    border-radius:7px 7px 0 0;margin-top:4px;font-size:12px;color:var(--dim);
+    white-space:nowrap;max-width:190px;cursor:pointer;
+  }
+  .tab:hover{background:var(--panel-2)}
+  .tab.active{background:var(--bg);color:var(--fg)}
+  .tab .agent{font-size:9.5px;padding:1px 5px;border-radius:3px;font-weight:700}
+  .tab .x{color:var(--faint);font-size:14px;line-height:1}
+  .tab .x:hover{color:var(--fg)}
+  .tabbar .add{padding:0 10px;color:var(--faint);font-size:16px;align-self:center}
+
+  /* ---- 终端舞台：真正的分屏树 ---- */
+  .stage{flex:1;min-height:0;padding:6px;display:flex;gap:6px}
+
+  /* 分屏容器：横向排列 = ⌘D 竖切；纵向排列 = ⇧⌘D 横切 */
+  .split{display:flex;gap:6px;flex:1;min-width:0;min-height:0}
+  .split.v{flex-direction:row}
+  .split.h{flex-direction:column}
+
+  .pane{
+    flex:1;min-width:0;min-height:0;background:#101015;
+    border:1px solid var(--border);border-radius:8px;
+    display:flex;flex-direction:column;overflow:hidden;position:relative;
+  }
+  .pane.focus{border-color:#3d5a45;box-shadow:0 0 0 1px rgba(74,222,128,.18)}
+
+  /* pane 顶部只有极薄的一条，够标状态就行 */
+  .pane-head{
+    height:22px;flex:0 0 22px;display:flex;align-items:center;gap:6px;
+    padding:0 8px;background:var(--panel);border-bottom:1px solid var(--border);
+    font-size:10.5px;color:var(--faint);
+  }
+  .pane-head .agent{font-size:8.5px;padding:0 4px;border-radius:3px;font-weight:700}
+  .pane-head .ttl{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .pane-head .dims{font-family:ui-monospace,monospace}
+
+  /* 终端正文 —— 真实输出，不做任何总结 */
+  .term{
+    flex:1;min-height:0;padding:7px 9px;overflow:hidden;
+    font:11.5px/1.5 ui-monospace,"SF Mono",Menlo,monospace;
+    color:#d4d4dc;white-space:pre-wrap;
+  }
+
+  /* pane 底部：Finder 式路径，每个 pane 各自的 cwd */
+  .pane-foot{
+    height:21px;flex:0 0 21px;display:flex;align-items:center;gap:7px;
+    padding:0 8px;background:var(--panel);border-top:1px solid var(--border);
+    font-size:10px;color:var(--faint);overflow:hidden;
+  }
+  .pane-foot .crumbs{flex:1;min-width:0;overflow:hidden;
+    display:flex;align-items:center;gap:3px;white-space:nowrap;
+    font-family:ui-monospace,monospace}
+  .pane-foot .crumbs a{color:var(--dim);cursor:pointer}
+  .pane-foot .crumbs a:hover{color:var(--fg)}
+  .pane-foot .crumbs .sep{color:var(--faint);font-size:8.5px}
+  .pane-foot .crumbs .leaf{color:var(--fg);font-weight:500}
+  .pane-foot .git{display:flex;align-items:center;gap:4px;flex:0 0 auto}
+  .pane-foot .git .dirty{color:var(--wait)}
+  .term .p{color:var(--run)}
+  .term .c{color:#7dd3fc}
+  .term .g{color:var(--faint)}
+  .term .y{color:var(--wait)}
+  .term .r{color:var(--err)}
+  .term .m{color:#c4a5e8}
+  .term .cur{background:var(--run);color:var(--bg)}
+
+  /* 分屏拖拽条 */
+  .gutter{flex:0 0 3px;background:transparent;cursor:col-resize;border-radius:2px}
+  .gutter:hover{background:var(--border)}
+  .split.h > .gutter{flex:0 0 3px;cursor:row-resize}
+
+  /* ================= 底部状态栏（Finder 式路径） ================= */
+  .statusbar{
+    height:26px;flex:0 0 26px;background:var(--panel);
+    border-top:1px solid var(--border);
+    display:flex;align-items:center;gap:8px;padding:0 10px;
+    font-size:11px;color:var(--faint);
+  }
+  .statusbar .sep-v{width:1px;height:12px;background:var(--border)}
+  .statusbar .spacer{flex:1}
+  .statusbar .item{display:flex;align-items:center;gap:4px}
+  .statusbar .live{color:#86efac;padding:2px 7px;border-radius:5px}
+  .statusbar button.live:hover{background:#14251a}
+
+  /* ================= 分享弹层 ================= */
+  .mask{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;
+    align-items:center;justify-content:center;z-index:50}
+  body.share .mask{display:flex}
+  .modal{background:var(--panel);border:1px solid var(--border);border-radius:13px;
+    width:420px;padding:18px}
+  .modal h3,.conn-modal h3{font-size:14px;margin-bottom:4px}
+  .modal .sub,.conn-modal .sub{font-size:11.5px;color:var(--faint);margin-bottom:14px}
+  .field{background:var(--bg);border:1px solid var(--border);border-radius:7px;
+    padding:9px 11px;font:11.5px ui-monospace,monospace;color:#7dd3fc;
+    display:flex;align-items:center;gap:8px;margin-bottom:12px}
+  .field span{flex:1;overflow:hidden;text-overflow:ellipsis}
+  .field button{color:var(--dim);font-size:11px;padding:2px 7px;
+    background:var(--panel-2);border-radius:4px}
+  /* 分享粒度选择 */
+  .scope-label{font-size:10px;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--faint);margin-bottom:6px}
+  .scope{display:flex;flex-direction:column;gap:5px;margin-bottom:14px}
+  .scope button{
+    padding:8px 11px;border-radius:7px;border:1px solid var(--border);
+    background:var(--bg);text-align:left;
+  }
+  .scope button:hover{border-color:var(--faint)}
+  .scope button.on{border-color:var(--accent);background:#14251a}
+  .scope button b{font-size:12px;font-weight:600;color:var(--dim);display:block}
+  .scope button.on b{color:var(--fg)}
+  .scope button small{display:block;font-size:10px;color:var(--faint);margin-top:1px}
+  .scope .tag{font-size:8.5px;font-weight:600;padding:1px 5px;border-radius:3px;
+    margin-left:5px;vertical-align:1px}
+  .scope .tag.warn{background:#3d2416;color:#fbbf24}
+  .scope .tag.ok{background:#14251a;color:#86efac}
+
+  .sees{font-size:10px;color:var(--faint);margin:-6px 0 12px 2px}
+
+  .perm{display:flex;gap:7px;margin-bottom:14px}
+  .perm button{flex:1;padding:9px;border-radius:7px;border:1px solid var(--border);
+    background:var(--bg);font-size:11.5px;color:var(--dim);text-align:left}
+  .perm button.on{border-color:var(--accent);background:#14251a;color:var(--fg)}
+  .perm button small{display:block;font-size:9.5px;color:var(--faint);margin-top:2px}
+  .acts{display:flex;gap:8px;justify-content:flex-end}
+  .acts button{padding:7px 15px;border-radius:7px;font-size:12px}
+  .acts .g{background:var(--panel-2);color:var(--dim)}
+  .acts .p{background:var(--accent);color:#0f0f13;font-weight:600}
+  .av{width:19px;height:19px;border-radius:50%;font-size:9px;font-weight:700;
+    display:flex;align-items:center;justify-content:center;color:#0f0f13;flex:0 0 auto}
+
+  /* ---- 配对码 ---- */
+  .pair-toggle{display:flex;align-items:flex-start;gap:8px;cursor:pointer;
+    padding:9px 11px;border:1px solid var(--border);border-radius:7px;
+    background:var(--bg);margin-bottom:8px}
+  .pair-toggle input{margin-top:2px;accent-color:var(--accent)}
+  .pt-text b{font-size:11.5px;font-weight:600;display:block;color:var(--dim)}
+  .pair-toggle:has(input:checked) b{color:var(--fg)}
+  .pair-toggle:has(input:checked){border-color:var(--accent);background:#14251a}
+  .pt-text small{font-size:10px;color:var(--faint);display:block;margin-top:1px}
+  /* 强制档：明示"这是策略"，而不是看起来像坏了 */
+  .lock{display:none;font-size:8.5px;font-weight:600;padding:1px 5px;
+    border-radius:3px;background:#3d2416;color:#fbbf24;vertical-align:1px}
+  body.pair-forced .lock{display:inline-block}
+  body.pair-forced .pair-toggle{cursor:default}
+
+  .paircode{display:none;align-items:center;gap:11px;margin-bottom:13px;
+    padding:11px;background:var(--bg);border:1px solid var(--border);border-radius:7px}
+  body.pairing .paircode{display:flex}
+  .paircode .code{font:700 21px ui-monospace,monospace;letter-spacing:.16em;
+    color:var(--accent);flex:0 0 auto}
+  .pc-note{flex:1;font-size:9.5px;color:var(--dim);line-height:1.5}
+  .pc-note .dim{color:var(--faint)}
+  .pc-new{font-size:10px;padding:4px 9px;border-radius:5px;
+    background:var(--panel-2);color:var(--dim);flex:0 0 auto}
+
+  /* ---- 连接管理面板 ---- */
+  body.conns .mask{display:flex}
+  .conn-modal{background:var(--panel);border:1px solid var(--border);
+    border-radius:13px;width:520px;padding:18px;display:none}
+  body.conns .conn-modal{display:block}
+  body.conns .modal{display:none}
+  body.share .conn-modal{display:none}
+
+  .conn-list{display:flex;flex-direction:column;gap:6px;margin:14px 0}
+  .conn{display:flex;align-items:center;gap:10px;padding:9px 11px;
+    background:var(--bg);border:1px solid var(--border);border-radius:8px}
+  .conn .who{flex:1;min-width:0}
+  .conn .who b{font-size:12px;font-weight:600;display:block}
+  .conn .who small{font-size:10px;color:var(--faint);display:block;
+    font-family:ui-monospace,monospace;margin-top:1px}
+  .conn .badge{font-size:9px;padding:2px 6px;border-radius:4px;font-weight:600;flex:0 0 auto}
+  .conn .badge.ro{background:#1e2a3d;color:#7dd3fc}
+  .conn .badge.rw{background:#3d2416;color:#fbbf24}
+  .conn .kick{font-size:10.5px;padding:4px 11px;border-radius:6px;
+    background:#3d1f1f;color:#f87171;flex:0 0 auto}
+  .conn .kick:hover{background:#5c2020;color:#fff}
+
+  /* 快捷键提示条 */
+  /* 原型说明用，正式版没有这条 */
+  .keyhint{
+    position:fixed;top:46px;right:16px;
+    background:var(--panel-2);border:1px solid var(--border);border-radius:8px;
+    padding:6px 11px;font-size:10.5px;color:var(--dim);display:flex;gap:12px;
+    box-shadow:0 4px 20px rgba(0,0,0,.45);opacity:.5;transition:opacity .15s;
+  }
+  .keyhint:hover{opacity:1}
+  .keyhint kbd{background:var(--bg);border:1px solid var(--border);border-radius:4px;
+    padding:1px 5px;font:10px ui-monospace,monospace;color:var(--fg)}
+</style>
+</head>
+<body>
+
+<!-- ============ 顶栏 ============ -->
+<div class="titlebar">
+  <div class="traffic"><i></i><i></i><i></i></div>
+  <div class="plugin-slot" title="插件位 · v2 实现">
+    <span class="dot"></span>
+    <span class="label">Bin-20x</span>
+    <span class="val">1% · 6%</span>
+  </div>
+  <div class="slot-hint">+ 插件位</div>
+  <div class="spacer"></div>
+  <button class="tb-btn" id="btnShare">分享会话</button>
+  <button class="tb-btn">⌘K</button>
+</div>
+
+<!-- ============ 主体 ============ -->
+<div class="body">
+
+  <!-- 左侧：workspace（矩阵的一维） -->
+  <aside class="sidebar">
+    <div class="sb-head">Workspaces <button>+</button></div>
+    <div class="ws-list" id="wsList"></div>
+  </aside>
+
+  <!-- 右侧：tab（矩阵的另一维）+ 分屏 -->
+  <main class="main">
+    <div class="tabbar" id="tabBar"></div>
+
+    <!-- 分屏舞台：左边一个 pane，右边再上下切两个 -->
+    <div class="stage">
+      <div class="split v">
+        <div class="pane focus">
+          <div class="pane-head">
+            <span class="st wait"></span>
+            <span class="agent" style="background:#1f3d2d;color:#86efac">CX</span>
+            <span class="ttl">codex</span>
+            <span class="dims">96×38</span>
+          </div>
+          <div class="term" id="t1"></div>
+          <div class="pane-foot">
+            <div class="crumbs">
+              <a>~</a><span class="sep">›</span>
+              <a>repo</a><span class="sep">›</span>
+              <a>agenticai</a><span class="sep">›</span>
+              <a>flynn</a><span class="sep">›</span>
+              <span class="leaf">fin-baker-svc</span>
+            </div>
+            <span class="git">⎇ main <span class="dirty">+3 ~1</span></span>
+          </div>
+        </div>
+
+        <div class="gutter"></div>
+
+        <div class="split h">
+          <div class="pane">
+            <div class="pane-head">
+              <span class="st idle"></span>
+              <span class="agent" style="background:#2b2b35;color:#8b8b9a">SH</span>
+              <span class="ttl">zsh</span>
+              <span class="dims">96×18</span>
+            </div>
+            <div class="term" id="t2"></div>
+            <div class="pane-foot">
+              <div class="crumbs">
+                <a>~</a><span class="sep">›</span>
+                <a>repo</a><span class="sep">›</span>
+                <a>agenticai</a><span class="sep">›</span>
+                <a>flynn</a><span class="sep">›</span>
+                <span class="leaf">fin-baker-svc</span>
+              </div>
+              <span class="git">⎇ main <span class="dirty">+3 ~1</span></span>
+            </div>
+          </div>
+
+          <div class="gutter"></div>
+
+          <div class="pane">
+            <div class="pane-head">
+              <span class="st run"></span>
+              <span class="agent" style="background:#2b2b35;color:#8b8b9a">SH</span>
+              <span class="ttl">npm run dev</span>
+              <span class="dims">96×18</span>
+            </div>
+            <div class="term" id="t3"></div>
+            <div class="pane-foot">
+              <div class="crumbs">
+                <a>~</a><span class="sep">›</span>
+                <a>…</a><span class="sep">›</span>
+                <a>fin-baker-svc</a><span class="sep">›</span>
+                <span class="leaf">src</span>
+              </div>
+              <span class="git">⎇ main <span class="dirty">+3 ~1</span></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- ============ 底部状态栏：Finder 式路径 ============ -->
+<div class="statusbar">
+  <!-- 全局状态：不放路径，路径属于每个 pane -->
+  <span class="item">daemon 已运行 · :7788</span>
+  <div class="sep-v"></div>
+  <span class="item">7 workspace · 15 tab</span>
+
+  <div class="spacer"></div>
+  <button class="item live" id="btnConns" title="查看并管理已连接的客户端">● 3 人在线</button>
+  <div class="sep-v"></div>
+  <span class="item">UTF-8</span>
+</div>
+
+<div class="keyhint">
+  <span><kbd>⌘D</kbd> 竖切</span>
+  <span><kbd>⇧⌘D</kbd> 横切</span>
+  <span><kbd>⌘T</kbd> 新 tab</span>
+  <span><kbd>⌘⌥←→</kbd> 切 pane</span>
+</div>
+
+<!-- ============ 分享弹层 ============ -->
+<div class="mask" id="mask">
+  <div class="modal">
+    <h3>分享</h3>
+    <div class="sub">同事通过链接即可看到实时终端，无需安装任何东西</div>
+
+    <!-- 分享粒度：四级，由粗到细 -->
+    <div class="scope-label">分享范围</div>
+    <div class="scope">
+      <button data-scope="all">
+        <b>全部 Workspace <span class="tag warn">整台机器</span></b>
+        <small>7 个 workspace · 15 个 tab · 对方拥有和你一样的视图</small>
+      </button>
+      <button data-scope="ws">
+        <b>当前 Workspace</b>
+        <small>fin-baker-svc · 4 个 tab 全部可见，可来回切换</small>
+      </button>
+      <button class="on" data-scope="tab">
+        <b>当前 Tab</b>
+        <small>构建流水线修复 · 含 3 个分屏 pane</small>
+      </button>
+      <button data-scope="pane">
+        <b>单个 Pane <span class="tag ok">最小暴露面</span></b>
+        <small>codex · 只有这一个终端，其余全部不可见</small>
+      </button>
+    </div>
+
+    <div class="field">
+      <span id="shareUrl">http://192.168.x.xxx:7788/t/k3f9-x2m7</span>
+      <button>复制</button>
+    </div>
+    <div class="sees" id="shareSees">对方看到：仅此 tab 的分屏，无侧栏无 tab 栏</div>
+
+    <div class="perm">
+      <button class="on">只读<small>只能看，不能输入</small></button>
+      <button>可输入<small>可以接管键盘</small></button>
+    </div>
+
+    <!-- 一次性配对码：防链接转发，不是 TOTP -->
+    <label class="pair-toggle">
+      <input type="checkbox" id="pairChk" />
+      <span class="pt-text">
+        <b>需要配对码 <span class="lock" id="pairLock">已锁定</span></b>
+        <small id="pairHint">链接被转发也无法访问 · 此范围可自行选择</small>
+      </span>
+    </label>
+    <div class="paircode" id="pairBox">
+      <div class="code">4F2K9M</div>
+      <div class="pc-note">
+        60 秒内有效，换取长期凭证后失效<br />
+        <span class="dim">通过另一个渠道告诉对方（口头 / 单独发）</span>
+      </div>
+      <button class="pc-new">换一个</button>
+    </div>
+
+    <div class="acts">
+      <button class="g" id="btnClose">关闭</button>
+      <button class="p">生成新链接</button>
+    </div>
+  </div>
+
+  <!-- 连接管理：替代过期时间的方案 —— 看得见、踢得掉 -->
+  <div class="conn-modal">
+    <h3>已连接的客户端</h3>
+    <div class="sub">不设过期时间 · 随时可断开任何一个连接</div>
+
+    <div class="conn-list">
+      <div class="conn">
+        <span class="av" style="background:#7dd3fc">ZL</span>
+        <div class="who">
+          <b>张磊 · Chrome / macOS</b>
+          <small>100.64.0.87 · 当前 Tab「构建流水线修复」· 12 分钟</small>
+        </div>
+        <span class="badge rw">可输入</span>
+        <button class="kick">断开</button>
+      </div>
+
+      <div class="conn">
+        <span class="av" style="background:#fbbf24">WM</span>
+        <div class="who">
+          <b>王敏 · Safari / iPhone</b>
+          <small>100.64.0.42 · 单个 Pane「codex」· 3 分钟</small>
+        </div>
+        <span class="badge ro">只读</span>
+        <button class="kick">断开</button>
+      </div>
+
+      <div class="conn">
+        <span class="av" style="background:#86efac">ME</span>
+        <div class="who">
+          <b>我 · Chrome / Android</b>
+          <small>192.168.x.xxx · 全部 Workspace · 1 小时</small>
+        </div>
+        <span class="badge rw">可输入</span>
+        <button class="kick">断开</button>
+      </div>
+    </div>
+
+    <div class="acts">
+      <button class="g" id="btnConnClose">关闭</button>
+      <button class="p" style="background:#3d1f1f;color:#f87171">全部断开</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ============ 假数据 ============
+const WS = [
+  { name:'fin-baker-svc',   branch:'main',           st:'wait', tabs:4 },
+  { name:'fin-baker-ui',    branch:'feat/dashboard', st:'run',  tabs:3 },
+  { name:'code-suggestion', branch:'main',           st:'run',  tabs:2 },
+  { name:'taskiq-terraform',branch:'flynn-saas',     st:'err',  tabs:1 },
+  { name:'auto-xero',       branch:'main',           st:'done', tabs:2 },
+  { name:'saas-terraform',  branch:'main',           st:'idle', tabs:1 },
+  { name:'diff-http-sdk',   branch:'main',           st:'wait', tabs:2 },
+];
+
+const TABS = [
+  { name:'构建流水线修复',   agent:'CX', st:'wait' },
+  { name:'重构 auth 中间件', agent:'CC', st:'run'  },
+  { name:'跑测试',           agent:'SH', st:'idle' },
+  { name:'依赖升级',         agent:'CX', st:'done' },
+];
+
+const AGENT_STYLE = {
+  CC:'background:#2d1f3d;color:#c4a5e8',
+  CX:'background:#1f3d2d;color:#86efac',
+  SH:'background:#2b2b35;color:#8b8b9a',
+};
+
+// ============ 渲染 ============
+document.getElementById('wsList').innerHTML = WS.map((w,i)=>`
+  <div class="ws ${i===0?'active':''}">
+    <div class="row1">
+      <span class="st ${w.st}"></span>
+      <span class="name">${w.name}</span>
+      <span class="count">${w.tabs}</span>
+    </div>
+    <div class="row2"><span class="branch">⎇ ${w.branch}</span></div>
+  </div>`).join('');
+
+document.getElementById('tabBar').innerHTML = TABS.map((t,i)=>`
+  <div class="tab ${i===0?'active':''}">
+    <span class="st ${t.st}"></span>
+    <span class="agent" style="${AGENT_STYLE[t.agent]}">${t.agent}</span>
+    <span>${t.name}</span>
+    <span class="x">×</span>
+  </div>`).join('') + '<button class="add">+</button>';
+
+// ---- 终端内容：真实 CLI 输出，不做任何总结 ----
+document.getElementById('t1').innerHTML =
+`<span class="g">bob@mac</span> <span class="c">fin-baker-svc</span> <span class="p">❯</span> codex
+
+<span class="g">╭──────────────────────────────────────╮</span>
+<span class="g">│</span> <span class="m">Codex CLI</span> v0.141  ·  gpt-5.5       <span class="g">│</span>
+<span class="g">│</span> 会话已恢复 · 12 条消息               <span class="g">│</span>
+<span class="g">╰──────────────────────────────────────╯</span>
+
+<span class="c">›</span> 构建一直失败，帮我看看 CI 配置
+
+我来检查构建配置。
+
+  <span class="g">⏺</span> Read <span class="c">.github/workflows/ci.yml</span>
+  <span class="g">⏺</span> Read <span class="c">package.json</span>
+  <span class="g">⏺</span> Bash <span class="c">npm run build</span>
+    <span class="g">│ error TS6305: Output file 'dist/index.d.ts'</span>
+    <span class="g">│ has not been built from source file.</span>
+
+找到问题了。<span class="c">dist/</span> 里有上次构建的残留，
+<span class="c">.tsbuildinfo</span> 记录的时间戳已经过期。
+
+<span class="y">┌─ 执行命令 ──────────────────────────┐</span>
+<span class="y">│</span> rm -rf ./dist && npm run build       <span class="y">│</span>
+<span class="y">└─────────────────────────────────────┘</span>
+<span class="y">  [y] 允许   [n] 拒绝   [a] 总是允许</span>
+
+<span class="cur"> </span>`;
+
+document.getElementById('t2').innerHTML =
+`<span class="g">bob@mac</span> <span class="c">fin-baker-svc</span> <span class="p">❯</span> git status -sb
+<span class="g">## main...origin/main</span>
+<span class="p"> M</span> src/middleware/auth.ts
+<span class="p"> M</span> src/routes/index.ts
+<span class="r">??</span> src/lib/token.ts
+
+<span class="g">bob@mac</span> <span class="c">fin-baker-svc</span> <span class="p">❯</span> <span class="cur"> </span>`;
+
+document.getElementById('t3').innerHTML =
+`<span class="g">bob@mac</span> <span class="c">fin-baker-svc</span> <span class="p">❯</span> npm run dev
+
+<span class="g">></span> fin-baker-svc@2.4.1 dev
+<span class="g">></span> tsx watch src/index.ts
+
+<span class="p">✓</span> server listening on :3000
+<span class="g">[12:07:41]</span> GET /health <span class="p">200</span> 2ms
+<span class="g">[12:07:58]</span> POST /api/bake <span class="p">201</span> 184ms
+<span class="g">[12:08:12]</span> GET /api/jobs <span class="p">200</span> 11ms
+<span class="cur"> </span>`;
+
+// ============ 交互 ============
+document.querySelectorAll('.ws').forEach(w=>{
+  w.onclick=()=>{
+    document.querySelectorAll('.ws').forEach(x=>x.classList.remove('active'));
+    w.classList.add('active');
+  };
+});
+document.querySelectorAll('.tab').forEach(t=>{
+  t.onclick=()=>{
+    document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+    t.classList.add('active');
+  };
+});
+document.querySelectorAll('.pane').forEach(p=>{
+  p.onclick=()=>{
+    document.querySelectorAll('.pane').forEach(x=>x.classList.remove('focus'));
+    p.classList.add('focus');
+  };
+});
+document.querySelectorAll('.perm button').forEach(b=>{
+  b.onclick=()=>{
+    document.querySelectorAll('.perm button').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on');
+  };
+});
+
+// 分享粒度：每一级的链接前缀、对方能看到的 UI、以及配对码默认策略
+const SHARE_SCOPE = {
+  all: { url:'http://192.168.x.xxx:7788/a/h5n8-3wt6',
+         sees:'对方看到：完整侧栏 + 所有 tab',
+         pair:'force', hint:'Workspace 级分享强制要求，不可关闭' },
+  ws:  { url:'http://192.168.x.xxx:7788/w/a7c2-9qk4',
+         sees:'对方看到：仅此 workspace 的 tab 栏，无侧栏',
+         pair:'force', hint:'Workspace 级分享强制要求，不可关闭' },
+  tab: { url:'http://192.168.x.xxx:7788/t/k3f9-x2m7',
+         sees:'对方看到：仅此 tab 的分屏，无侧栏无 tab 栏',
+         pair:'off',   hint:'链接被转发也无法访问 · 此范围可自行选择' },
+  pane:{ url:'http://192.168.x.xxx:7788/p/m8d1-5zr3',
+         sees:'对方看到：单个全屏终端，无任何导航',
+         pair:'off',   hint:'链接被转发也无法访问 · 此范围可自行选择' },
+};
+
+const pairChk = document.getElementById('pairChk');
+const pairHint = document.getElementById('pairHint');
+
+function applyScope(scope){
+  const s = SHARE_SCOPE[scope];
+  document.getElementById('shareUrl').textContent = s.url;
+  document.getElementById('shareSees').textContent = s.sees;
+  pairHint.textContent = s.hint;
+
+  // force = 勾上且锁定（workspace 级及以上）；off = 用户自行选择
+  const forced = s.pair === 'force';
+  pairChk.checked  = forced;
+  pairChk.disabled = forced;
+  document.body.classList.toggle('pair-forced', forced);
+  document.body.classList.toggle('pairing', pairChk.checked);
+}
+
+document.querySelectorAll('.scope button').forEach(b=>{
+  b.onclick=()=>{
+    document.querySelectorAll('.scope button').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on');
+    applyScope(b.dataset.scope);
+  };
+});
+
+pairChk.onchange = ()=> document.body.classList.toggle('pairing', pairChk.checked);
+applyScope('tab');
+
+const body = document.body;
+document.getElementById('btnShare').onclick = ()=>{
+  body.classList.remove('conns'); body.classList.add('share');
+};
+document.getElementById('btnClose').onclick = ()=> body.classList.remove('share');
+
+// 底部状态栏「2 人在线」→ 连接管理面板
+document.getElementById('btnConns').onclick = ()=>{
+  body.classList.remove('share'); body.classList.add('conns');
+};
+document.getElementById('btnConnClose').onclick = ()=> body.classList.remove('conns');
+
+document.getElementById('mask').onclick = (e)=>{
+  if(e.target.id==='mask') body.classList.remove('share','conns');
+};
+
+// 断开单个连接
+document.querySelectorAll('.conn .kick').forEach(b=>{
+  b.onclick=()=>{ b.closest('.conn').remove(); };
+});
+</script>
+</body>
+</html>

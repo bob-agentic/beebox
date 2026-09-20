@@ -1,0 +1,103 @@
+/* MesloLGS NF, subsetted — see scripts/build-font.py.
+   Not cosmetic: a terminal draws box-drawing and Powerline glyphs, and a
+   phone has none of them installed. Verified as tofu on a real device. */
+@font-face {
+  font-family: 'MesloLGS NF';
+  src: url('/fonts/MesloLGS-NF-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: 'MesloLGS NF';
+  src: url('/fonts/MesloLGS-NF-Bold.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: 'MesloLGS NF';
+  src: url('/fonts/MesloLGS-NF-Italic.woff2') format('woff2');
+  font-weight: 400;
+  font-style: italic;
+  font-display: block;
+}
+@font-face {
+  font-family: 'MesloLGS NF';
+  src: url('/fonts/MesloLGS-NF-BoldItalic.woff2') format('woff2');
+  font-weight: 700;
+  font-style: italic;
+  font-display: block;
+}
+
+/* Shared tokens. The status colours are the product's only visual language:
+   learn them once in the sidebar, recognise them in tabs and pane headers. */
+:root {
+  --bg: #0f0f13;
+  --panel: #17171c;
+  --panel-2: #1d1d24;
+  --border: #2b2b35;
+  --fg: #e8e8ee;
+  --dim: #8b8b9a;
+  --faint: #5a5a68;
+  --run: #4ade80;
+  --wait: #fbbf24;
+  --err: #f87171;
+  --idle: #64748b;
+  --done: #38bdf8;
+  --accent: #4ade80;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body, #app { height: 100%; }
+
+body {
+  background: transparent;
+  color: var(--fg);
+  font: 13px/1.5 -apple-system, "Segoe UI", "PingFang SC", sans-serif;
+  overflow: hidden;
+}
+
+/* The window is undecorated and transparent, so macOS no longer rounds it for
+   us — the page has to. Square edges on a floating window look broken. */
+/* With `titleBarStyle: Overlay` macOS keeps the real window frame, so it
+   rounds the corners and draws the traffic lights itself. The page only
+   supplies the colour behind them. */
+#app {
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  height: 100%;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+/* Dragging the window. The attribute is what Tauri looks for; `app-region`
+   is what makes it work for touch and pen input too. */
+/* Anything clickable inside the drag region has to opt out, or it would be
+   swallowed by the drag. */
+
+/* Status dots, driven by agent hooks — the one thing added on top of a
+   plain terminal. The six-phase styles live in StatusIcon.svelte; the shared
+   keyframes stay here. */
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.8); }
+}
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0.25; }
+}
+
+.xterm .xterm-viewport::-webkit-scrollbar { width: 8px; }
+.xterm .xterm-viewport::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
