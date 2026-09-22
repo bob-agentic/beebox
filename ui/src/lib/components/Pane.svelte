@@ -277,9 +277,13 @@
     overflow: hidden;
     position: relative;
   }
+  /* The same accent that marks the selected tab and workspace, so the three
+     read as one selection rather than three unrelated highlights. Mixed with
+     the panel colour instead of a fixed green: the accent comes from the
+     theme, and a hardcoded one clashed with every palette but the default. */
   .pane.focus {
-    border-color: #3d5a45;
-    box-shadow: 0 0 0 1px rgba(74, 222, 128, 0.18);
+    border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
   }
 
   .pane-head {
