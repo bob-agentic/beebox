@@ -110,6 +110,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     @objc func toggleDevTools(_ sender: Any?) {
         // Not exposed in the public API, but the inspector is the only way to
         // debug the page in the real webview.
+        //
+        // Does nothing unless the app was launched with BEEBOX_DEVTOOLS=1:
+        // the inspector is off by default so that "Inspect Element" stays out
+        // of the right-click menu. See WebHost.
         if web.responds(to: Selector(("_inspector"))) {
             web.perform(Selector(("_showInspector")))
         }

@@ -64,9 +64,15 @@ enum WebHost {
 
         let config = WKWebViewConfiguration()
         config.userContentController = controller
-        // Lets the window be inspected with the usual right-click, which is how
-        // interactions get verified in the real webview rather than a browser.
-        config.preferences.setValue(true, forKey: "developerExtrasEnabled")
+        // Off unless asked for. The inspector is how interactions get verified
+        // in the real webview rather than a browser, but leaving it on puts
+        // "Inspect Element" and "Reload" in the right-click menu of a terminal
+        // — which is the app admitting it is a web page in a window.
+        //
+        // BEEBOX_DEVTOOLS=1 brings it back for development.
+        if ProcessInfo.processInfo.environment["BEEBOX_DEVTOOLS"] == "1" {
+            config.preferences.setValue(true, forKey: "developerExtrasEnabled")
+        }
 
         let web = ShellWebView(frame: .zero, configuration: config)
         return web

@@ -166,6 +166,18 @@
     }
   }
 
+  /** No "Reload" or "Inspect Element" on the furniture.
+   *
+   *  The same reasoning as not letting the chrome be selected: a native app
+   *  does not offer to reload itself. The terminal keeps its menu, which is
+   *  where copy and paste live, and anything that has put up a menu of its own
+   *  has already called preventDefault by the time this runs. */
+  function oncontextmenu(e: MouseEvent) {
+    const el = e.target as HTMLElement | null;
+    if (el?.closest('.xterm, input, textarea')) return;
+    e.preventDefault();
+  }
+
   /** Maps a keystroke to a command name, or null if it is not a shortcut. */
   function keyCommand(e: KeyboardEvent): string | null {
     switch (e.key.toLowerCase()) {
@@ -191,7 +203,7 @@
   }
 </script>
 
-<svelte:window {onkeydown} />
+<svelte:window {onkeydown} {oncontextmenu} />
 
 {#if store.needsPairing}
   <!-- A paired share link: nothing renders until the code is given. The code
