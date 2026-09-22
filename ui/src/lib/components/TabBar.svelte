@@ -353,16 +353,9 @@
     overflow-x: auto;
     scrollbar-width: none;
     padding-left: 8px;
-    /* A tab part-way past the left edge is cut straight down its side, through
-       its border and its status dot: it reads as damage rather than as
-       scrolling, worst of all on the active tab whose accent border then stops
-       in mid-air. Fading it out is what every editor does with this same strip.
-       Wide enough to swallow a rounded corner and the dot behind it — at ten
-       pixels the fade was there but far too narrow to read as one.
-       The right edge keeps its hard boundary: that is the direction the list
-       continues in, and a fade there would suggest it had ended. */
-    mask-image: linear-gradient(to right, transparent 0, #000 24px);
-    -webkit-mask-image: linear-gradient(to right, transparent 0, #000 24px);
+    /* Tabs are simply clipped at the edges, as they are in any editor with a
+       strip like this. A mask to soften the left edge was tried and removed:
+       it interfered with scrolling, and a fade is not worth that. */
   }
   .tabbar::-webkit-scrollbar {
     display: none;
