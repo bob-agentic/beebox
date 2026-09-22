@@ -164,7 +164,12 @@
     }
 
     const send = (data: Uint8Array) => store.send({ t: 'input', pane: pane.id, data });
-    term.onData((s) => send(new TextEncoder().encode(s)));
+    // `onData` is the user's own input — what the process prints never reaches
+    // it — so it is the right place to say "this is the tab I am working in".
+    term.onData((s) => {
+      store.noteTyping();
+      send(new TextEncoder().encode(s));
+    });
     term.onBinary((s) => {
       const bytes = new Uint8Array(s.length);
       for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i) & 0xff;

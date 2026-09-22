@@ -45,6 +45,49 @@
 
   const ws = $derived(store.activeWs);
 
+  // Once the strip overflows, a tab opened with ⌘T lands past the right edge:
+  // the thing you just asked for is the one thing you cannot see.
+  //
+  // Typing counts too. Having scrolled the strip away to look at something
+  // else and then started working, the tab you are actually in is the one
+  // that should be on screen — so `typedRev` is read here as well, purely to
+  // subscribe to it.
+  //
+  // Scrolled by hand rather than with `scrollIntoView`, which also scrolls
+  // every scrollable ancestor — here that would drag the whole pane area.
+  let strip: HTMLDivElement | undefined;
+  let revealFrame = 0;
+  $effect(() => {
+    const id = store.activeTab?.id;
+    void store.typedRev;
+    if (id == null || !strip) return;
+    // Coalesced to one frame: this runs on every keystroke, and a burst of
+    // typing must not cost a layout read each. Deferring also lets a tab that
+    // was opened this tick reach the DOM before it is measured.
+    if (revealFrame) return;
+    revealFrame = requestAnimationFrame(() => {
+      revealFrame = 0;
+      const el = strip?.querySelector<HTMLElement>(`[data-sort-id="${id}"]`);
+      if (!el || !strip) return;
+      const pad = 12;
+      const left = el.offsetLeft - pad;
+      const right = el.offsetLeft + el.offsetWidth + pad;
+      // Already visible: leave the strip exactly where the user put it.
+      if (left >= strip.scrollLeft && right <= strip.scrollLeft + strip.clientWidth) {
+        return;
+      }
+      strip.scrollTo({
+        left: left < strip.scrollLeft ? left : right - strip.clientWidth,
+        behavior: 'smooth',
+      });
+    });
+  });
+
+  // A pending frame must not fire against a strip that is gone.
+  $effect(() => () => {
+    if (revealFrame) cancelAnimationFrame(revealFrame);
+  });
+
   // Double-click to rename, middle-click to close — the same gestures mux0
   // and every browser use.
   let editing = $state<number | null>(null);
@@ -88,7 +131,7 @@
   });
 </script>
 
-<div class="tabbar">
+<div class="tabbar" bind:this={strip}>
   {#each ws?.tabs ?? [] as tab (tab.id)}
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -181,6 +224,9 @@
 
 <style>
   .tabbar {
+    /* The offset parent for the tabs, so scrolling one into view is a
+       subtraction against this strip rather than against the page. */
+    position: relative;
     height: 34px;
     flex: 0 0 34px;
     background: var(--panel);

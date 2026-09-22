@@ -298,6 +298,20 @@ class Store {
     this.buffered.set(pane, buf);
   }
 
+  /** Bumped on every keystroke sent to a terminal.
+   *
+   *  Typing is the clearest statement that this tab is the one you are working
+   *  in — so the tab strip watches this to scroll back to it. Having scrolled
+   *  away to look at another tab and then started typing, the tab you are
+   *  actually in is the one that should be on screen. A counter rather than a
+   *  flag: the point is that it *changed*, not what it holds. */
+  typedRev = $state(0);
+
+  /** Called by a pane when the user types into it. */
+  noteTyping() {
+    this.typedRev++;
+  }
+
   focus(pane: PaneId) {
     this.focused = pane;
     this.applyFocus();
