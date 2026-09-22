@@ -1,17 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- The daemon listens on a LAN address over plain HTTP, and always will:
-     there is no certificate authority that will issue for 192.168.x.x, and
-     no domain to put in front of it. Android blocks cleartext by default
-     since 9, so the private ranges are opened explicitly — and only those.
-     Anything routable stays on the default deny. -->
+     no certificate authority will issue for 192.168.x.x, and there is no
+     domain to put in front of it. Android has blocked cleartext by default
+     since 9, so it has to be permitted here or nothing connects.
+
+     This is a blanket permit, deliberately. An earlier attempt listed the
+     private ranges as <domain> entries — 192.168.0.0/16 and friends — which
+     silently does nothing: <domain> matches hostnames, not CIDR blocks, and
+     Android offers no way to scope cleartext by address range. The choice is
+     all or nothing, and "nothing" means the app cannot reach its own daemon.
+
+     What bounds the risk is that every URL comes from a share link the user
+     scanned or pasted: the app never navigates anywhere on its own, and
+     off-origin links are handed to the browser rather than loaded here. -->
 <network-security-config>
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="false">localhost</domain>
-        <domain includeSubdomains="false">127.0.0.1</domain>
-        <!-- RFC 1918, plus the CGNAT range Tailscale hands out. -->
-        <domain includeSubdomains="true">10.0.0.0/8</domain>
-        <domain includeSubdomains="true">172.16.0.0/12</domain>
-        <domain includeSubdomains="true">192.168.0.0/16</domain>
-        <domain includeSubdomains="true">100.64.0.0/10</domain>
-    </domain-config>
+    <base-config cleartextTrafficPermitted="true" />
 </network-security-config>
