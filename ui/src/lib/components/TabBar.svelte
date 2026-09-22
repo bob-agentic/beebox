@@ -174,11 +174,13 @@
         : 'Drop a tab here to set it aside'}
       onclick={openDen}
     >
-      <Icon name="moon" size={12} />
-      <span class="n">{denned.length}</span>
-      {#if denned.length}
-        <StatusIcon phase={denDot.phase} unread={denDot.unread} />
-      {/if}
+      <span class="den-pill">
+        <Icon name="moon" size={12} />
+        <span class="n">{denned.length}</span>
+        {#if denned.length}
+          <StatusIcon phase={denDot.phase} unread={denDot.unread} />
+        {/if}
+      </span>
     </div>
   {/if}
 
@@ -387,41 +389,62 @@
      scrolled. Above the tabs, which lift to z-index 5 while being dragged;
      a drop target you cannot see under the thing you are dropping is no
      target at all. */
+  /* Full height of the strip, not just the pill's: the den is 24px in a 34px
+     bar, and a tab scrolling underneath would otherwise show through the gap
+     above and below it — border and text sliding past a control that is meant
+     to be solid. The opaque strip colour is what hides them; the pill inside
+     is only the visible part. Padded on the right so a tab fades out under
+     the den rather than meeting its edge. */
   .den {
     position: sticky;
-    left: 0;
+    /* Pinned past the strip's own 6px padding, not to it: sticky stops at the
+       padding edge, and a tab would go on sliding through the gap left over. */
+    left: -6px;
     z-index: 6;
     flex: 0 0 auto;
-    align-self: center;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    align-self: stretch;
+    margin-left: -6px;
+    padding: 5px 12px 5px 12px;
+    background: var(--panel);
+    color: var(--dim);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .den-pill {
     display: inline-flex;
     align-items: center;
     gap: 5px;
     height: 24px;
     padding: 0 8px;
-    margin-right: 4px;
     border-radius: 7px;
     background: var(--panel-2);
     border: 1px solid var(--border);
-    color: var(--dim);
-    cursor: pointer;
-    white-space: nowrap;
     transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+  }
+  .den:hover .den-pill {
+    border-color: var(--faint);
   }
   .den:hover {
     color: var(--fg);
-    border-color: var(--faint);
   }
   /* Nothing in it yet: present enough to be found, quiet enough to ignore. */
   .den.empty {
     color: var(--faint);
+  }
+  .den.empty .den-pill {
     border-style: dashed;
   }
   /* Lit while a tab is held over it — the only signal that letting go will
      do something. Toggled by the sortable action, not the markup. */
   .den:global(.drop-over) {
+    color: var(--fg);
+  }
+  .den:global(.drop-over) .den-pill {
     background: color-mix(in srgb, var(--accent) 18%, var(--panel-2));
     border-color: var(--accent);
-    color: var(--fg);
   }
   .den .n {
     font-size: 10.5px;
