@@ -353,13 +353,16 @@
     overflow-x: auto;
     scrollbar-width: none;
     padding-left: 8px;
-    /* A tab part-way past the left edge is cut down its side — a hard vertical
-       slice through its border and its status dot, which looks like damage
-       rather than like scrolling. Fading the first few pixels lets it leave
-       instead. The right edge is left alone: that is where the strip
-       continues, and a fade there would read as the end of the list. */
-    mask-image: linear-gradient(to right, transparent 0, #000 10px);
-    -webkit-mask-image: linear-gradient(to right, transparent 0, #000 10px);
+    /* A tab part-way past the left edge is cut straight down its side, through
+       its border and its status dot: it reads as damage rather than as
+       scrolling, worst of all on the active tab whose accent border then stops
+       in mid-air. Fading it out is what every editor does with this same strip.
+       Wide enough to swallow a rounded corner and the dot behind it — at ten
+       pixels the fade was there but far too narrow to read as one.
+       The right edge keeps its hard boundary: that is the direction the list
+       continues in, and a fade there would suggest it had ended. */
+    mask-image: linear-gradient(to right, transparent 0, #000 24px);
+    -webkit-mask-image: linear-gradient(to right, transparent 0, #000 24px);
   }
   .tabbar::-webkit-scrollbar {
     display: none;
