@@ -72,9 +72,16 @@
       lineHeight: cfg.lineHeight,
       cursorBlink: cfg.cursorBlink,
       allowProposedApi: true,
-      // Matched to the server ring, so scrolling back never hits a hole the
-      // server could have filled.
-      scrollback: 200_000,
+      // Not matched to the server's ring, deliberately. xterm keeps a parsed
+      // grid — a styled cell per character — which costs roughly 2 MB per ten
+      // thousand lines, and every pane holds its own even when its tab is not
+      // in front. Matching the ring's 200k meant ~44 MB a pane, so a dozen
+      // terminals ran the webview into the better part of a gigabyte while the
+      // daemon holding the same history sat at 20 MB.
+      //
+      // Ten thousand lines is a long way back in a terminal, and the ring
+      // still has the rest for a reattach.
+      scrollback: 10_000,
       theme: settings.xterm,
     });
 

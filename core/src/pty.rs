@@ -24,8 +24,10 @@ const FLUSH_INTERVAL: Duration = Duration::from_millis(4);
 const FLUSH_BYTES: usize = 64 * 1024;
 
 /// How much scrollback a newly attached viewer receives. Replaying 200k lines
-/// into a fresh terminal would be pointless.
-pub const ATTACH_LINES: usize = 5_000;
+/// into a fresh terminal would be pointless — and would not fit anyway: the
+/// client keeps 10k lines per pane, so anything beyond that is parsed and
+/// dropped on arrival. Matched to it.
+pub const ATTACH_LINES: usize = 10_000;
 
 /// What the read loop publishes. Subscribers translate this into `Out` frames.
 #[derive(Debug, Clone)]
