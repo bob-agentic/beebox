@@ -23,8 +23,9 @@ import type {
 
 interface Attached {
   term: Terminal;
-  /** Re-fits and reports the viewport. Owned by the component. */
-  report: () => void;
+  /** Re-fits and reports the viewport. Owned by the component. `force` sends
+      the size even when it has not changed. */
+  report: (force?: boolean) => void;
   /** Output that arrived before this pane mounted. */
   pending: Uint8Array[];
 }
@@ -40,6 +41,12 @@ class Store {
   peers = $state<Peer[]>([]);
   /** Focused pane. Local to this browser: the server has no "current pane". */
   focused = $state<PaneId | null>(null);
+
+  /** True when this client may drive the terminal's size — `?phone=1`, which
+   *  the Android shell appends and the desktop offers as a checkbox. Only
+   *  such a client has any use for a re-fit control: everyone else's size is
+   *  the owner's, and asking for it again would change nothing. */
+  sizing = $state(false);
   share = $state<{ url: string; pair_code: string | null; hosts: string[] } | null>(null);
   /** Daemon-owned Agents toggles. Owner-only; null until the server sends
       the snapshot. */
@@ -108,7 +115,8 @@ class Store {
     // itself — it has to be able to resize the terminal to be readable at all.
     // The cost is that the owner's window resizes with it, so it is asked for
     // rather than assumed.
-    const sizing = new URLSearchParams(location.search).get('phone') === '1';
+    this.sizing = new URLSearchParams(location.search).get('phone') === '1';
+    const sizing = this.sizing;
     this.wsBase =
       `${proto}://${host}/ws${q}${q ? '&' : '?'}replay=${replay}` +
       (sizing ? '&sizing=true' : '');
@@ -392,9 +400,11 @@ class Store {
     t.term.focus();
   }
 
-  /** Asks every mounted pane to re-measure. */
+  /** Asks every mounted pane to re-measure and say so, even if the numbers
+   *  come out the same. Bound to the re-fit button, which only a client that
+   *  drives its own size gets to see. */
   refit() {
-    for (const t of this.terms.values()) t.report();
+    for (const t of this.terms.values()) t.report(true);
   }
 
   /** The native folder chooser. `null` means the user cancelled it,

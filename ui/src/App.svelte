@@ -268,6 +268,21 @@
       Share
     </button>
   {/if}
+  <!-- Only where this client drives the terminal's size — which today means
+       the Android app, the one thing that sends `?phone=1`. Carrying a
+       session from a phone to a tablet leaves the terminal at the first
+       screen's width, and nothing re-measures on its own; this asks. On a
+       desktop the size is the owner's and the button would do nothing. -->
+  {#if store.sizing}
+    <button
+      class="tb-btn command"
+      aria-label="Re-fit to this screen"
+      title="Re-fit to this screen"
+      onclick={() => store.refit()}
+    >
+      <Icon name="refresh" size={15} />
+    </button>
+  {/if}
   <button
     class="tb-btn command"
     aria-label="Settings"

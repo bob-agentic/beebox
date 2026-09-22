@@ -184,14 +184,19 @@
     // its prompt — which is what left rows of stray `%` markers on screen.
     let lastCols = 0;
     let lastRows = 0;
-    const report = () => {
+    // `force` is for the re-fit button. The usual caller is a ResizeObserver
+    // firing constantly, so an unchanged size is not worth a message — but a
+    // session carried to another device may measure the same here while the
+    // server holds a size some other client set, and then silence is wrong.
+    // Asking explicitly has to mean asking.
+    const report = (force = false) => {
       try {
         fit.fit();
       } catch {
         return;
       }
       refresh();
-      if (term.cols === lastCols && term.rows === lastRows) return;
+      if (!force && term.cols === lastCols && term.rows === lastRows) return;
       lastCols = term.cols;
       lastRows = term.rows;
       // Advisory: the server decides, and the owner's viewport wins.
@@ -201,7 +206,7 @@
     store.register(pane.id, term, report);
     report();
 
-    const ro = new ResizeObserver(report);
+    const ro = new ResizeObserver(() => report());
     ro.observe(host);
 
     // Appearance changes apply to terminals that already exist, so you can see
