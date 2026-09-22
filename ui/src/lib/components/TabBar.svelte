@@ -158,11 +158,10 @@
   });
 </script>
 
-<div class="tabbar" bind:this={strip}>
-  <!-- The den. Sticky, so it stays reachable however far the strip is
-       scrolled — it is a drop target, and one that scrolls away is no use.
-       Deliberately without a `data-sort-id`: the sortable action treats any
-       sibling carrying one as a row it can reorder. -->
+<div class="tabrow">
+  <!-- Outside the scroller, not pinned inside it: the den owns its width and
+       the tabs simply have less room. Nothing of theirs can pass under it,
+       which is the only way an edge this busy stays clean. -->
   {#if store.caps.owner && (denned.length > 0 || tabs.length > 0)}
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -184,7 +183,8 @@
     </div>
   {/if}
 
-  {#each tabs as tab (tab.id)}
+  <div class="tabbar" bind:this={strip}>
+    {#each tabs as tab (tab.id)}
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
@@ -264,18 +264,19 @@
         >
       {/if}
     </div>
-  {/each}
+    {/each}
 
-  {#if store.caps.owner && ws}
-    <button
-      class="add"
-      title="New tab"
-      aria-label="New tab"
-      onclick={() => store.send({ t: 'open_tab', ws: ws.id })}
-    >
-      <Icon name="plus" size={15} />
-    </button>
-  {/if}
+    {#if store.caps.owner && ws}
+      <button
+        class="add"
+        title="New tab"
+        aria-label="New tab"
+        onclick={() => store.send({ t: 'open_tab', ws: ws.id })}
+      >
+        <Icon name="plus" size={15} />
+      </button>
+    {/if}
+  </div>
 </div>
 
 {#if denOpen}
@@ -328,10 +329,8 @@
 {/if}
 
 <style>
-  .tabbar {
-    /* The offset parent for the tabs, so scrolling one into view is a
-       subtraction against this strip rather than against the page. */
-    position: relative;
+  /* The strip: a fixed area for the den, then everything else scrolls. */
+  .tabrow {
     height: 34px;
     flex: 0 0 34px;
     background: var(--panel);
@@ -339,6 +338,17 @@
     display: flex;
     align-items: stretch;
     padding: 0 6px;
+    gap: 3px;
+    min-width: 0;
+  }
+  .tabbar {
+    /* The offset parent for the tabs, so scrolling one into view is a
+       subtraction against this scroller rather than against the page. */
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: stretch;
     gap: 3px;
     overflow-x: auto;
     scrollbar-width: none;
@@ -389,29 +399,20 @@
      scrolled. Above the tabs, which lift to z-index 5 while being dragged;
      a drop target you cannot see under the thing you are dropping is no
      target at all. */
-  /* Full height of the strip, not just the pill's: the den is 24px in a 34px
-     bar, and a tab scrolling underneath would otherwise show through the gap
-     above and below it — border and text sliding past a control that is meant
-     to be solid. The opaque strip colour is what hides them; the pill inside
-     is only the visible part. Padded on the right so a tab fades out under
-     the den rather than meeting its edge. */
+  /* Its own fixed area, not something the tabs pass beneath: they scroll in
+     the box to its right and simply have that much less room. */
   .den {
-    position: sticky;
-    /* Pinned past the strip's own 6px padding, not to it: sticky stops at the
-       padding edge, and a tab would go on sliding through the gap left over. */
-    left: -6px;
-    z-index: 6;
     flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
+    align-self: center;
     gap: 5px;
-    align-self: stretch;
-    margin-left: -6px;
-    padding: 5px 12px 5px 12px;
-    background: var(--panel);
     color: var(--dim);
     cursor: pointer;
     white-space: nowrap;
+    padding-right: 6px;
+    margin-right: 2px;
+    border-right: 1px solid var(--border);
   }
   .den-pill {
     display: inline-flex;
