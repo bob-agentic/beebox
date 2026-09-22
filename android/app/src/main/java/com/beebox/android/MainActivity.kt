@@ -11,6 +11,8 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.addCallback
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 
 /**
  * A client, not a server. Everything runs on the daemon; this is the surface.
@@ -36,10 +38,24 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(saved: Bundle?) {
         super.onCreate(saved)
-        // The system bars keep their space. The shared page is a whole screen
-        // of its own — top bar, tabs, terminal — so the WebView gets the rest
-        // of the window verbatim and the shell adds nothing around it.
         setContentView(R.layout.main)
+
+        // Android 15 forces edge-to-edge on targetSdk 35+, so without this the
+        // page runs under the clock and under the navigation bar — the top bar
+        // collided with the status icons and `daemon connected` sat beneath the
+        // gesture pill. Inset the container, not the page: the WebView still
+        // gets its whole rectangle verbatim, that rectangle just stops where
+        // the system furniture begins.
+        val root = findViewById<View>(R.id.root)
+        ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
+            val bars = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or
+                    WindowInsetsCompat.Type.displayCutout() or
+                    WindowInsetsCompat.Type.ime(),
+            )
+            v.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            insets
+        }
 
         web = findViewById(R.id.web)
         connect = findViewById(R.id.connect)
@@ -85,8 +101,21 @@ class MainActivity : AppCompatActivity() {
         return if (data.scheme == "beebox") httpFrom(data) else null
     }
 
-    private fun httpFrom(uri: Uri): String =
-        uri.buildUpon().scheme("http").build().toString()
+    /** Turns a share URI into the URL to load: http, and asking the terminal
+     *  to take its size from this screen.
+     *
+     *  The page gates that on `phone=1`, and it matters — a session laid out
+     *  at 160 columns hard-wraps into nonsense on a 46-column phone. The
+     *  desktop offers it as a checkbox because a desktop viewer may not want
+     *  it; here there is nothing to ask. This app only ever runs on a phone,
+     *  so it answers the question itself rather than making the link carry it. */
+    private fun httpFrom(uri: Uri): String {
+        val http = uri.buildUpon().scheme("http")
+        // appendQueryParameter would happily add a second copy; a URL that
+        // already carries the flag is left alone.
+        if (uri.getQueryParameter("phone") == null) http.appendQueryParameter("phone", "1")
+        return http.build().toString()
+    }
 
     private fun open(url: String) {
         current = url
@@ -102,8 +131,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun promptForLink() {
         LinkDialog.show(this) { typed ->
-            val uri = Uri.parse(typed.trim())
-            open(if (uri.scheme == "beebox") httpFrom(uri) else typed.trim())
+            // A typed link deserves the same sizing as a scanned one, so it
+            // goes through httpFrom either way — which also normalises the
+            // scheme when someone pastes the http form.
+            open(httpFrom(Uri.parse(typed.trim())))
         }
     }
 
