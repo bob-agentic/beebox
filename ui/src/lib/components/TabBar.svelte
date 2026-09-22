@@ -352,6 +352,14 @@
     gap: 3px;
     overflow-x: auto;
     scrollbar-width: none;
+    padding-left: 8px;
+    /* A tab part-way past the left edge is cut down its side — a hard vertical
+       slice through its border and its status dot, which looks like damage
+       rather than like scrolling. Fading the first few pixels lets it leave
+       instead. The right edge is left alone: that is where the strip
+       continues, and a fade there would read as the end of the list. */
+    mask-image: linear-gradient(to right, transparent 0, #000 10px);
+    -webkit-mask-image: linear-gradient(to right, transparent 0, #000 10px);
   }
   .tabbar::-webkit-scrollbar {
     display: none;
