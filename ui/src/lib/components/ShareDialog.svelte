@@ -1,6 +1,8 @@
 <script lang="ts">
+  import qrcode from 'qrcode-generator';
   import { store } from '../state.svelte';
   import { writeClipboard } from '../clipboard';
+  import Icon from './Icon.svelte';
   import type { GrantScope } from '../proto';
 
   let { onclose }: { onclose: () => void } = $props();
@@ -9,11 +11,8 @@
   let kind = $state<ScopeKind>('tab');
   let writable = $state(false);
   let pairing = $state(false);
-  // A phone cannot read a terminal laid out for a desktop: 175 columns of text
-  // arriving on a 46-column screen overlaps itself. Letting the link resize the
-  // terminal is the only way it becomes readable — at the cost of resizing this
-  // window too, since a PTY has one size.
-  let sizing = $state(false);
+  /** Which URL's code is being shown, if any. */
+  let showing = $state<string | null>(null);
 
   const ws = $derived(store.activeWs);
   const tab = $derived(store.activeTab);
@@ -57,13 +56,33 @@
   // loopback (that one is known to work — the page came over it).
   const urls = $derived.by(() => {
     if (!store.share) return [] as string[];
-    const path = store.share.url + (sizing ? '?phone=1' : '');
+    const path = store.share.url;
     const list = store.share.hosts.map((h) => `${h}${path}`);
     if (!/^https?:\/\/(localhost|127\.)/.test(location.origin)) {
       const own = `${location.origin}${path}`;
       if (!list.includes(own)) list.unshift(own);
     }
-    return list.length ? list : [`${location.origin}${path}`];
+    const plain = list.length ? list : [`${location.origin}${path}`];
+    // Two forms of the same link. The code carries the `beebox://` one, which
+    // the phone's own camera hands to the app; the app knows it is a phone and
+    // takes the terminal's size accordingly, so nothing needs to say so here.
+    return plain.map((http) => ({
+      http,
+      app: http.replace(/^https?:\/\//, 'beebox://'),
+    }));
+  });
+
+  /** The code for whichever link is being shown, as an SVG string.
+   *
+   *  Type 0 lets the library pick the smallest version that fits; level M
+   *  tolerates a quarter of the code being obscured, which is the usual
+   *  choice for something read off a screen. */
+  const codeSvg = $derived.by(() => {
+    if (!showing) return '';
+    const qr = qrcode(0, 'M');
+    qr.addData(showing);
+    qr.make();
+    return qr.createSvgTag({ cellSize: 5, margin: 2, scalable: true });
   });
 
   // The Copy button must answer, or the user assumes it did nothing.
@@ -139,16 +158,6 @@
       </span>
     </label>
 
-    <label class="pair-toggle">
-      <input type="checkbox" bind:checked={sizing} />
-      <span class="pt-text">
-        <b>Let the link resize the terminal</b>
-        <small>
-          For a phone · a desktop-width terminal overlaps itself on a small
-          screen. <span class="dim">Your own window resizes with it.</span>
-        </small>
-      </span>
-    </label>
 
     {#if store.share?.pair_code}
       <div class="paircode">
@@ -164,11 +173,19 @@
       <!-- The result lives at the bottom, where it lands after Create link:
            one URL per reachable address, like a dev server's banner. -->
       <div class="urls">
-        {#each urls as url (url)}
+        {#each urls as u (u.http)}
           <div class="field">
-            <span>{url}</span>
-            <button class:did={copied === url} onclick={() => copy(url)}>
-              {copied === url ? 'Copied ✓' : 'Copy'}
+            <span>{u.http}</span>
+            <button
+              class="qr-btn"
+              title="Show a code for the app to scan"
+              aria-label="Show QR code"
+              onclick={() => (showing = u.app)}
+            >
+              <Icon name="qr" size={13} />
+            </button>
+            <button class:did={copied === u.http} onclick={() => copy(u.http)}>
+              {copied === u.http ? 'Copied ✓' : 'Copy'}
             </button>
           </div>
         {/each}
@@ -184,7 +201,81 @@
   </div>
 </div>
 
+{#if showing}
+  <!-- Over the dialog rather than inside the URL list, which scrolls and would
+       crop it. -->
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="qr-mask" onclick={() => (showing = null)}>
+    <div class="qr-card">
+      <div class="qr-svg">{@html codeSvg}</div>
+      <div class="qr-url">{showing}</div>
+      <div class="qr-note">
+        Scan with the phone's own camera — the app opens it directly.
+      </div>
+    </div>
+  </div>
+{/if}
+
 <style>
+  /* The code sits above the dialog: the URL list scrolls, and anything drawn
+     inside it would be cropped. */
+  .qr-mask {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.72);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 60;
+  }
+  .qr-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 13px;
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 11px;
+    max-width: 300px;
+  }
+  /* White behind the code regardless of theme: a scanner needs the contrast,
+     and half the themes here are light-on-dark. */
+  .qr-svg {
+    width: 196px;
+    height: 196px;
+    background: #fff;
+    border-radius: 9px;
+    padding: 9px;
+  }
+  .qr-svg :global(svg) {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+  .qr-url {
+    font: 10.5px/1.4 ui-monospace, monospace;
+    color: var(--dim);
+    word-break: break-all;
+    text-align: center;
+  }
+  .qr-note {
+    font-size: 11px;
+    color: var(--faint);
+    text-align: center;
+    line-height: 1.5;
+  }
+  .qr-btn {
+    color: var(--faint);
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+  }
+  .qr-btn:hover {
+    color: var(--fg);
+  }
+
   .mask {
     position: fixed;
     inset: 0;

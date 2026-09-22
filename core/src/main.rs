@@ -79,6 +79,9 @@ async fn main() -> Result<()> {
 
     // The pane footer's cwd/git follows the shell wherever it goes.
     tokio::spawn(beebox_core::cwd::poll_forever(app.clone()));
+    // A pane whose shell exited cleanly closes itself. One watcher for the
+    // whole daemon; doing it per connection would repeat the work per viewer.
+    tokio::spawn(app.clone().watch_exits());
 
     if args.exit_with_parent {
         // Orphaned processes are reparented to launchd, so a ppid of 1 means

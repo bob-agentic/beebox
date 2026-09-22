@@ -170,6 +170,14 @@ class Store {
     switch (msg.t) {
       case 'tree': {
         this.tree = msg.tree;
+        // Anything clicked before the first frame arrived was handled as a
+        // viewer would handle it, because `owner` starts false — and the local
+        // override that leaves behind outranks the server's own active ids
+        // forever after, so a new workspace would open behind the old one.
+        if (msg.caps.owner && !this.caps.owner) {
+          this.localWs = null;
+          this.localTab = null;
+        }
         this.caps = msg.caps;
         this.reconcile();
         break;

@@ -159,8 +159,11 @@ impl Registry {
         );
 
         // Blocking reads belong on their own thread; the channel hands bytes to
-        // the async side.
+        // the async side. The exit status travels separately: squeezing it into
+        // the byte channel would mean inventing a sentinel that real output
+        // could imitate.
         let (raw_tx, mut raw_rx) = mpsc::channel::<Vec<u8>>(64);
+        let (code_tx, code_rx) = tokio::sync::oneshot::channel::<i32>();
         std::thread::spawn(move || {
             let mut reader = reader;
             let mut buf = vec![0u8; 32 * 1024];
@@ -180,7 +183,7 @@ impl Registry {
                 .unwrap_or(-1);
             // Re-use the same channel for the exit signal: an empty vec.
             let _ = raw_tx.blocking_send(Vec::new());
-            let _ = code;
+            let _ = code_tx.send(code);
         });
 
         // Coalescing loop.
@@ -215,7 +218,11 @@ impl Registry {
                 reg.flush(id, pane, &mut pending);
             }
             reg.ptys.lock().unwrap().remove(&id);
-            let _ = reg.tx.send(PtyEvent::Exited { pane, code: 0 });
+            // The reader thread is the only one that can wait on the child, so
+            // the status comes back from there. -1 if it never arrived: the
+            // thread died without reaping, which is not a clean exit.
+            let code = code_rx.await.unwrap_or(-1);
+            let _ = reg.tx.send(PtyEvent::Exited { pane, code });
         });
 
         Ok(id)
@@ -503,6 +510,27 @@ mod tests {
         reg.resize(id, 96, 38).unwrap();
         assert_eq!(reg.size(id), Some((96, 38)));
         let _ = drain(&reg, rx).await;
+    }
+
+    #[tokio::test]
+    async fn a_failing_command_reports_its_status() {
+        // The code is what decides whether a pane closes on its own, so it has
+        // to be the child's and not a placeholder.
+        let reg = Registry::new();
+        let mut rx = reg.subscribe();
+        reg.spawn(spec(9, &["sh", "-c", "exit 3"])).unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            match tokio::time::timeout_at(deadline, rx.recv()).await {
+                Ok(Ok(PtyEvent::Exited { pane, code })) => {
+                    assert_eq!(pane, 9);
+                    assert_eq!(code, 3, "the child's own status, not a stand-in");
+                    break;
+                }
+                Ok(Ok(_)) => {}
+                Ok(Err(_)) | Err(_) => panic!("never saw Exited"),
+            }
+        }
     }
 
     #[tokio::test]

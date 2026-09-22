@@ -438,7 +438,8 @@ async fn serve(
                     }
                 }
                 Ok(PtyEvent::Exited { pane, code }) => {
-                    app.mark_exited(pane).await;
+                    // The tree side of this is handled once, by the app's own
+                    // watcher; here we only forward it to this socket.
                     if app.visible(&grant).await.contains(&pane) {
                         let _ = tx.send(Out::Exited { pane, code }).await;
                     }
