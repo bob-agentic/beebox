@@ -438,7 +438,6 @@
   .titlebar {
     height: 38px;
     flex: 0 0 38px;
-    user-select: none;
     background: var(--panel);
     border-bottom: 1px solid var(--border);
     display: flex;

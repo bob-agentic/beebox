@@ -56,6 +56,25 @@ body {
   color: var(--fg);
   font: 13px/1.5 -apple-system, "Segoe UI", "PingFang SC", sans-serif;
   overflow: hidden;
+  /* Chrome is chrome, not a document. A native app's tab strip and sidebar do
+     not highlight when you drag across them, and ⌘A does not select the whole
+     interface — letting the browser's default through is what made this read
+     as a web page in a window. The terminal and real text fields opt back in
+     below; everything else is furniture. */
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+/* The content, which is a document: selecting output is how you copy it.
+   Descendants too — xterm renders its rows into children, and `user-select`
+   inherits, so naming the container alone leaves the text itself unselectable. */
+.xterm,
+.xterm *,
+input,
+textarea {
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 /* The window is undecorated and transparent, so macOS no longer rounds it for
