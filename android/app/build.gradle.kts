@@ -41,6 +41,9 @@ dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.activity:activity-ktx:1.9.3")
+    // For addDocumentStartJavaScript: the page must see the marker before its
+    // own bundle runs, because the socket URL is built at module scope.
+    implementation("androidx.webkit:webkit:1.12.1")
     // The scanner. ML Kit's bundled model keeps the first scan offline — a LAN
     // tool that needs the internet to read its own code would be absurd.
     implementation("com.google.mlkit:barcode-scanning:17.3.0")

@@ -12,6 +12,8 @@ import android.webkit.WebViewClient
 import androidx.activity.addCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import androidx.core.view.WindowInsetsCompat
 
 /**
@@ -31,6 +33,9 @@ class MainActivity : AppCompatActivity() {
     /** Where we last connected. A fold, a rotation, or the app being evicted
      *  should all come back to the same terminal rather than the scanner. */
     private var current: String? = null
+
+    /** The injected marker, kept so it can be replaced rather than stacked. */
+    private var marker: androidx.webkit.ScriptHandler? = null
 
     private val scan = registerForActivityResult(ScanContract()) { url ->
         if (url != null) open(url)
@@ -101,27 +106,42 @@ class MainActivity : AppCompatActivity() {
         return if (data.scheme == "beebox") httpFrom(data) else null
     }
 
-    /** Turns a share URI into the URL to load: http, and asking the terminal
-     *  to take its size from this screen.
-     *
-     *  The page gates that on `phone=1`, and it matters — a session laid out
-     *  at 160 columns hard-wraps into nonsense on a 46-column phone. The
-     *  desktop offers it as a checkbox because a desktop viewer may not want
-     *  it; here there is nothing to ask. This app only ever runs on a phone,
-     *  so it answers the question itself rather than making the link carry it. */
-    private fun httpFrom(uri: Uri): String {
-        val http = uri.buildUpon().scheme("http")
-        // appendQueryParameter would happily add a second copy; a URL that
-        // already carries the flag is left alone.
-        if (uri.getQueryParameter("phone") == null) http.appendQueryParameter("phone", "1")
-        return http.build().toString()
-    }
+    /** The scheme exists only to be claimable by the camera; the daemon
+     *  speaks http. Nothing else about the link is rewritten — what this
+     *  client is gets said once, in the injected marker, not smuggled through
+     *  every URL. */
+    private fun httpFrom(uri: Uri): String =
+        uri.buildUpon().scheme("http").build().toString()
 
     private fun open(url: String) {
         current = url
+        announceSelf(url)
         connect.visibility = View.GONE
         web.visibility = View.VISIBLE
         web.loadUrl(url)
+    }
+
+    /** Says what this client is, before the page's bundle runs.
+     *
+     *  The page builds its socket URL at module scope — including whether it
+     *  may drive the terminal's size — so a marker delivered after load would
+     *  arrive too late to matter. The desktop shell does the same thing with
+     *  `__BEEBOX__`.
+     *
+     *  The origin has to be exact: a wildcard rule that omits the host is
+     *  rejected at runtime, so the rule is built per connection. The previous
+     *  one is dropped first — the script is additive, and re-registering
+     *  without clearing would stack a copy per session. */
+    private fun announceSelf(url: String) {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
+        val uri = Uri.parse(url)
+        val origin = "${uri.scheme}://${uri.host}:${uri.port.takeIf { it != -1 } ?: 80}"
+        marker?.remove()
+        marker = WebViewCompat.addDocumentStartJavaScript(
+            web,
+            "window.__BEEBOX_APP__ = 'android';",
+            setOf(origin),
+        )
     }
 
     private fun showConnect() {
@@ -156,10 +176,11 @@ class MainActivity : AppCompatActivity() {
         }
         web.isVerticalScrollBarEnabled = false
         web.isHorizontalScrollBarEnabled = false
-        // Same reasoning as the desktop shell: a native app does not offer to
-        // select its own furniture. The terminal handles its own selection.
-        web.isLongClickable = false
-        web.setOnLongClickListener { true }
+        // Long-press is how you select text on a phone, and selecting terminal
+        // output is the whole point of having it on screen. An earlier attempt
+        // to suppress the browser's own long-press menu took the terminal's
+        // selection with it — the page already decides what is selectable, in
+        // CSS, and it does not need help here.
 
         web.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(

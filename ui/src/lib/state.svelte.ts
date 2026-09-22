@@ -110,12 +110,20 @@ class Store {
     // will fit (parsed and dropped) or less than it could (a half-empty
     // buffer). Read once at connect: it is what the first replay is sized to.
     const replay = settings.current.scrollback;
-    // Opt-in sizing, for a screen the terminal was not laid out for. A phone
-    // shown a 175-column terminal on a 44-column screen gets text overlapping
-    // itself — it has to be able to resize the terminal to be readable at all.
-    // The cost is that the owner's window resizes with it, so it is asked for
-    // rather than assumed.
-    this.sizing = new URLSearchParams(location.search).get('phone') === '1';
+    // Sizing, for a screen the terminal was not laid out for. A phone shown a
+    // 175-column terminal on a 44-column screen gets text overlapping itself —
+    // it has to be able to resize the terminal to be readable at all. The cost
+    // is that the owner's window resizes with it, so it is not assumed.
+    //
+    // The native shell injects this before the bundle runs, which is the whole
+    // reason it is a marker and not a query parameter: a client that knows
+    // what it is should say so once, rather than have every share link carry
+    // the answer around and leak it to whoever the link is forwarded to. The
+    // desktop checkbox still works, and still travels in the URL, because
+    // there the answer really is per-link.
+    const native = (window as any).__BEEBOX_APP__ !== undefined;
+    this.sizing =
+      native || new URLSearchParams(location.search).get('phone') === '1';
     const sizing = this.sizing;
     this.wsBase =
       `${proto}://${host}/ws${q}${q ? '&' : '?'}replay=${replay}` +
