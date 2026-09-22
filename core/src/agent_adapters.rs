@@ -10,8 +10,13 @@
 //!   claude-settings.json  hooks overlay passed via `claude --settings`
 //!   claude-wrapper.zsh    the wrapper function
 //!   zdot/.zshenv          ZDOTDIR shim, stage 1
+//!   zdot/.zprofile        ZDOTDIR shim, login stage (Homebrew's PATH)
 //!   zdot/.zshrc           ZDOTDIR shim, stage 2: user rc first, then wrapper
+//!   zdot/.zlogin          ZDOTDIR shim, login stage 2 (after .zshrc)
 //! ```
+//!
+//! One shim per startup file zsh reads, because panes run a login shell: a
+//! missing one is a file the user wrote that silently never runs.
 //!
 //! Everything is regenerated at startup, so upgrades never leave stale
 //! scripts behind. Nothing here writes outside the daemon home, and the shim
@@ -115,6 +120,30 @@ _beebox_shim="$ZDOTDIR"
 ZDOTDIR="${BEEBOX_USER_ZDOTDIR:-$HOME}"
 [ -f "$ZDOTDIR/.zshenv" ] && . "$ZDOTDIR/.zshenv"
 # Whatever the user's zshenv did, .zshrc must load from the shim exactly once.
+ZDOTDIR="$_beebox_shim"
+"#;
+
+/// The login stage. A login shell reads `$ZDOTDIR/.zprofile`, and since
+/// ZDOTDIR points at the shim, the user's own one would otherwise never run —
+/// which on macOS means no Homebrew, because `brew shellenv` lives there.
+const ZPROFILE: &str = r#"# BeeBox zsh shim (login stage). Plays the user's own .zprofile; a login
+# shell is what makes PATH from Homebrew and friends reach every pane.
+_beebox_shim="$ZDOTDIR"
+ZDOTDIR="${BEEBOX_USER_ZDOTDIR:-$HOME}"
+[ -f "$ZDOTDIR/.zprofile" ] && . "$ZDOTDIR/.zprofile"
+ZDOTDIR="$_beebox_shim"
+"#;
+
+/// The last login stage. Runs *after* `.zshrc`, so skipping it would not just
+/// drop the user's `.zlogin` — it would also let anything in there that the
+/// wrapper depends on land in the wrong order.
+///
+/// `.zlogout` needs no shim: panes are killed, never exited cleanly, so it
+/// would never run anyway.
+const ZLOGIN: &str = r#"# BeeBox zsh shim (login stage 2), after .zshrc.
+_beebox_shim="$ZDOTDIR"
+ZDOTDIR="${BEEBOX_USER_ZDOTDIR:-$HOME}"
+[ -f "$ZDOTDIR/.zlogin" ] && . "$ZDOTDIR/.zlogin"
 ZDOTDIR="$_beebox_shim"
 "#;
 
@@ -291,8 +320,13 @@ pub fn install(home: &Path) -> Result<AdapterAssets> {
     let codex_run = hooks_dir.join("codex-run");
     std::fs::write(&codex_run, CODEX_RUN)?;
     std::fs::set_permissions(&codex_run, std::fs::Permissions::from_mode(0o755))?;
+    // All four, because panes run a login shell: zsh then reads .zshenv,
+    // .zprofile, .zshrc and .zlogin from ZDOTDIR, and any file missing here is
+    // one the user wrote and never sees run.
     std::fs::write(zdot_dir.join(".zshenv"), ZSHENV)?;
+    std::fs::write(zdot_dir.join(".zprofile"), ZPROFILE)?;
     std::fs::write(zdot_dir.join(".zshrc"), ZSHRC)?;
+    std::fs::write(zdot_dir.join(".zlogin"), ZLOGIN)?;
 
     Ok(AdapterAssets { hooks_dir, zdot_dir })
 }
@@ -352,7 +386,9 @@ mod tests {
             assert!(a.hooks_dir.join(f).is_file(), "{f} missing");
         }
         assert!(a.zdot_dir.join(".zshenv").is_file());
+        assert!(a.zdot_dir.join(".zprofile").is_file());
         assert!(a.zdot_dir.join(".zshrc").is_file());
+        assert!(a.zdot_dir.join(".zlogin").is_file());
 
         // The settings must be valid JSON with all seven events wired.
         let s: serde_json::Value = serde_json::from_str(
@@ -370,6 +406,29 @@ mod tests {
             "SessionEnd",
         ] {
             assert!(hooks.contains_key(ev), "{ev} not hooked");
+        }
+    }
+
+    #[test]
+    fn the_shim_forwards_every_startup_file_zsh_reads() {
+        // Panes run `zsh -l -i`, so zsh looks for all four of these inside
+        // ZDOTDIR — which is the shim. Any one missing is a file the user
+        // wrote that silently stops running, and for .zprofile that means no
+        // Homebrew. This pins the pairing: add a startup file to the shell's
+        // argv and you must add its shim here.
+        let dir = tmp();
+        let a = install(&dir.0).unwrap();
+
+        for name in [".zshenv", ".zprofile", ".zshrc", ".zlogin"] {
+            let body = std::fs::read_to_string(a.zdot_dir.join(name)).unwrap();
+            assert!(
+                body.contains(&format!("$ZDOTDIR/{name}")),
+                "{name} shim must source the user's own {name}"
+            );
+            assert!(
+                body.contains("BEEBOX_USER_ZDOTDIR"),
+                "{name} shim must honour a user-set ZDOTDIR"
+            );
         }
     }
 

@@ -69,6 +69,8 @@ impl Store {
                 agent       TEXT NOT NULL,
                 session_ref TEXT
             );
+            -- cols/rows are added by the migration below rather than here, so
+            -- that new and upgraded databases end up with one shape.
 
             CREATE TABLE IF NOT EXISTS grants (
                 token      TEXT PRIMARY KEY,
@@ -117,6 +119,21 @@ impl Store {
         if !has_session_title {
             db.execute("ALTER TABLE panes ADD COLUMN session_title TEXT", [])?;
         }
+
+        // Viewport size, so a restart respawns at the size the pane actually
+        // had. It used to be restored as a hardcoded 80x24, and a shell drawing
+        // its first prompt at a width the terminal does not have leaves zsh's
+        // reverse-video `%` behind — the marker is erased by padding to an
+        // exact column count, so the wrong count erases nothing.
+        let has_cols = db
+            .prepare("SELECT 1 FROM pragma_table_info('panes') WHERE name = 'cols'")?
+            .exists([])?;
+        if !has_cols {
+            // Defaulted, not nullable: old rows then read back as the same
+            // guess they were already getting, with no Option to unwrap.
+            db.execute("ALTER TABLE panes ADD COLUMN cols INTEGER NOT NULL DEFAULT 80", [])?;
+            db.execute("ALTER TABLE panes ADD COLUMN rows INTEGER NOT NULL DEFAULT 24", [])?;
+        }
         Ok(())
     }
 
@@ -156,8 +173,8 @@ impl Store {
                 )?;
                 for pane in &tab.panes {
                     tx.execute(
-                        "INSERT INTO panes (id, tab_id, cmd, cwd, agent, session_ref, session_title)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                        "INSERT INTO panes (id, tab_id, cmd, cwd, agent, session_ref, session_title, cols, rows)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                         params![
                             to_db(pane.id),
                             to_db(tab.id),
@@ -165,7 +182,9 @@ impl Store {
                             pane.cwd,
                             pane.agent.map(crate::agent::agent_kind_str).unwrap_or(""),
                             pane.session_ref,
-                            pane.session_title
+                            pane.session_title,
+                            pane.cols,
+                            pane.rows
                         ],
                     )?;
                 }
@@ -203,7 +222,7 @@ impl Store {
                 let layout: Node = serde_json::from_str(&layout_json)?;
 
                 let mut pane_stmt = self.db.prepare(
-                    "SELECT id, cmd, cwd, agent, session_ref, session_title
+                    "SELECT id, cmd, cwd, agent, session_ref, session_title, cols, rows
                      FROM panes WHERE tab_id = ?1",
                 )?;
                 let panes: Vec<Pane> = pane_stmt
@@ -223,8 +242,11 @@ impl Store {
                             session_title: r.get(5)?,
                             cwd: r.get(2)?,
                             git: None,
-                            cols: 80,
-                            rows: 24,
+                            // The size this pane actually had. Restoring a
+                            // guess here is what made a restored shell draw
+                            // its prompt at the wrong width.
+                            cols: r.get(6)?,
+                            rows: r.get(7)?,
                             cmd: cmd.split_whitespace().map(str::to_string).collect(),
                             session_ref: r.get(4)?,
                         })
@@ -239,6 +261,11 @@ impl Store {
                 name,
                 path,
                 branch: String::new(),
+                // Which tab was in front is not persisted; after a restart the
+                // first one is the honest answer. Seeding it here rather than
+                // leaving None means switching workspaces behaves the same on
+                // the first switch as on every later one.
+                active_tab: tabs.first().map(|t| t.id),
                 tabs,
             });
         }
@@ -696,6 +723,30 @@ mod tests {
         let p = &t.workspaces[0].tabs[0].panes[0];
         assert!(p.agent.is_none(), "legacy 'SH' reads as no agent");
         assert!(p.session_title.is_none());
+        // Rows written before the size columns existed read back as the guess
+        // they were already being given, rather than failing to load.
+        assert_eq!((p.cols, p.rows), (80, 24));
         assert_eq!(s.load_agent_settings().unwrap(), crate::proto::AgentSettings::default());
+    }
+
+    #[test]
+    fn a_pane_keeps_its_size_across_a_restart() {
+        // The size used to be dropped on save and restored as a hardcoded
+        // 80x24, so every pane respawned at a width the terminal did not have.
+        let s = Store::in_memory().unwrap();
+        let mut tree = SessionTree::default();
+        let ws = tree.open_workspace("/w".into(), "w".into());
+        let tab = tree.open_tab(ws).unwrap();
+        {
+            let p = &mut tree.workspaces[0].tabs[0].panes[0];
+            p.cols = 203;
+            p.rows = 55;
+        }
+        s.save_tree(&tree).unwrap();
+
+        let back = s.load_tree().unwrap();
+        let p = &back.workspaces[0].tabs[0].panes[0];
+        assert_eq!((p.cols, p.rows), (203, 55), "the real viewport must survive a restart");
+        let _ = tab;
     }
 }

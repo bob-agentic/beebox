@@ -63,6 +63,11 @@ pub struct Workspace {
     pub name: String,
     pub path: String,
     pub branch: String,
+    /// The tab to return to when this workspace is activated without naming
+    /// one. Kept per workspace, not globally: coming back to a project should
+    /// land where you left it, and a single shared value cannot express that.
+    /// Not persisted — after a restart the first tab is the honest answer.
+    pub active_tab: Option<TabId>,
     pub tabs: Vec<Tab>,
 }
 
@@ -95,6 +100,7 @@ impl SessionTree {
             name,
             path,
             branch: String::new(),
+            active_tab: None,
             tabs: Vec::new(),
         });
         self.active_ws = Some(id);
@@ -107,8 +113,11 @@ impl SessionTree {
         };
         let removed = self.workspaces.remove(i);
         if self.active_ws == Some(ws) {
-            self.active_ws = self.workspaces.first().map(|w| w.id);
-            self.active_tab = None;
+            let next = self.workspaces.first();
+            self.active_ws = next.map(|w| w.id);
+            // Land on whatever that workspace was last showing, rather than
+            // leaving nothing active and making the tab bar pick for us.
+            self.active_tab = next.and_then(|w| w.active_tab.or(w.tabs.first().map(|t| t.id)));
         }
         removed
             .tabs
@@ -146,6 +155,7 @@ impl SessionTree {
             layout: Node::Leaf { pane: pane_id },
             panes: vec![pane],
         });
+        w.active_tab = Some(tab_id);
         self.active_ws = Some(ws);
         self.active_tab = Some(tab_id);
         Ok(tab_id)
@@ -155,8 +165,14 @@ impl SessionTree {
         for w in &mut self.workspaces {
             if let Some(i) = w.tabs.iter().position(|t| t.id == tab) {
                 let removed = w.tabs.remove(i);
+                let fallback = w.tabs.first().map(|t| t.id);
+                // The workspace must not go on pointing at a tab that is gone,
+                // or returning to it would find nothing to activate.
+                if w.active_tab == Some(tab) {
+                    w.active_tab = fallback;
+                }
                 if self.active_tab == Some(tab) {
-                    self.active_tab = w.tabs.first().map(|t| t.id);
+                    self.active_tab = fallback;
                 }
                 return removed.panes.iter().map(|p| p.id).collect();
             }

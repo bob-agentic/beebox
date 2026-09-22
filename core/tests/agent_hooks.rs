@@ -10,7 +10,13 @@ use beebox_core::store::Store;
 
 async fn served_app() -> (Arc<App>, SocketAddr) {
     let app = App::new(Store::in_memory().unwrap(), 100);
-    app.bootstrap("/tmp".into()).await.unwrap();
+    app.bootstrap().await.unwrap();
+    // bootstrap no longer opens a folder for us; these tests need one pane.
+    {
+        let mut t = app.tree.lock().await;
+        let ws = t.open_workspace("/tmp".into(), "tmp".into());
+        t.open_tab(ws).unwrap();
+    }
     // The six toggles default OFF; these tests exercise the pipeline with
     // Claude enabled. The gate itself is covered by its own tests below.
     app.set_agent_setting(AgentKind::Claude, AgentSetting::Status, true).await;

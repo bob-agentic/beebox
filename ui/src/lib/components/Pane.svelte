@@ -85,6 +85,35 @@
 
     term.open(host);
 
+    // WebKit drops the first Chinese full-width punctuation mark: `？` needs
+    // two presses, while Han characters are fine.
+    //
+    // xterm only accepts an `insertText` when `_keyDownSeen` is false, assuming
+    // the `input` for a keystroke arrives after its `keydown`. WebKit reverses
+    // that pair for IME direct-commit, and these marks need Shift — whose own
+    // keydown set the flag and whose keyup has not run yet — so the character
+    // is discarded. Han characters go through compositionend instead, which
+    // never consults the flag. Upstream: xtermjs/xterm.js#6144, still open.
+    //
+    // Clearing the flag before xterm's own capture-phase listener runs lets the
+    // character through its normal path. Nothing extra is sent, and the
+    // duplicate-suppression xterm already does is untouched — so this cannot
+    // double up. Composition is left strictly alone.
+    if ('__BEEBOX__' in window) {
+      host.addEventListener(
+        'beforeinput',
+        (ev: Event) => {
+          const e = ev as InputEvent;
+          if (e.inputType !== 'insertText' || !e.data) return;
+          const core = (term as any)._core;
+          if (core && !core._compositionHelper?.isComposing) {
+            core._keyDownSeen = false;
+          }
+        },
+        true,
+      );
+    }
+
     // WKWebView can parse output into the buffer without invalidating xterm's
     // compositing layer. Coalesce an explicit refresh to the next frame so a
     // busy agent still causes at most one extra paint per display frame.

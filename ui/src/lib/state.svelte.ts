@@ -258,9 +258,14 @@ class Store {
     // Focus follows the visible tab. Without this, opening a tab leaves focus
     // on the previous one, and ⌘D then splits a pane you cannot see.
     const visible = new Set(this.visiblePanes().map((p) => p.id));
+    const before = this.focused;
     if (this.focused === null || !visible.has(this.focused)) {
       this.focused = this.visiblePanes()[0]?.id ?? null;
     }
+    // Only when it actually moved. Every tree frame passes through here —
+    // a title change, a cwd poll — and re-asserting the keyboard on each one
+    // would pull the user out of whatever they were typing in.
+    if (this.focused !== before) this.applyFocus();
   }
 
   /** Called by a Pane once its Terminal is open. */
@@ -269,6 +274,11 @@ class Store {
     // Anything that arrived before the element existed.
     for (const chunk of this.buffered.get(pane) ?? []) term.write(chunk);
     this.buffered.delete(pane);
+    // The tree frame that chose this pane may have arrived before the element
+    // did, in which case applyFocus found nothing to focus. This is the other
+    // half of that race — without it the first pane after a cold start still
+    // needs a click.
+    if (this.focused === pane) this.applyFocus();
   }
 
   unregister(pane: PaneId) {
@@ -290,7 +300,38 @@ class Store {
 
   focus(pane: PaneId) {
     this.focused = pane;
-    this.terms.get(pane)?.term.focus();
+    this.applyFocus();
+  }
+
+  /** Puts the keyboard where `focused` already points.
+   *
+   *  Separate from `focus()` so a tree update can re-assert the keyboard
+   *  without re-deciding whose turn it is. Callers are responsible for only
+   *  invoking it when the focused pane actually changed; this method guards
+   *  against stealing focus, not against being called too often.
+   *
+   *  Panes are never unmounted — switching tabs only toggles a class, so the
+   *  scrollback survives — which is why this cannot live in an onMount. */
+  private applyFocus() {
+    if (this.focused === null) return;
+    const t = this.terms.get(this.focused);
+    // Not mounted yet; register() finishes the job.
+    if (!t) return;
+    const active = document.activeElement;
+    // Already here. Re-focusing would be a no-op in the DOM but still churns
+    // xterm's focus bookkeeping.
+    if (active === t.term.textarea) return;
+    // Someone is typing somewhere that is not a terminal — a rename box, a
+    // settings field. A tab switch behind a dialog must not yank the caret
+    // out of it.
+    if (
+      active instanceof HTMLElement &&
+      (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA') &&
+      !active.classList.contains('xterm-helper-textarea')
+    ) {
+      return;
+    }
+    t.term.focus();
   }
 
   /** Asks every mounted pane to re-measure. */
@@ -346,6 +387,11 @@ class Store {
     this.localWs = ws;
     this.localTab =
       tab ?? this.tree.workspaces.find((w) => w.id === ws)?.tabs[0]?.id ?? null;
+    // A viewer's navigation produces no tree frame, so reconcile never runs and
+    // would leave the keyboard on the pane they just navigated away from. They
+    // cannot type, but focus is also what makes PageUp scroll the scrollback.
+    this.focused = this.visiblePanes()[0]?.id ?? null;
+    this.applyFocus();
   }
 
   /** True when this is the owner looking at an app with no workspaces — a

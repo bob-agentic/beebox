@@ -74,7 +74,13 @@ exit 7
 
 async fn served(home: &Path) -> (Arc<App>, u16) {
     let app = App::new_with_adapters(Store::in_memory().unwrap(), 1000, home);
-    app.bootstrap("/tmp".into()).await.unwrap();
+    app.bootstrap().await.unwrap();
+    // bootstrap no longer opens a folder for us; these tests need one pane.
+    {
+        let mut t = app.tree.lock().await;
+        let ws = t.open_workspace("/tmp".into(), "tmp".into());
+        t.open_tab(ws).unwrap();
+    }
     app.set_agent_setting(AgentKind::Codex, AgentSetting::Status, true).await;
     app.set_agent_setting(AgentKind::Codex, AgentSetting::Resume, true).await;
     let router = beebox_core::http::router(app.clone(), None);

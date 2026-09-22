@@ -219,12 +219,18 @@ impl App {
         }
         let (cols, rows) = hint.unwrap_or((p.cols, p.rows));
 
-        // Interactive, not login. A login shell re-runs the full profile in
-        // every pane, and with a right-aligned prompt that means a redraw at
-        // the spawn size before the client's real viewport arrives — which is
-        // what leaves zsh's `%` partial-line marker on screen.
+        // Login and interactive, like every real terminal emulator. Without
+        // `-l` the shell skips `.zprofile`, which on macOS is where Homebrew
+        // puts its PATH — so a bundled app, whose environment comes from
+        // launchd rather than a shell, gave panes no `brew` at all.
+        //
+        // This was once blamed for zsh's reverse-video `%` marker and reverted.
+        // That was a misattribution: zsh erases the marker by padding to an
+        // exact column count, so it survives whenever the spawn size and the
+        // real viewport disagree — regardless of `-l`. The size is the bug,
+        // and it is fixed where the size comes from.
         let cmd = if p.cmd.is_empty() {
-            vec![self.shell.clone(), "-i".into()]
+            vec![self.shell.clone(), "-l".into(), "-i".into()]
         } else {
             p.cmd.clone()
         };
@@ -407,27 +413,29 @@ impl App {
                 let mut tree = self.tree.lock().await;
                 tree.active_ws = Some(ws);
                 match tab {
-                    Some(t) => tree.active_tab = Some(t),
-                    // Activating a workspace without naming a tab must still
-                    // land on one of *its* tabs — leaving the previous
-                    // workspace's tab id behind meant no tab matched, so the
-                    // tab bar showed no selection at all.
-                    None => {
-                        let stale = tree
-                            .active_tab
-                            .is_none_or(|t| !tree
-                                .workspaces
-                                .iter()
-                                .find(|w| w.id == ws)
-                                .is_some_and(|w| w.tabs.iter().any(|x| x.id == t)));
-                        if stale {
-                            tree.active_tab = tree
-                                .workspaces
-                                .iter()
-                                .find(|w| w.id == ws)
-                                .and_then(|w| w.tabs.first())
-                                .map(|t| t.id);
+                    Some(t) => {
+                        tree.active_tab = Some(t);
+                        // Remember it for the next return to this workspace —
+                        // but only if it really is one of its tabs. Recording
+                        // a foreign id would poison the memory permanently,
+                        // since nothing would ever match it again.
+                        if let Some(w) = tree.workspaces.iter_mut().find(|w| w.id == ws) {
+                            if w.tabs.iter().any(|x| x.id == t) {
+                                w.active_tab = Some(t);
+                            }
                         }
+                    }
+                    // Activating a workspace without naming a tab lands on the
+                    // one it was last showing. Keeping the *previous*
+                    // workspace's tab id here matched nothing, so the tab bar
+                    // lost its highlight entirely; falling back to the first
+                    // tab lost your place instead.
+                    None => {
+                        tree.active_tab = tree.workspaces.iter().find(|w| w.id == ws).and_then(|w| {
+                            w.active_tab
+                                .filter(|t| w.tabs.iter().any(|x| x.id == *t))
+                                .or_else(|| w.tabs.first().map(|t| t.id))
+                        });
                     }
                 }
                 drop(tree);
@@ -1315,6 +1323,114 @@ mod tests {
             reloaded.workspaces[0].tabs[0].panes[0].cwd,
             "/private/tmp/project",
             "the moved-to directory must be what a restart spawns into"
+        );
+    }
+
+    #[tokio::test]
+    async fn each_workspace_remembers_its_own_last_tab() {
+        // Switching projects and coming back used to dump you on the first tab,
+        // because "which tab is in front" was one value shared by every
+        // workspace: the id left over from the other project matched nothing
+        // here, so the fallback picked tab one.
+        let a = app().await;
+        let owner = a.owner_grant().await;
+        let ws1 = a.tree.lock().await.workspaces[0].id;
+
+        a.handle_owner(&owner, In::OpenTab { ws: ws1 }).await.unwrap();
+        let second = {
+            let t = a.tree.lock().await;
+            t.workspaces[0].tabs[1].id
+        };
+        a.handle_owner(&owner, In::Activate { ws: ws1, tab: Some(second) }).await.unwrap();
+
+        // Away to another project...
+        a.handle_owner(&owner, In::OpenWorkspace { path: "/tmp/other".into() }).await.unwrap();
+        let ws2 = a.tree.lock().await.workspaces[1].id;
+        assert_ne!(ws1, ws2);
+
+        // ...and back, by clicking the workspace (no tab named).
+        a.handle_owner(&owner, In::Activate { ws: ws1, tab: None }).await.unwrap();
+        assert_eq!(
+            a.tree.lock().await.active_tab,
+            Some(second),
+            "returning to a workspace lands on the tab it was last showing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_remembered_tab_that_was_closed_falls_back() {
+        let a = app().await;
+        let owner = a.owner_grant().await;
+        let ws = a.tree.lock().await.workspaces[0].id;
+
+        a.handle_owner(&owner, In::OpenTab { ws }).await.unwrap();
+        let (first, second) = {
+            let t = a.tree.lock().await;
+            (t.workspaces[0].tabs[0].id, t.workspaces[0].tabs[1].id)
+        };
+        a.handle_owner(&owner, In::Activate { ws, tab: Some(second) }).await.unwrap();
+        a.handle_owner(&owner, In::CloseTab { tab: second }).await.unwrap();
+
+        a.handle_owner(&owner, In::Activate { ws, tab: None }).await.unwrap();
+        assert_eq!(
+            a.tree.lock().await.active_tab,
+            Some(first),
+            "a remembered tab that no longer exists must not leave the bar empty"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_new_tab_opens_on_the_workspace_folder() {
+        // ⌘T sends only {open_tab, ws}: the folder is the workspace's, never
+        // wherever the last shell happened to have cd'd to. Moving the existing
+        // pane first is the whole point — with both at /tmp the assert would
+        // pass even if the new tab started inheriting a cwd.
+        //
+        // Asserted at creation time. The poller that would otherwise overwrite
+        // this (cwd::poll_forever) is spawned by main, not by App, so it does
+        // not run here.
+        let a = app().await;
+        let owner = a.owner_grant().await;
+        let (ws, old) = {
+            let t = a.tree.lock().await;
+            (t.workspaces[0].id, t.workspaces[0].tabs[0].panes[0].id)
+        };
+        a.update_cwd(old, "/private/tmp/elsewhere".into(), None).await;
+
+        a.handle_owner(&owner, In::OpenTab { ws }).await.unwrap();
+
+        let t = a.tree.lock().await;
+        let fresh = t.workspaces[0].tabs.last().unwrap();
+        assert_eq!(
+            fresh.panes[0].cwd, "/tmp",
+            "a new tab opens on the workspace folder, not on the last shell's cwd"
+        );
+        // No session to resume, so nothing can redirect it to another folder.
+        assert!(fresh.panes[0].session_ref.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_split_stays_where_you_were_looking() {
+        // The opposite rule to the one above, pinned here so nobody "unifies"
+        // the two: a split continues the pane it came from, cwd included.
+        let a = app().await;
+        let owner = a.owner_grant().await;
+        let src = {
+            let t = a.tree.lock().await;
+            t.workspaces[0].tabs[0].panes[0].id
+        };
+        a.update_cwd(src, "/private/tmp/elsewhere".into(), None).await;
+
+        a.handle_owner(&owner, In::Split { pane: src, dir: Dir::Vertical })
+            .await
+            .unwrap();
+
+        let t = a.tree.lock().await;
+        let panes = &t.workspaces[0].tabs[0].panes;
+        let fresh = panes.iter().find(|p| p.id != src).expect("split made a pane");
+        assert_eq!(
+            fresh.cwd, "/private/tmp/elsewhere",
+            "a split inherits the source pane's cwd"
         );
     }
 

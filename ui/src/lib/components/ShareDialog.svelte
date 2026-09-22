@@ -1,5 +1,6 @@
 <script lang="ts">
   import { store } from '../state.svelte';
+  import { writeClipboard } from '../clipboard';
   import type { GrantScope } from '../proto';
 
   let { onclose }: { onclose: () => void } = $props();
@@ -63,8 +64,10 @@
   // The Copy button must answer, or the user assumes it did nothing.
   let copied = $state<string | null>(null);
   let copiedTimer: ReturnType<typeof setTimeout> | null = null;
-  function copy(url: string) {
-    void navigator.clipboard?.writeText(url);
+  async function copy(url: string) {
+    // A share link is most often copied on the very device that cannot reach
+    // navigator.clipboard — a viewer on plain http. Hence the helper.
+    if (!(await writeClipboard(url))) return;
     copied = url;
     if (copiedTimer) clearTimeout(copiedTimer);
     copiedTimer = setTimeout(() => (copied = null), 1600);

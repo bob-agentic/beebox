@@ -8,7 +8,6 @@
 //! that file, and pipes each lifecycle event into it. If the wrapper or the
 //! sender misbehaves, this test — not a paying user — finds out.
 
-use std::io::Write as _;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
@@ -16,7 +15,7 @@ use std::time::Duration;
 
 use beebox_core::app::App;
 use beebox_core::proto::AgentPhase;
-use beebox_core::pty::{PtyEvent, Registry, Spawn};
+use beebox_core::pty::PtyEvent;
 use beebox_core::store::Store;
 
 struct Tmp(std::path::PathBuf);
@@ -69,7 +68,13 @@ exit 0
 
 async fn served(home: &Path) -> (Arc<App>, u16) {
     let app = App::new_with_adapters(Store::in_memory().unwrap(), 1000, home);
-    app.bootstrap("/tmp".into()).await.unwrap();
+    app.bootstrap().await.unwrap();
+    // bootstrap no longer opens a folder for us; these tests need one pane.
+    {
+        let mut t = app.tree.lock().await;
+        let ws = t.open_workspace("/tmp".into(), "tmp".into());
+        t.open_tab(ws).unwrap();
+    }
     // Toggles default OFF; this slice tests the enabled path.
     app.set_agent_setting(
         beebox_core::proto::AgentKind::Claude,
