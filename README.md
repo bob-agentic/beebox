@@ -4,7 +4,7 @@
 
 **A web terminal built for running many agent CLIs in parallel.**
 
-`v0.1.3`
+`v0.1.4`
 
 </div>
 
@@ -192,6 +192,13 @@ The window chrome color is derived from each theme's background, so none of the
   auto-resume on restart. OpenCode and bash/fish are explicitly skipped.
 - **Workspace interaction**: open = pick a directory, auto-prompt on cold start,
   right-click menu (Rename / Close).
+- **Share by QR code**: every share link is also offered as a code, so a phone
+  can join by pointing its camera at the screen. Codes carry a `beebox://` URL,
+  which a native client can claim, and tell the terminal to take its size from
+  the device that scanned it.
+- **Panes close when their shell does**: `exit` or `Ctrl-D` closes the pane, as
+  in iTerm2. A non-zero exit leaves it open with its output and a Restart
+  button — the case where you want to read what happened.
 
 ## Roadmap / TODO
 
