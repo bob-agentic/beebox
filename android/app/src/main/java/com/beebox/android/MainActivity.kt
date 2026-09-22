@@ -176,11 +176,23 @@ class MainActivity : AppCompatActivity() {
         }
         web.isVerticalScrollBarEnabled = false
         web.isHorizontalScrollBarEnabled = false
-        // Long-press is how you select text on a phone, and selecting terminal
-        // output is the whole point of having it on screen. An earlier attempt
-        // to suppress the browser's own long-press menu took the terminal's
-        // selection with it — the page already decides what is selectable, in
-        // CSS, and it does not need help here.
+        // Long-press is how you select text on a phone, and selecting output
+        // is most of why it is on screen. The terminal draws to a canvas, so
+        // there is no DOM text for the system to select — xterm implements
+        // selection itself, from pointer events. WebView's own long-press
+        // handler fires first and opens a menu about the app, which both
+        // swallows the gesture and is useless here. Returning true says it is
+        // handled; the pointer events still reach the page, which is the part
+        // that matters.
+        web.setOnLongClickListener { true }
+        // Leaving a session is the shell's to do: the page cannot show the
+        // connect screen, because the connect screen is not part of the page.
+        // Without this the only way out was killing the app from the
+        // recents list.
+        web.addJavascriptInterface(Bridge(), "__beeboxShell")
+        // Keeps the browser from also starting its own text selection on top
+        // of the terminal's — two selection models fighting over one gesture.
+        web.isHapticFeedbackEnabled = false
 
         web.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(
@@ -209,6 +221,19 @@ class MainActivity : AppCompatActivity() {
                 // Only the page itself failing is worth surfacing; a missing
                 // favicon should not throw the user back to the scanner.
                 if (request.isForMainFrame) showConnect()
+            }
+        }
+    }
+
+    /** What the page may ask the shell to do. Deliberately tiny: anything
+     *  larger would be the page driving the app rather than living in it. */
+    inner class Bridge {
+        @android.webkit.JavascriptInterface
+        fun disconnect() {
+            runOnUiThread {
+                current = null
+                web.loadUrl("about:blank")
+                showConnect()
             }
         }
     }

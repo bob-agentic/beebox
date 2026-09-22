@@ -408,6 +408,18 @@ class Store {
     t.term.focus();
   }
 
+  /** Jumps one pane's viewport to the oldest or newest line it holds.
+   *
+   *  Scrollback runs to tens of thousands of lines, which on a phone is more
+   *  flicks than anyone will make. The terminal already knows how to get
+   *  there in one step. */
+  jump(pane: PaneId, where: 'top' | 'bottom') {
+    const t = this.terms.get(pane);
+    if (!t) return;
+    if (where === 'top') t.term.scrollToTop();
+    else t.term.scrollToBottom();
+  }
+
   /** Asks every mounted pane to re-measure and say so, even if the numbers
    *  come out the same. Bound to the re-fit button, which only a client that
    *  drives its own size gets to see. */

@@ -21,6 +21,7 @@
     | 'moon'
     | 'qr'
     | 'refresh'
+    | 'unplug'
     | 'claude'
     | 'codex';
 
@@ -56,6 +57,10 @@
     moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
     // Lucide's refresh-cw. Two arcs with arrowheads, not a closed circle:
     // the gap is what makes it read as "again" rather than "loading".
+    // Lucide's unplug: a plug pulled clear of its socket, which says "leave
+    // this session" without implying the daemon is being stopped.
+    unplug:
+      '<path d="m19 5 3-3"/><path d="m2 22 3-3"/><path d="M6.3 20.3a2.4 2.4 0 0 0 3.4 0L12 18l-6-6-2.3 2.3a2.4 2.4 0 0 0 0 3.4Z"/><path d="M7.5 13.5 10 11"/><path d="M10.5 16.5 13 14"/><path d="m12 6 6 6 2.3-2.3a2.4 2.4 0 0 0 0-3.4l-2.6-2.6a2.4 2.4 0 0 0-3.4 0Z"/>',
     refresh:
       '<path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M21 21v-5h-5"/>',
     qr:

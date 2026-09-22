@@ -39,6 +39,10 @@
 
   /** The desktop shell's bridge, or undefined in a browser. */
   const shell = () => (window as any).__BEEBOX__;
+  /** The Android shell's bridge. Separate from the desktop one: they share no
+      methods, and conflating them would mean each having to answer for the
+      other's. */
+  const appShell = () => (window as any).__beeboxShell;
 
   /** Opening a workspace means choosing a folder — that is the whole model. Use
       the native folder chooser when the shell offers one; otherwise fall back
@@ -266,6 +270,19 @@
     >
       <Icon name="share" size={13} />
       Share
+    </button>
+  {/if}
+  <!-- Leaving a session, for the app: there is no address bar to navigate
+       away with, so without this the only way out is killing the app from
+       recents. The shell owns the connect screen, so it does the work. -->
+  {#if appShell()?.disconnect}
+    <button
+      class="tb-btn command"
+      aria-label="Disconnect"
+      title="Disconnect"
+      onclick={() => appShell().disconnect()}
+    >
+      <Icon name="unplug" size={15} />
     </button>
   {/if}
   <!-- Only where this client drives the terminal's size — which today means

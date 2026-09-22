@@ -264,7 +264,27 @@
     <span class="dims">{pane.cols}×{pane.rows}</span>
   </div>
 
-  <div class="term" bind:this={host}></div>
+  <div class="term-wrap">
+    <div class="term" bind:this={host}></div>
+
+    <!-- Scrollback runs to tens of thousands of lines, which is more flicks
+         than anyone will make on a phone. Only where there is no scroll wheel
+         and no keyboard to hold: on a desktop, Home and End already do this. -->
+    {#if store.sizing}
+      <div class="jumps">
+        <button
+          aria-label="Jump to the oldest line"
+          title="Oldest"
+          onclick={() => store.jump(pane.id, 'top')}
+        >↑</button>
+        <button
+          aria-label="Jump to the newest line"
+          title="Newest"
+          onclick={() => store.jump(pane.id, 'bottom')}
+        >↓</button>
+      </div>
+    {/if}
+  </div>
 
   <!-- Path belongs to the pane, not the workspace: two panes in one tab can
        sit in different directories. -->
@@ -348,16 +368,58 @@
     color: var(--fg);
   }
 
+  /* Wraps the terminal so the jump buttons can sit over it without taking
+     space from it or being clipped by its overflow. */
+  .term-wrap {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+  }
   .term {
     flex: 1;
     min-height: 0;
     padding: 7px 9px;
     overflow: hidden;
   }
+
+  .jumps {
+    position: absolute;
+    right: 6px;
+    bottom: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .jumps button {
+    width: 34px;
+    height: 34px;
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    /* Over terminal output, so it has to stay legible on any of 607 themes:
+       the panel colour carries the theme, the alpha keeps text readable
+       underneath. */
+    background: color-mix(in srgb, var(--panel) 82%, transparent);
+    color: var(--dim);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+    -webkit-backdrop-filter: blur(3px);
+    backdrop-filter: blur(3px);
+  }
+  .jumps button:active {
+    color: var(--fg);
+    background: var(--panel);
+  }
   /* xterm paints its own background; the padding around it must match or a
      rim of the wrong colour shows through. */
   .term :global(.xterm-viewport) {
     background: transparent !important;
+    /* Momentum, so a flick keeps going the way it does in a browser. Without
+       this the viewport stops dead with the finger, which on a phone reads as
+       the terminal being slow rather than as a scrolling model. */
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
   }
 
   .pane-foot {
