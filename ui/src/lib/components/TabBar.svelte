@@ -219,9 +219,14 @@
        here across the top — background alone was too subtle to spot. */
     box-shadow: inset 0 2px 0 var(--accent);
   }
+  /* Lifted rather than faded: the row is being carried, and a shadow says so
+     while keeping it readable. Opacity alone made it look disabled. */
   .tab:global(.dragging) {
-    opacity: 0.65;
     cursor: grabbing;
+    background: var(--panel-2);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+    /* The transform is the drag itself; nothing else may animate it. */
+    transition: none;
   }
   .agent {
     font-size: 9.5px;

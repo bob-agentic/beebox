@@ -202,11 +202,14 @@
     background: var(--panel-2);
     box-shadow: inset 2px 0 0 var(--accent);
   }
-  /* :global — the class is toggled by the sortable action, not the markup. */
+  /* :global — the class is toggled by the sortable action, not the markup.
+     Lifted rather than faded: the row is being carried, not disabled. */
   .ws:global(.dragging) {
-    opacity: 0.65;
     background: var(--panel-2);
     cursor: grabbing;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+    /* The transform is the drag itself; nothing else may animate it. */
+    transition: none;
   }
   .row1 {
     display: flex;

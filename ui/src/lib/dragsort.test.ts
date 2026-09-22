@@ -88,6 +88,63 @@ describe('sortable', () => {
     expect(commit.mock.calls[0][0]).toEqual([3, 1, 2]);
   });
 
+  it('carries the held row under the pointer', () => {
+    // Reordering the DOM without moving anything is what made this feel
+    // broken: nothing tracked the hand, so there was no sense of carrying a
+    // row at all.
+    const { rows } = makeList(3);
+    rows.forEach((el, i) =>
+      sortable(el, { id: i + 1, order: () => [1, 2, 3], commit: vi.fn() }),
+    );
+
+    rows[0].dispatchEvent(pointer('pointerdown', 20));
+    window.dispatchEvent(pointer('pointermove', 55));
+
+    expect(rows[0].classList.contains('dragging')).toBe(true);
+    expect(rows[0].style.transform).toBe('translateY(35px)');
+
+    // And it is put back on drop, so the row lands in its new slot rather
+    // than sitting 35px off it.
+    window.dispatchEvent(pointer('pointerup', 55));
+    expect(rows[0].style.transform).toBe('');
+    expect(rows[0].classList.contains('dragging')).toBe(false);
+  });
+
+  it('slides the displaced rows aside by exactly one slot', () => {
+    const { rows, size } = makeList(3);
+    rows.forEach((el, i) =>
+      sortable(el, { id: i + 1, order: () => [1, 2, 3], commit: vi.fn() }),
+    );
+
+    // Hold the first row over the second.
+    rows[0].dispatchEvent(pointer('pointerdown', 20));
+    window.dispatchEvent(pointer('pointermove', 20 + size));
+
+    // The row being passed steps back by one slot to open the gap; the one
+    // beyond it has no reason to move.
+    expect(rows[1].style.transform).toBe(`translateY(-${size}px)`);
+    expect(rows[2].style.transform).toBe('');
+
+    window.dispatchEvent(pointer('pointerup', 20 + size));
+    expect(rows[1].style.transform).toBe('');
+  });
+
+  it('cleans up when the pointer is cancelled mid-drag', () => {
+    // A system gesture can cancel a pointer. Without this the row keeps its
+    // transform and stays stuck out of place.
+    const { rows } = makeList(3);
+    rows.forEach((el, i) =>
+      sortable(el, { id: i + 1, order: () => [1, 2, 3], commit: vi.fn() }),
+    );
+
+    rows[0].dispatchEvent(pointer('pointerdown', 20));
+    window.dispatchEvent(pointer('pointermove', 55));
+    window.dispatchEvent(pointer('pointercancel', 55));
+
+    expect(rows[0].style.transform).toBe('');
+    expect(rows[0].classList.contains('dragging')).toBe(false);
+  });
+
   it('works along the x axis, for a tab strip', () => {
     const { rows } = makeList(3, 'x');
     const commit = vi.fn();

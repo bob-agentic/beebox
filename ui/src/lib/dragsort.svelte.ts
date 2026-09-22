@@ -4,6 +4,12 @@
 // `dragover` on the wrong targets in nested scroll containers, and behaves
 // differently in a webview than in a browser. Pointer events do the same job
 // with less to go wrong, and work with touch for free.
+//
+// The row you are holding follows the pointer under a transform, and the rows
+// it displaces slide out of its way. Reordering the DOM alone — which is what
+// this used to do — is correct and reads as broken: nothing tracks your hand,
+// so there is no sense of carrying anything, and every row it passes jumps
+// rather than moves.
 
 export interface SortOptions {
   /** Stable id of this row. */
@@ -17,6 +23,11 @@ export interface SortOptions {
   /** Skips the drag when the pointer started on one of these. */
   ignore?: string;
 }
+
+/** Long enough that a sloppy click is not a drag, short enough to feel direct. */
+const SLOP = 4;
+/** One frame under 200ms reads as instant while still being followable. */
+const SLIDE_MS = 180;
 
 export function sortable(node: HTMLElement, opts: SortOptions) {
   let current = opts;
@@ -32,53 +43,112 @@ export function sortable(node: HTMLElement, opts: SortOptions) {
     const startPos = axis === 'y' ? e.clientY : e.clientX;
     let dragging = false;
 
-    const siblings = () =>
+    // Measured once the drag starts, so the arithmetic below is not fighting
+    // the transforms it is applying.
+    let slot = 0;
+    let home = 0;
+    let index = 0;
+    let others: { el: HTMLElement; home: number; shift: number }[] = [];
+
+    const rows = () =>
       [...(node.parentElement?.children ?? [])].filter(
         (el): el is HTMLElement => el instanceof HTMLElement && el.dataset.sortId != null,
       );
 
+    const offsetOf = (el: HTMLElement) => {
+      const r = el.getBoundingClientRect();
+      return axis === 'y' ? r.top : r.left;
+    };
+    const sizeOf = (el: HTMLElement) => {
+      const r = el.getBoundingClientRect();
+      return axis === 'y' ? r.height : r.width;
+    };
+
+    function begin(ev: PointerEvent) {
+      dragging = true;
+      const all = rows();
+      index = all.indexOf(node);
+      home = offsetOf(node);
+      // The gap a row leaves behind is its own size plus whatever the list puts
+      // between rows; reading it from the next row keeps CSS `gap` out of here.
+      const next = all[index + 1];
+      slot = next ? offsetOf(next) - home : sizeOf(node);
+
+      others = all
+        .filter((el) => el !== node)
+        .map((el) => ({ el, home: offsetOf(el), shift: 0 }));
+
+      node.classList.add('dragging');
+      // Above its neighbours while it is in hand, or it slides underneath them.
+      node.style.zIndex = '5';
+      node.style.position = 'relative';
+      node.setPointerCapture(ev.pointerId);
+      for (const o of others) o.el.style.transition = `transform ${SLIDE_MS}ms ease`;
+    }
+
     function move(ev: PointerEvent) {
       const pos = axis === 'y' ? ev.clientY : ev.clientX;
-      // A few pixels of slop, so a click is still a click.
-      if (!dragging && Math.abs(pos - startPos) < 5) return;
+      if (!dragging && Math.abs(pos - startPos) < SLOP) return;
+      if (!dragging) begin(ev);
 
-      if (!dragging) {
-        dragging = true;
-        node.classList.add('dragging');
-        node.setPointerCapture(ev.pointerId);
-      }
+      const delta = pos - startPos;
+      // The held row tracks the pointer exactly. No transition on this one:
+      // easing the thing under your finger is what makes a drag feel laggy.
+      node.style.transform =
+        axis === 'y' ? `translateY(${delta}px)` : `translateX(${delta}px)`;
 
-      // Move to wherever the pointer is, not one place towards it: swapping
-      // with a single neighbour per event leaves a fast drag stranded partway.
-      const others = siblings().filter((el) => el !== node);
-      const parent = node.parentElement;
-      if (!parent) return;
+      // How many slots it has travelled, by where its own leading edge now sits.
+      const moved = Math.round(delta / slot);
+      const dest = Math.max(0, Math.min(others.length, index + moved));
 
-      // The first row whose midpoint is past the pointer is the insertion
-      // point; if there is none, the pointer is past the end.
-      const target = others.find((el) => {
-        const r = el.getBoundingClientRect();
-        const mid = axis === 'y' ? r.top + r.height / 2 : r.left + r.width / 2;
-        return pos < mid;
-      });
-
-      if (target) {
-        if (node.nextSibling !== target) parent.insertBefore(node, target);
-      } else {
-        const last = others[others.length - 1];
-        if (last && node.previousSibling !== last) {
-          parent.insertBefore(node, last.nextSibling);
+      // Everything between the row's old index and its new one steps aside by
+      // exactly one slot — the space the held row will occupy.
+      for (let i = 0; i < others.length; i++) {
+        const o = others[i];
+        // Index of this row in the list as it looks with `node` taken out.
+        const before = i < index;
+        let shift = 0;
+        if (before && i >= dest) shift = slot;
+        else if (!before && i < dest) shift = -slot;
+        if (o.shift !== shift) {
+          o.shift = shift;
+          o.el.style.transform = shift
+            ? axis === 'y'
+              ? `translateY(${shift}px)`
+              : `translateX(${shift}px)`
+            : '';
         }
       }
+      (node as any).__dest = dest;
     }
 
     function up(ev: PointerEvent) {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
       if (!dragging) return;
 
+      const dest: number = (node as any).__dest ?? index;
+      delete (node as any).__dest;
+
+      // Drop the transforms in the same frame the DOM order changes, so the
+      // row lands where it already appears to be instead of flashing home.
+      for (const o of others) {
+        o.el.style.transition = '';
+        o.el.style.transform = '';
+      }
       node.classList.remove('dragging');
+      node.style.transform = '';
+      node.style.zIndex = '';
+      node.style.position = '';
       if (node.hasPointerCapture(ev.pointerId)) node.releasePointerCapture(ev.pointerId);
+
+      const parent = node.parentElement;
+      if (parent) {
+        const rest = rows().filter((el) => el !== node);
+        const anchor = rest[dest] ?? null;
+        parent.insertBefore(node, anchor);
+      }
 
       // Suppress the click that would otherwise follow the drop.
       const swallow = (c: Event) => {
@@ -88,7 +158,7 @@ export function sortable(node: HTMLElement, opts: SortOptions) {
       window.addEventListener('click', swallow, { capture: true, once: true });
       setTimeout(() => window.removeEventListener('click', swallow, { capture: true }), 0);
 
-      const next = siblings()
+      const next = rows()
         .map((el) => Number(el.dataset.sortId))
         .filter((n) => Number.isFinite(n));
       const before = current.order();
@@ -99,6 +169,9 @@ export function sortable(node: HTMLElement, opts: SortOptions) {
 
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
+    // A cancelled pointer (a system gesture, a lost capture) must not leave the
+    // row stuck mid-drag with a transform on it.
+    window.addEventListener('pointercancel', up);
   }
 
   node.addEventListener('pointerdown', down);
