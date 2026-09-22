@@ -208,6 +208,8 @@ pub struct PaneView {
 pub struct TabView {
     pub id: TabId,
     pub title: String,
+    /// Set aside: the tab keeps running but is off the strip, in the den.
+    pub hibernated: bool,
     /// Authoritative for structure. Pane membership is never derived from
     /// anywhere else.
     pub layout: Node,
@@ -439,6 +441,13 @@ pub enum In {
     RenameTab {
         tab: TabId,
         title: String,
+    },
+
+    /// Sets a tab aside, or brings it back. The tab and its processes survive
+    /// either way — only its place on the strip changes.
+    HibernateTab {
+        tab: TabId,
+        on: bool,
     },
     /// Drag to reorder. The client sends the full order rather than a
     /// from/to pair, so a dropped frame cannot leave the two sides disagreeing.

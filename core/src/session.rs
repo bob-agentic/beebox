@@ -51,6 +51,10 @@ pub struct Pane {
 pub struct Tab {
     pub id: TabId,
     pub title: String,
+    /// Set aside rather than closed: the tab keeps its panes and its processes
+    /// keep running, it just gives up its place on the strip. For the ones you
+    /// are not working on now but do not want to lose.
+    pub hibernated: bool,
     /// Authoritative for structure. Membership is never derived from anywhere
     /// else.
     pub layout: Node,
@@ -94,9 +98,25 @@ impl Workspace {
         }
     }
 
-    /// The tab in front, if it still exists.
+    /// The tab in front.
+    ///
+    /// Hibernated tabs are skipped: they still exist, so the history can still
+    /// name one, but they are not on the strip and landing on one would leave
+    /// nothing selected.
     pub fn active_tab(&self) -> Option<TabId> {
-        self.recent.first().copied()
+        self.recent
+            .iter()
+            .copied()
+            .find(|id| self.awake(*id))
+            .or_else(|| self.first_awake())
+    }
+
+    fn awake(&self, tab: TabId) -> bool {
+        self.tabs.iter().any(|t| t.id == tab && !t.hibernated)
+    }
+
+    fn first_awake(&self) -> Option<TabId> {
+        self.tabs.iter().find(|t| !t.hibernated).map(|t| t.id)
     }
 
     /// Records `tab` as the one in front, keeping the previous order behind it.
@@ -110,12 +130,31 @@ impl Workspace {
     fn prune_recent(&mut self) {
         let tabs = &self.tabs;
         self.recent.retain(|id| tabs.iter().any(|t| t.id == *id));
-        // A workspace always has somewhere to be, as long as it has tabs.
-        if self.recent.is_empty() {
-            if let Some(first) = self.tabs.first() {
-                self.recent.push(first.id);
+        // A workspace always has somewhere to be, as long as it has a tab that
+        // is actually on the strip. Hibernated ones do not count.
+        if self.active_tab().is_none() {
+            if let Some(first) = self.first_awake() {
+                self.recent.insert(0, first);
             }
         }
+    }
+
+    /// Sets a tab aside, or brings it back. Unlike closing, the tab and its
+    /// processes stay — only its place on the strip is given up.
+    fn set_hibernated(&mut self, tab: TabId, on: bool) {
+        let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
+            return;
+        };
+        t.hibernated = on;
+        if on {
+            // Drop it from the history so the tab behind it comes forward,
+            // exactly as closing would.
+            self.recent.retain(|id| *id != tab);
+        } else {
+            // Waking one is a visit: it should be what you are looking at.
+            self.touch_tab(tab);
+        }
+        self.prune_recent();
     }
 }
 
@@ -200,6 +239,7 @@ impl SessionTree {
         w.tabs.push(Tab {
             id: tab_id,
             title: String::new(),
+            hibernated: false,
             layout: Node::Leaf { pane: pane_id },
             panes: vec![pane],
         });
@@ -226,6 +266,26 @@ impl SessionTree {
             }
         }
         Vec::new()
+    }
+
+    /// Sets a tab aside, or brings it back.
+    ///
+    /// Deliberately not a variant of `close_tab`: nothing is removed and no
+    /// pane ids are returned, because returning them is how closing tells the
+    /// caller which processes to kill. A hibernated tab keeps running.
+    pub fn hibernate_tab(&mut self, tab: TabId, on: bool) {
+        for w in &mut self.workspaces {
+            if w.tabs.iter().any(|t| t.id == tab) {
+                w.set_hibernated(tab, on);
+                // Follow the workspace's own choice of what is in front now.
+                if self.active_ws == Some(w.id)
+                    && (on && self.active_tab == Some(tab) || !on)
+                {
+                    self.active_tab = w.active_tab();
+                }
+                return;
+            }
+        }
     }
 
     /// Splits `pane` in `dir`, returning the new pane. The new pane inherits
@@ -390,6 +450,10 @@ impl SessionTree {
                         Some(TabView {
                             id: t.id,
                             title: t.title.clone(),
+                            // Sent, not filtered out here: the tab still exists
+                            // and its panes are still reachable. Which tabs the
+                            // strip draws is the client's business.
+                            hibernated: t.hibernated,
                             layout,
                             panes,
                         })

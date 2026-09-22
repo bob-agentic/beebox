@@ -145,6 +145,43 @@ describe('sortable', () => {
     expect(rows[0].classList.contains('dragging')).toBe(false);
   });
 
+  it('reports a drop on the zone instead of a reorder', () => {
+    // Dropping a tab on the den takes it out of the list, so the lengths can
+    // never match — the reorder path would discard it silently.
+    const { rows } = makeList(3);
+    const commit = vi.fn();
+    const drop = vi.fn();
+
+    const zone = document.createElement('div');
+    zone.className = 'den';
+    document.body.appendChild(zone);
+    // jsdom resolves elementFromPoint to nothing; point it at the zone.
+    const from = document.elementFromPoint;
+    document.elementFromPoint = () => zone;
+
+    try {
+      rows.forEach((el, i) =>
+        sortable(el, {
+          id: i + 1,
+          order: () => [1, 2, 3],
+          commit,
+          drop,
+          dropTarget: '.den',
+        }),
+      );
+      drag(rows[0], 20, 90);
+
+      expect(drop).toHaveBeenCalledWith(1);
+      expect(commit).not.toHaveBeenCalled();
+      expect(zone.classList.contains('drop-over')).toBe(false);
+      // The row is left where it was: the server's next tree removes it.
+      expect(rows[0].style.transform).toBe('');
+    } finally {
+      document.elementFromPoint = from;
+      zone.remove();
+    }
+  });
+
   it('works along the x axis, for a tab strip', () => {
     const { rows } = makeList(3, 'x');
     const commit = vi.fn();

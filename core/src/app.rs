@@ -432,11 +432,13 @@ impl App {
                     // lost its highlight entirely; falling back to the first
                     // tab lost your place instead.
                     None => {
-                        tree.active_tab = tree.workspaces.iter().find(|w| w.id == ws).and_then(|w| {
-                            w.active_tab()
-                                .filter(|t| w.tabs.iter().any(|x| x.id == *t))
-                                .or_else(|| w.tabs.first().map(|t| t.id))
-                        });
+                        // `active_tab` already skips hibernated tabs and falls
+                        // back to the first one on the strip.
+                        tree.active_tab = tree
+                            .workspaces
+                            .iter()
+                            .find(|w| w.id == ws)
+                            .and_then(|w| w.active_tab());
                     }
                 }
                 drop(tree);
@@ -498,6 +500,12 @@ impl App {
                 if let Some(t) = self.tree.lock().await.tab_mut(tab) {
                     t.title = title.trim().to_string();
                 }
+                self.commit().await;
+            }
+            In::HibernateTab { tab, on } => {
+                // No pty is touched: the point of setting a tab aside rather
+                // than closing it is that whatever is running keeps running.
+                self.tree.lock().await.hibernate_tab(tab, on);
                 self.commit().await;
             }
             In::ReorderWorkspaces { order } => {
@@ -1356,6 +1364,87 @@ mod tests {
             Some(second),
             "returning to a workspace lands on the tab it was last showing"
         );
+    }
+
+    #[tokio::test]
+    async fn hibernating_a_tab_keeps_its_terminal_running() {
+        // The whole point of setting a tab aside rather than closing it: the
+        // agent in there carries on, and is still there when you come back.
+        let a = app().await;
+        let owner = a.owner_grant().await;
+        let (tab, pane) = {
+            let t = a.tree.lock().await;
+            (t.workspaces[0].tabs[0].id, t.workspaces[0].tabs[0].panes[0].id)
+        };
+        a.ensure_running(pane).await.unwrap();
+        let live = a.ptys.live_count();
+        assert_eq!(live, 1);
+
+        a.handle_owner(&owner, In::HibernateTab { tab, on: true }).await.unwrap();
+
+        assert_eq!(a.ptys.live_count(), live, "hibernating must not kill a pty");
+        let t = a.tree.lock().await;
+        assert!(t.workspaces[0].tabs[0].hibernated);
+        assert_eq!(t.workspaces[0].tabs.len(), 1, "the tab is set aside, not removed");
+    }
+
+    #[tokio::test]
+    async fn hibernating_the_current_tab_moves_you_off_it() {
+        // You cannot be left looking at a tab that is no longer on the strip.
+        let a = app().await;
+        let owner = a.owner_grant().await;
+        let ws = a.tree.lock().await.workspaces[0].id;
+        a.handle_owner(&owner, In::OpenTab { ws }).await.unwrap();
+        let (first, second) = {
+            let t = a.tree.lock().await;
+            (t.workspaces[0].tabs[0].id, t.workspaces[0].tabs[1].id)
+        };
+        assert_eq!(a.tree.lock().await.active_tab, Some(second));
+
+        a.handle_owner(&owner, In::HibernateTab { tab: second, on: true }).await.unwrap();
+        assert_eq!(a.tree.lock().await.active_tab, Some(first));
+
+        // And waking it brings you back to it.
+        a.handle_owner(&owner, In::HibernateTab { tab: second, on: false }).await.unwrap();
+        assert_eq!(a.tree.lock().await.active_tab, Some(second));
+    }
+
+    #[tokio::test]
+    async fn hibernating_every_tab_keeps_the_workspace() {
+        // Closing the last tab takes its workspace along; setting them all
+        // aside must not, or the den would be a way to lose a project.
+        let a = app().await;
+        let owner = a.owner_grant().await;
+        let (ws, tab) = {
+            let t = a.tree.lock().await;
+            (t.workspaces[0].id, t.workspaces[0].tabs[0].id)
+        };
+
+        a.handle_owner(&owner, In::HibernateTab { tab, on: true }).await.unwrap();
+
+        let t = a.tree.lock().await;
+        assert_eq!(t.workspaces.len(), 1, "the workspace survives an empty strip");
+        assert_eq!(t.workspaces[0].id, ws);
+        assert_eq!(t.active_tab, None, "nothing on the strip to be active");
+    }
+
+    #[tokio::test]
+    async fn a_hibernated_tab_is_never_activated_by_fallback() {
+        // Clicking the workspace must land on a tab you can actually see.
+        let a = app().await;
+        let owner = a.owner_grant().await;
+        let ws = a.tree.lock().await.workspaces[0].id;
+        a.handle_owner(&owner, In::OpenTab { ws }).await.unwrap();
+        let (first, second) = {
+            let t = a.tree.lock().await;
+            (t.workspaces[0].tabs[0].id, t.workspaces[0].tabs[1].id)
+        };
+
+        // Set the *first* aside, then ask for the workspace with no tab named.
+        a.handle_owner(&owner, In::HibernateTab { tab: first, on: true }).await.unwrap();
+        a.handle_owner(&owner, In::Activate { ws, tab: None }).await.unwrap();
+
+        assert_eq!(a.tree.lock().await.active_tab, Some(second));
     }
 
     #[tokio::test]

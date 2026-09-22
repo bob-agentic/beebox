@@ -22,6 +22,10 @@ export interface SortOptions {
   axis?: 'x' | 'y';
   /** Skips the drag when the pointer started on one of these. */
   ignore?: string;
+  /** Selector for somewhere outside the list a row can be dropped instead. */
+  dropTarget?: string;
+  /** Called instead of `commit` when the drop landed on `dropTarget`. */
+  drop?: (id: number) => void;
 }
 
 /** Long enough that a sloppy click is not a drag, short enough to feel direct. */
@@ -49,6 +53,8 @@ export function sortable(node: HTMLElement, opts: SortOptions) {
     let home = 0;
     let index = 0;
     let others: { el: HTMLElement; home: number; shift: number }[] = [];
+    /** The drop target currently under the pointer, if any. */
+    let overZone: Element | null = null;
 
     const rows = () =>
       [...(node.parentElement?.children ?? [])].filter(
@@ -92,6 +98,30 @@ export function sortable(node: HTMLElement, opts: SortOptions) {
       if (!dragging) begin(ev);
 
       const delta = pos - startPos;
+
+      // Over the drop target? Then this is not a reorder, and the rows must
+      // not shuffle as though it were.
+      const zone = current.dropTarget
+        ? document
+            .elementFromPoint(ev.clientX, ev.clientY)
+            ?.closest(current.dropTarget) ?? null
+        : null;
+      if (zone !== overZone) {
+        overZone?.classList.remove('drop-over');
+        zone?.classList.add('drop-over');
+        overZone = zone;
+      }
+      if (zone) {
+        node.style.transform =
+          axis === 'y' ? `translateY(${delta}px)` : `translateX(${delta}px)`;
+        for (const o of others) {
+          if (o.shift !== 0) {
+            o.shift = 0;
+            o.el.style.transform = '';
+          }
+        }
+        return;
+      }
       // The held row tracks the pointer exactly. No transition on this one:
       // easing the thing under your finger is what makes a drag feel laggy.
       node.style.transform =
@@ -143,20 +173,31 @@ export function sortable(node: HTMLElement, opts: SortOptions) {
       node.style.position = '';
       if (node.hasPointerCapture(ev.pointerId)) node.releasePointerCapture(ev.pointerId);
 
-      const parent = node.parentElement;
-      if (parent) {
-        const rest = rows().filter((el) => el !== node);
-        const anchor = rest[dest] ?? null;
-        parent.insertBefore(node, anchor);
-      }
-
-      // Suppress the click that would otherwise follow the drop.
+      // Suppress the click that would otherwise follow the drop. Registered
+      // before the early return below, because dropping on the zone would
+      // otherwise activate the very row it just took away.
       const swallow = (c: Event) => {
         c.stopPropagation();
         c.preventDefault();
       };
       window.addEventListener('click', swallow, { capture: true, once: true });
       setTimeout(() => window.removeEventListener('click', swallow, { capture: true }), 0);
+
+      if (overZone) {
+        overZone.classList.remove('drop-over');
+        overZone = null;
+        // The DOM is left alone: the row is about to leave this list, and the
+        // server's next tree is what removes it.
+        current.drop?.(current.id);
+        return;
+      }
+
+      const parent = node.parentElement;
+      if (parent) {
+        const rest = rows().filter((el) => el !== node);
+        const anchor = rest[dest] ?? null;
+        parent.insertBefore(node, anchor);
+      }
 
       const next = rows()
         .map((el) => Number(el.dataset.sortId))

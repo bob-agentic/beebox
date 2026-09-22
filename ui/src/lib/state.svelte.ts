@@ -366,9 +366,12 @@ class Store {
   /** ⌘] / ⌘[ — move through the current workspace's tabs. */
   cycleTab(delta: number) {
     const ws = this.activeWs;
-    if (!ws || ws.tabs.length < 2) return;
-    const i = ws.tabs.findIndex((t) => t.id === this.activeTab?.id);
-    const next = ws.tabs[(i + delta + ws.tabs.length) % ws.tabs.length];
+    // Only what is on the strip: cycling onto a hibernated tab would move you
+    // somewhere with nothing to show.
+    const tabs = this.liveTabs;
+    if (!ws || tabs.length < 2) return;
+    const i = tabs.findIndex((t) => t.id === this.activeTab?.id);
+    const next = tabs[(i + delta + tabs.length) % tabs.length];
     this.activate(ws.id, next.id);
   }
 
@@ -379,11 +382,26 @@ class Store {
     return this.tree.workspaces.find((w) => w.id === id) ?? this.tree.workspaces[0];
   }
 
+  /** The tabs on the strip. Hibernated ones still exist and still run; they
+      have simply given up their place, so everything that walks the strip —
+      the tab bar, ⌘]/⌘[, the duplicate-name numbering — goes through here. */
+  get liveTabs() {
+    return this.activeWs?.tabs.filter((t) => !t.hibernated) ?? [];
+  }
+
+  /** The tabs set aside, in the den. */
+  get hibernatedTabs() {
+    return this.activeWs?.tabs.filter((t) => t.hibernated) ?? [];
+  }
+
   get activeTab() {
     const ws = this.activeWs;
     if (!ws) return undefined;
     const id = this.localTab ?? this.tree.active_tab;
-    return ws.tabs.find((t) => t.id === id) ?? ws.tabs[0];
+    const live = this.liveTabs;
+    // Never a hibernated tab, even as a fallback: it is not on the strip, so
+    // landing on one would leave the bar with nothing selected.
+    return live.find((t) => t.id === id) ?? live[0];
   }
 
   /** Viewer-local navigation. `Activate` is owner-only on the server — the
@@ -400,7 +418,11 @@ class Store {
     }
     this.localWs = ws;
     this.localTab =
-      tab ?? this.tree.workspaces.find((w) => w.id === ws)?.tabs[0]?.id ?? null;
+      tab ??
+      this.tree.workspaces
+        .find((w) => w.id === ws)
+        ?.tabs.find((t) => !t.hibernated)?.id ??
+      null;
     // A viewer's navigation produces no tree frame, so reconcile never runs and
     // would leave the keyboard on the pane they just navigated away from. They
     // cannot type, but focus is also what makes PageUp scroll the scrollback.

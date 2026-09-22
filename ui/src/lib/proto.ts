@@ -73,6 +73,8 @@ export interface PaneView {
 export interface TabView {
   id: TabId;
   title: string;
+  /** Set aside: still running, just not on the strip. */
+  hibernated: boolean;
   layout: Node;
   panes: PaneView[];
 }
@@ -150,6 +152,7 @@ export type In =
   | { t: 'close_workspace'; ws: WsId }
   | { t: 'rename_workspace'; ws: WsId; name: string }
   | { t: 'rename_tab'; tab: TabId; title: string }
+  | { t: 'hibernate_tab'; tab: TabId; on: boolean }
   | { t: 'reorder_workspaces'; order: WsId[] }
   | { t: 'reorder_tabs'; ws: WsId; order: TabId[] }
   | { t: 'create_grant'; scope: GrantScope; writable: boolean; pairing: boolean }
