@@ -325,17 +325,25 @@ impl App {
         self.tree.lock().await.pane(pane)?.pty
     }
 
-    /// Applies a viewport. Only the owner's counts: a PTY has one size, and two
-    /// viewers with different windows would otherwise flap it, repainting the
-    /// whole TUI each time.
+    /// Applies a viewport.
+    ///
+    /// A PTY has one size, so not everyone watching gets to set it — two
+    /// windows of different widths would flap it between them, repainting the
+    /// whole TUI on every change. Normally that means the owner decides.
+    ///
+    /// `sizing` lets a share link opt in: a phone is useless as a viewer of a
+    /// 175-column terminal, since the text arrives laid out for a screen it
+    /// does not have and overlaps itself. Such a link takes the terminal with
+    /// it, which is the trade the person sharing agreed to.
     pub async fn set_viewport(
         &self,
         grant: &Grant,
+        sizing: bool,
         pane: PaneId,
         cols: u16,
         rows: u16,
     ) -> Option<(u16, u16)> {
-        if !grant.may_mutate() {
+        if !grant.may_mutate() && !sizing {
             return None;
         }
         if cols == 0 || rows == 0 {
@@ -1201,14 +1209,21 @@ mod tests {
 
         // A read-only viewer reaching in would repaint the owner's TUI.
         let viewer = shared(Scope::Pane(pane), false);
-        assert!(a.set_viewport(&viewer, pane, 40, 10).await.is_none());
+        assert!(a.set_viewport(&viewer, false, pane, 40, 10).await.is_none());
 
         // So would a writable one: size is not a write, it is ownership.
         let writable_viewer = shared(Scope::Pane(pane), true);
-        assert!(a.set_viewport(&writable_viewer, pane, 40, 10).await.is_none());
+        assert!(a.set_viewport(&writable_viewer, false, pane, 40, 10).await.is_none());
+        // ...unless the link it came from was granted sizing: a phone cannot
+        // read a terminal laid out for a screen it does not have.
+        assert_eq!(
+            a.set_viewport(&writable_viewer, true, pane, 40, 10).await,
+            Some((40, 10)),
+            "a link with sizing rights may resize the terminal"
+        );
 
         let owner = a.owner_grant().await;
-        assert_eq!(a.set_viewport(&owner, pane, 96, 38).await, Some((96, 38)));
+        assert_eq!(a.set_viewport(&owner, false, pane, 96, 38).await, Some((96, 38)));
         assert_eq!(a.tree.lock().await.pane(pane).unwrap().cols, 96);
     }
 

@@ -103,7 +103,15 @@ class Store {
     // will fit (parsed and dropped) or less than it could (a half-empty
     // buffer). Read once at connect: it is what the first replay is sized to.
     const replay = settings.current.scrollback;
-    this.wsBase = `${proto}://${host}/ws${q}${q ? '&' : '?'}replay=${replay}`;
+    // Opt-in sizing, for a screen the terminal was not laid out for. A phone
+    // shown a 175-column terminal on a 44-column screen gets text overlapping
+    // itself — it has to be able to resize the terminal to be readable at all.
+    // The cost is that the owner's window resizes with it, so it is asked for
+    // rather than assumed.
+    const sizing = new URLSearchParams(location.search).get('phone') === '1';
+    this.wsBase =
+      `${proto}://${host}/ws${q}${q ? '&' : '?'}replay=${replay}` +
+      (sizing ? '&sizing=true' : '');
 
     if (this.shareToken) {
       // A paired grant refuses the socket until the code is presented, and a

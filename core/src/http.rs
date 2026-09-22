@@ -176,6 +176,11 @@ struct WsQuery {
     /// less leaves its buffer half empty. Clamped, since it arrives from the
     /// page and a huge value would mean serialising the whole ring.
     replay: Option<usize>,
+    /// Lets this connection set the terminal's size, which normally only the
+    /// owner may do. For a phone: a 175-column layout on a 44-column screen
+    /// overlaps itself, so the choice is between resizing the terminal and
+    /// not being able to read it.
+    sizing: Option<bool>,
 }
 
 /// The pairing code travels the second channel (spoken, messaged); the wire
@@ -279,7 +284,8 @@ async fn ws_upgrade(
         return (StatusCode::FORBIDDEN, "disconnected by the owner").into_response();
     }
     let replay = q.replay;
-    ws.on_upgrade(move |socket| serve(socket, app, grant, addr, device, replay))
+    let sizing = q.sizing.unwrap_or(false);
+    ws.on_upgrade(move |socket| serve(socket, app, grant, addr, device, replay, sizing))
 }
 
 /// A readable device label for the connection manager. Coarse on purpose: it
@@ -324,6 +330,8 @@ async fn serve(
     device: String,
     // How much scrollback this client can hold, if it said.
     replay: Option<usize>,
+    // Whether this connection may resize the terminal.
+    sizing: bool,
 ) {
     let (mut sink, mut stream) = {
         use futures_util::StreamExt;
@@ -506,7 +514,7 @@ async fn serve(
                 let Message::Binary(bytes) = msg else { continue };
                 let Ok(inbound) = rmp_serde::from_slice::<In>(&bytes) else { continue };
 
-                if handle(&app, &grant, inbound, &tx, session).await.is_break() {
+                if handle(&app, &grant, sizing, inbound, &tx, session).await.is_break() {
                     break;
                 }
             }
@@ -521,6 +529,8 @@ async fn serve(
 async fn handle(
     app: &Arc<App>,
     grant: &Grant,
+    // Whether this connection may set the terminal's size.
+    sizing: bool,
     msg: In,
     tx: &mpsc::Sender<Out>,
     me: crate::proto::SessionId,
@@ -549,8 +559,8 @@ async fn handle(
         }
 
         In::Viewport { pane, cols, rows } => {
-            // Advisory. Only the owner's viewport becomes the PTY's size.
-            if let Some((c, r)) = app.set_viewport(grant, pane, cols, rows).await {
+            // Advisory unless this connection was given sizing rights.
+            if let Some((c, r)) = app.set_viewport(grant, sizing, pane, cols, rows).await {
                 let _ = tx.send(Out::Size { pane, cols: c, rows: r }).await;
             }
         }

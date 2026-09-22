@@ -9,6 +9,11 @@
   let kind = $state<ScopeKind>('tab');
   let writable = $state(false);
   let pairing = $state(false);
+  // A phone cannot read a terminal laid out for a desktop: 175 columns of text
+  // arriving on a 46-column screen overlaps itself. Letting the link resize the
+  // terminal is the only way it becomes readable — at the cost of resizing this
+  // window too, since a PTY has one size.
+  let sizing = $state(false);
 
   const ws = $derived(store.activeWs);
   const tab = $derived(store.activeTab);
@@ -52,7 +57,7 @@
   // loopback (that one is known to work — the page came over it).
   const urls = $derived.by(() => {
     if (!store.share) return [] as string[];
-    const path = store.share.url;
+    const path = store.share.url + (sizing ? '?phone=1' : '');
     const list = store.share.hosts.map((h) => `${h}${path}`);
     if (!/^https?:\/\/(localhost|127\.)/.test(location.origin)) {
       const own = `${location.origin}${path}`;
@@ -130,6 +135,17 @@
           {forced
             ? 'Always required at workspace scope and above'
             : 'A forwarded link alone will not get in · optional at this scope'}
+        </small>
+      </span>
+    </label>
+
+    <label class="pair-toggle">
+      <input type="checkbox" bind:checked={sizing} />
+      <span class="pt-text">
+        <b>Let the link resize the terminal</b>
+        <small>
+          For a phone · a desktop-width terminal overlaps itself on a small
+          screen. <span class="dim">Your own window resizes with it.</span>
         </small>
       </span>
     </label>
