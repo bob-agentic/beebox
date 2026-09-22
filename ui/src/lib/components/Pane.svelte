@@ -72,16 +72,12 @@
       lineHeight: cfg.lineHeight,
       cursorBlink: cfg.cursorBlink,
       allowProposedApi: true,
-      // Not matched to the server's ring, deliberately. xterm keeps a parsed
-      // grid — a styled cell per character — which costs roughly 2 MB per ten
-      // thousand lines, and every pane holds its own even when its tab is not
-      // in front. Matching the ring's 200k meant ~44 MB a pane, so a dozen
-      // terminals ran the webview into the better part of a gigabyte while the
-      // daemon holding the same history sat at 20 MB.
-      //
-      // Ten thousand lines is a long way back in a terminal, and the ring
-      // still has the rest for a reattach.
-      scrollback: 10_000,
+      // How much history this browser holds ready to scroll through. Costs
+      // about 2 MB per ten thousand lines, per pane, and every pane pays it
+      // whether or not its tab is in front — which is why it is a setting
+      // rather than the ring's full 200k. The daemon keeps everything either
+      // way; this is the client's share.
+      scrollback: cfg.scrollback,
       theme: settings.xterm,
     });
 
@@ -216,6 +212,9 @@
       term.options.fontSize = c.fontSize;
       term.options.lineHeight = c.lineHeight;
       term.options.cursorBlink = c.cursorBlink;
+      // Applies immediately, both ways: raising it lets the buffer grow from
+      // here on, lowering it trims what is already there.
+      term.options.scrollback = c.scrollback;
       term.options.theme = settings.xterm;
       // Glyph size changed, so the column count did too.
       report();

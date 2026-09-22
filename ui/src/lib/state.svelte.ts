@@ -6,6 +6,7 @@
 import type { Terminal } from '@xterm/xterm';
 import { markRead, pruneRead } from './agent-status';
 import { Conn } from './conn';
+import { settings } from './settings.svelte';
 import type {
   AgentSettings,
   AgentStatusView,
@@ -97,7 +98,12 @@ class Store {
       : key
         ? `?key=${encodeURIComponent(key)}`
         : '';
-    this.wsBase = `${proto}://${host}/ws${q}`;
+    // Tell the daemon how much this browser can hold, so the replay it sends
+    // on connect matches — otherwise it guesses, and either sends more than
+    // will fit (parsed and dropped) or less than it could (a half-empty
+    // buffer). Read once at connect: it is what the first replay is sized to.
+    const replay = settings.current.scrollback;
+    this.wsBase = `${proto}://${host}/ws${q}${q ? '&' : '?'}replay=${replay}`;
 
     if (this.shareToken) {
       // A paired grant refuses the socket until the code is presented, and a

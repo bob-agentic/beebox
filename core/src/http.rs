@@ -171,6 +171,11 @@ struct WsQuery {
     /// One-time pairing code, prompted for by the client when the grant
     /// demands one.
     pair: Option<String>,
+    /// How many lines of scrollback this client can hold. Sending more than
+    /// it has room for means parsing work thrown away on arrival; sending
+    /// less leaves its buffer half empty. Clamped, since it arrives from the
+    /// page and a huge value would mean serialising the whole ring.
+    replay: Option<usize>,
 }
 
 /// The pairing code travels the second channel (spoken, messaged); the wire
@@ -273,7 +278,8 @@ async fn ws_upgrade(
     if app.is_banned(&grant, &addr.ip().to_string(), &device).await {
         return (StatusCode::FORBIDDEN, "disconnected by the owner").into_response();
     }
-    ws.on_upgrade(move |socket| serve(socket, app, grant, addr, device))
+    let replay = q.replay;
+    ws.on_upgrade(move |socket| serve(socket, app, grant, addr, device, replay))
 }
 
 /// A readable device label for the connection manager. Coarse on purpose: it
@@ -316,6 +322,8 @@ async fn serve(
     grant: Grant,
     addr: SocketAddr,
     device: String,
+    // How much scrollback this client can hold, if it said.
+    replay: Option<usize>,
 ) {
     let (mut sink, mut stream) = {
         use futures_util::StreamExt;
@@ -385,7 +393,7 @@ async fn serve(
             let _ = app.ensure_running(pane).await;
         }
         if let Some(pty) = app.pty_of(pane).await {
-            if let Some((modes, data, through)) = app.ptys.attach_snapshot(pty) {
+            if let Some((modes, data, through)) = app.ptys.attach_snapshot(pty, replay) {
                 if !owner || through > JUST_SPAWNED {
                     let _ = tx.send(Out::Resync { pty, modes, data, through }).await;
                 }
@@ -431,7 +439,7 @@ async fn serve(
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                     for pane in app.visible(&grant).await {
                         if let Some(pty) = app.pty_of(pane).await {
-                            if let Some((modes, data, through)) = app.ptys.attach_snapshot(pty) {
+                            if let Some((modes, data, through)) = app.ptys.attach_snapshot(pty, replay) {
                                 let _ = tx.send(Out::Resync { pty, modes, data, through }).await;
                             }
                         }

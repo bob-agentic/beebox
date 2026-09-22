@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { FONTS, LINE_HEIGHTS, SIZES, THEMES, settings } from '../settings.svelte';
+  import { FONTS, LINE_HEIGHTS, SCROLLBACKS, SIZES, THEMES, settings } from '../settings.svelte';
   import { store } from '../state.svelte';
   import type { AgentKind, AgentSetting } from '../proto';
 
@@ -122,6 +122,23 @@
             onchange={(e) => settings.update({ cursorBlink: e.currentTarget.checked })}
           />
         </label>
+
+        <label class="row">
+          <span class="lbl">Scrollback</span>
+          <select
+            value={String(s.scrollback)}
+            onchange={(e) => settings.update({ scrollback: +e.currentTarget.value })}
+          >
+            {#each SCROLLBACKS as n (n)}
+              <option value={String(n)}>{n.toLocaleString()} lines</option>
+            {/each}
+          </select>
+        </label>
+        <p class="note">
+          Held per terminal in this browser — roughly 2 MB per 10,000 lines
+          each, so a dozen open terminals add up. The daemon keeps its own
+          history regardless. Lowering this trims what is already on screen.
+        </p>
 
         <div class="theme-head">
           <span class="lbl">Theme</span>
@@ -349,6 +366,13 @@
     height: 14px;
   }
 
+  /* Sits under the control it explains, indented to line up with it. */
+  .note {
+    margin: -2px 0 10px 132px;
+    font-size: 10.5px;
+    line-height: 1.5;
+    color: var(--faint);
+  }
   .theme-head {
     display: flex;
     align-items: center;

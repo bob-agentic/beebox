@@ -23,11 +23,15 @@ use crate::ring::Ring;
 const FLUSH_INTERVAL: Duration = Duration::from_millis(4);
 const FLUSH_BYTES: usize = 64 * 1024;
 
-/// How much scrollback a newly attached viewer receives. Replaying 200k lines
-/// into a fresh terminal would be pointless — and would not fit anyway: the
-/// client keeps 10k lines per pane, so anything beyond that is parsed and
-/// dropped on arrival. Matched to it.
+/// How much scrollback a newly attached viewer receives when it does not ask
+/// for a particular amount. Clients say what their own buffer holds; this is
+/// the answer for one that does not.
 pub const ATTACH_LINES: usize = 10_000;
+
+/// Ceiling on what a client may ask to have replayed. It arrives from the
+/// page, and serialising the whole ring for every pane on connect is not
+/// something a query string gets to ask for.
+pub const MAX_ATTACH_LINES: usize = 200_000;
 
 /// What the read loop publishes. Subscribers translate this into `Out` frames.
 #[derive(Debug, Clone)]
@@ -270,14 +274,19 @@ impl Registry {
     ///
     /// In alt screen the replay starts at the switch — an alt screen has no
     /// scrollback, so earlier history does not belong in it.
-    pub fn attach_snapshot(&self, id: PtyId) -> Option<(Vec<u8>, Vec<u8>, u64)> {
+    pub fn attach_snapshot(
+        &self,
+        id: PtyId,
+        lines: Option<usize>,
+    ) -> Option<(Vec<u8>, Vec<u8>, u64)> {
+        let lines = lines.unwrap_or(ATTACH_LINES).clamp(1, MAX_ATTACH_LINES);
         let ptys = self.ptys.lock().unwrap();
         let p = ptys.get(&id)?;
         let modes = p.sniffer.modes().to_escapes();
 
         let (data, _from) = match p.sniffer.replay_from() {
             Some(alt) => (p.ring.since(alt), alt),
-            None => p.ring.tail_lines(ATTACH_LINES),
+            None => p.ring.tail_lines(lines),
         };
         Some((modes, data, p.ring.written()))
     }
@@ -433,6 +442,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn attach_replay_is_sized_to_what_the_client_asked_for() {
+        // The client says what its own buffer holds. Sending more than that is
+        // parsing work thrown away on arrival; sending less leaves it half
+        // empty. A request past the ring's own size is simply all of it.
+        let reg = Registry::new();
+        let rx = reg.subscribe();
+        // Kept alive past the output: attach_snapshot reads a live pty, and a
+        // command that exits takes its registry entry with it.
+        let id = reg
+            .spawn(spec(
+                1,
+                &["sh", "-c", "for i in $(seq 1 200); do echo line $i; done; sleep 2"],
+            ))
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let count = |lines: Option<usize>| {
+            let (_, data, _) = reg.attach_snapshot(id, lines).expect("pty is live");
+            String::from_utf8_lossy(&data).lines().count()
+        };
+        assert!(count(Some(10)) <= 10, "a small ask gets a small replay");
+        assert!(count(Some(10)) < count(Some(150)), "a larger ask gets more");
+        // Absurd asks are clamped rather than refused.
+        assert!(count(Some(usize::MAX)) > 0);
+        let _ = drain(&reg, rx).await;
+    }
+
+    #[tokio::test]
     async fn attach_snapshot_carries_modes_then_scrollback() {
         let reg = Registry::new();
         let rx = reg.subscribe();
@@ -442,7 +479,7 @@ mod tests {
             .unwrap();
         tokio::time::sleep(Duration::from_millis(300)).await;
 
-        let (modes, data, through) = reg.attach_snapshot(id).expect("pty is live");
+        let (modes, data, through) = reg.attach_snapshot(id, None).expect("pty is live");
         let modes = String::from_utf8_lossy(&modes);
         assert!(modes.contains("\x1b[?1049h"), "alt screen must be restored");
         assert!(modes.contains("\x1b[?2004h"), "bracketed paste must be restored");

@@ -40,6 +40,10 @@ export const THEMES: Theme[] = [BEEBOX_THEME, ...BUILT_IN_THEMES];
     sizes, and a dropdown is easier to hit than a thumb. */
 export const SIZES = [10, 11, 12, 13, 14, 15, 16, 18, 20, 22];
 export const LINE_HEIGHTS = [1.0, 1.1, 1.15, 1.2, 1.3, 1.4, 1.5];
+/** Lines of history per terminal, in this browser. The top of the range
+    matches the daemon's ring; the cost is roughly 2 MB per ten thousand, per
+    pane, so the choice is a real one on a machine with many terminals open. */
+export const SCROLLBACKS = [10_000, 20_000, 50_000, 100_000, 200_000];
 
 /** The embedded Nerd Font first — it is the only one guaranteed to have the
     box-drawing and Powerline glyphs an agent TUI draws. */
@@ -58,6 +62,13 @@ export interface Settings {
   lineHeight: number;
   theme: string;
   cursorBlink: boolean;
+  /** Lines of history each terminal keeps in this browser.
+   *
+   *  Costs about 2 MB per ten thousand lines, per pane, and every pane pays it
+   *  whether or not its tab is in front — so a dozen terminals at the ring's
+   *  full 200k is most of a gigabyte. The daemon keeps the full history
+   *  regardless; this is only what the browser holds ready to scroll through. */
+  scrollback: number;
 }
 
 /** A sensible starting point out of 600 — and the fallback if a saved theme
@@ -70,6 +81,7 @@ const DEFAULTS: Settings = {
   lineHeight: 1.2,
   theme: DEFAULT_THEME.name,
   cursorBlink: true,
+  scrollback: 50_000,
 };
 
 function load(): Settings {
