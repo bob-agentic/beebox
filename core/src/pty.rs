@@ -362,7 +362,7 @@ mod tests {
     }
 
     /// Collects output frames for one pane until the process exits.
-    async fn drain(reg: &Arc<Registry>, mut rx: broadcast::Receiver<PtyEvent>) -> String {
+    async fn drain(reg: &Arc<Registry>, id: PtyId, mut rx: broadcast::Receiver<PtyEvent>) -> String {
         let mut out = Vec::new();
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         loop {
@@ -382,8 +382,16 @@ mod tests {
     async fn spawns_and_captures_output() {
         let reg = Registry::new();
         let rx = reg.subscribe();
-        reg.spawn(spec(1, &["echo", "hello beebox"])).unwrap();
-        assert!(drain(&reg, rx).await.contains("hello beebox"));
+        // The trailing sleep is load-bearing. A process that exits in the same
+        // breath as its write races the reader thread, which sees EOF and stops
+        // before the bytes land — output lost, test failed, perhaps one run in
+        // four under a loaded `cargo test`. Real panes run `zsh -l -i`, which
+        // never exits, so the race is the test's alone. `modes_are_sniffed`
+        // already handled it this way; the rest hadn't caught up.
+        let id = reg
+            .spawn(spec(1, &["sh", "-c", "echo hello beebox; sleep 0.2"]))
+            .unwrap();
+        assert!(drain(&reg, id, rx).await.contains("hello beebox"));
     }
 
     #[tokio::test]
@@ -393,10 +401,11 @@ mod tests {
         std::env::set_var("NO_COLOR", "1");
         let reg = Registry::new();
         let rx = reg.subscribe();
-        reg.spawn(spec(1, &["sh", "-c", "echo NC=${NO_COLOR:-unset} CT=$COLORTERM"]))
+        let id = reg
+            .spawn(spec(1, &["sh", "-c", "echo NC=${NO_COLOR:-unset} CT=$COLORTERM; sleep 0.2"]))
             .unwrap();
         std::env::remove_var("NO_COLOR");
-        let out = drain(&reg, rx).await;
+        let out = drain(&reg, id, rx).await;
         assert!(out.contains("NC=unset"), "NO_COLOR leaked into the pane: {out}");
         assert!(out.contains("CT=truecolor"), "COLORTERM missing: {out}");
     }
@@ -406,8 +415,10 @@ mod tests {
         // Bytes-through is the core promise; CJK and emoji must survive.
         let reg = Registry::new();
         let rx = reg.subscribe();
-        reg.spawn(spec(1, &["echo", "中文测试 ✓ 你好"])).unwrap();
-        let out = drain(&reg, rx).await;
+        let id = reg
+            .spawn(spec(1, &["sh", "-c", "echo '中文测试 ✓ 你好'; sleep 0.2"]))
+            .unwrap();
+        let out = drain(&reg, id, rx).await;
         assert!(out.contains("中文测试 ✓ 你好"), "got {out:?}");
     }
 
@@ -422,7 +433,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(200)).await;
         reg.kill(id);
 
-        assert!(drain(&reg, rx).await.contains("round trip"));
+        assert!(drain(&reg, id, rx).await.contains("round trip"));
     }
 
     #[tokio::test]
@@ -473,7 +484,7 @@ mod tests {
         assert!(count(Some(10)) < count(Some(150)), "a larger ask gets more");
         // Absurd asks are clamped rather than refused.
         assert!(count(Some(usize::MAX)) > 0);
-        let _ = drain(&reg, rx).await;
+        let _ = drain(&reg, id, rx).await;
     }
 
     #[tokio::test]
@@ -494,7 +505,7 @@ mod tests {
         // In alt screen the replay starts at the switch, so it holds the
         // in-alt text and not what came before.
         assert!(String::from_utf8_lossy(&data).contains("in-alt"));
-        let _ = drain(&reg, rx).await;
+        let _ = drain(&reg, id, rx).await;
     }
 
     #[tokio::test]
@@ -509,7 +520,7 @@ mod tests {
         // A repeat must not fire another SIGWINCH.
         reg.resize(id, 96, 38).unwrap();
         assert_eq!(reg.size(id), Some((96, 38)));
-        let _ = drain(&reg, rx).await;
+        let _ = drain(&reg, id, rx).await;
     }
 
     #[tokio::test]
@@ -556,8 +567,14 @@ mod tests {
     async fn several_panes_run_independently() {
         let reg = Registry::new();
         let mut rx = reg.subscribe();
+        let mut live: HashMap<PaneId, PtyId> = HashMap::new();
         for pane in 1..=3u64 {
-            reg.spawn(spec(pane, &["echo", &format!("pane{pane}")])).unwrap();
+            // Same race as `spawns_and_captures_output`: hold the process open
+            // past its write so the reader thread cannot miss the bytes.
+            let id = reg
+                .spawn(spec(pane, &["sh", "-c", &format!("echo pane{pane}; sleep 0.2")]))
+                .unwrap();
+            live.insert(pane, id);
         }
 
         // Wait for each pane's own output rather than for three exits: panes
@@ -578,10 +595,22 @@ mod tests {
                 }
                 Ok(Ok(_)) => {}
                 // Three shells writing at once can outrun this loop and push a
-                // frame out of the broadcast buffer. That is the channel doing
-                // its job, not a failure — keep reading, and let the timeout be
-                // the thing that gives up.
-                Ok(Err(broadcast::error::RecvError::Lagged(_))) => {}
+                // frame out of the broadcast buffer. A real client answers that
+                // by re-reading the ring, which is the source of truth — see
+                // the `Lagged` arm in http.rs. Carrying on without doing the
+                // same is what made this test lose a pane's only frame and
+                // fail perhaps one run in three.
+                Ok(Err(broadcast::error::RecvError::Lagged(_))) => {
+                    for p in 1..=3u64 {
+                        if let Some(pty) = live.get(&p) {
+                            if let Some((_, data, _)) = reg.attach_snapshot(*pty, None) {
+                                seen.entry(p)
+                                    .or_default()
+                                    .push_str(&String::from_utf8_lossy(&data));
+                            }
+                        }
+                    }
+                }
                 Ok(Err(_)) | Err(_) => break,
             }
         }
