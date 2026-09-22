@@ -339,6 +339,28 @@ class Store {
     this.applyFocus();
   }
 
+  /** The pane a split/close should act on: the focused one, but only if it is
+   *  actually on screen.
+   *
+   *  `focused` is a bare id with no workspace attached, and `reconcile` only
+   *  re-checks it when a tree frame arrives. Any path that changes what is
+   *  visible without producing one leaves it pointing into the workspace you
+   *  just left — and ⌘D then splits a pane there, which is how a fin-baker-svc
+   *  terminal appeared inside bee-box. Resolving it against the visible set
+   *  makes that unrepresentable rather than merely unlikely. */
+  targetPane(): PaneId | null {
+    const visible = this.visiblePanes();
+    if (this.focused !== null && visible.some((p) => p.id === this.focused)) {
+      return this.focused;
+    }
+    const fallback = visible[0]?.id ?? null;
+    if (fallback !== this.focused) {
+      this.focused = fallback;
+      this.applyFocus();
+    }
+    return fallback;
+  }
+
   /** Puts the keyboard where `focused` already points.
    *
    *  Separate from `focus()` so a tree update can re-assert the keyboard

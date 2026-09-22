@@ -110,15 +110,15 @@
     },
     // ⌘D splits side by side, ⇧⌘D stacks — as iTerm2 does.
     split_v: () => {
-      const pane = store.focused;
+      const pane = store.targetPane();
       if (pane !== null) store.send({ t: 'split', pane, dir: 'vertical' });
     },
     split_h: () => {
-      const pane = store.focused;
+      const pane = store.targetPane();
       if (pane !== null) store.send({ t: 'split', pane, dir: 'horizontal' });
     },
     close_pane: () => {
-      const pane = store.focused;
+      const pane = store.targetPane();
       // A close kills the process inside — worth one question. Restart is
       // cheap, an agent's context is not.
       if (pane !== null && confirm('Close this pane? Its process will be terminated.')) {
