@@ -18,6 +18,7 @@
   import type { PaneView } from '../proto';
   import { agentBadge, isUnread } from '../agent-status';
   import Crumbs from './Crumbs.svelte';
+  import Icon from './Icon.svelte';
   import StatusIcon from './StatusIcon.svelte';
 
   let { pane }: { pane: PaneView } = $props();
@@ -34,13 +35,23 @@
   });
 
   const AGENT_STYLE: Record<string, string> = {
-    CC: 'background:#2d1f3d;color:#c4a5e8',
-    CX: 'background:#1f3d2d;color:#86efac',
     OC: 'background:#1f2f3d;color:#7dd3fc',
     SH: 'background:#2b2b35;color:#8b8b9a',
   };
 
+  // Claude and Codex get their own marks — recognisable at a glance in a way
+  // that "CC" and "CX" never were, and in their own colours, since a mark
+  // recoloured to match the chrome stops being the thing people recognise.
+  // OpenAI's blossom is monochrome by design (black on light, white on dark),
+  // so it follows the theme's foreground; a fixed value would disappear
+  // against half of the 600-odd themes. Anything else keeps its badge.
+  const AGENT_MARK: Record<string, { icon: 'claude' | 'codex'; color: string }> = {
+    CC: { icon: 'claude', color: '#D97757' },
+    CX: { icon: 'codex', color: 'var(--fg)' },
+  };
+
   const badge = $derived(agentBadge(pane.agent));
+  const mark = $derived(AGENT_MARK[badge]);
   // Reading is a local act: focusing the pane marks the completion seen in
   // this browser only. localStorage is not reactive, so the flag is mirrored
   // into local state and re-derived whenever the status or focus changes.
@@ -221,7 +232,13 @@
 >
   <div class="pane-head">
     <StatusIcon phase={pane.status.phase} view={pane.status} {unread} />
-    <span class="agent" style={AGENT_STYLE[badge] ?? AGENT_STYLE.SH}>{badge}</span>
+    {#if mark}
+      <span class="mark" style="color:{mark.color}" title={badge}>
+        <Icon name={mark.icon} size={13} />
+      </span>
+    {:else}
+      <span class="agent" style={AGENT_STYLE[badge] ?? AGENT_STYLE.SH}>{badge}</span>
+    {/if}
     <span class="ttl">{paneTitle}</span>
     {#if pane.pty === null}
       <button class="respawn" onclick={() => store.send({ t: 'respawn', pane: pane.id })}>
@@ -282,6 +299,13 @@
     padding: 0 4px;
     border-radius: 3px;
     font-weight: 700;
+  }
+  /* No pill behind a brand mark: the shape is the identifier, and a coloured
+     box around it only competes with the status dot beside it. */
+  .mark {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
   }
   .ttl {
     flex: 1;

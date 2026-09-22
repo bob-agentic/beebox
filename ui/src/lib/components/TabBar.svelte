@@ -32,10 +32,15 @@
   }
 
   const AGENT_STYLE: Record<string, string> = {
-    CC: 'background:#2d1f3d;color:#c4a5e8',
-    CX: 'background:#1f3d2d;color:#86efac',
     OC: 'background:#1f2f3d;color:#7dd3fc',
     SH: 'background:#2b2b35;color:#8b8b9a',
+  };
+
+  // Brand marks for the two agents that have one; see Pane.svelte. Codex's
+  // blossom is monochrome and follows the theme, Claude's is always orange.
+  const AGENT_MARK: Record<string, { icon: 'claude' | 'codex'; color: string }> = {
+    CC: { icon: 'claude', color: '#D97757' },
+    CX: { icon: 'codex', color: 'var(--fg)' },
   };
 
   const ws = $derived(store.activeWs);
@@ -107,7 +112,13 @@
       }}
     >
       <StatusIcon phase={tabDot(tab).phase} unread={tabDot(tab).unread} />
-      <span class="agent" style={AGENT_STYLE[agent(tab)] ?? AGENT_STYLE.SH}>{agent(tab)}</span>
+      {#if AGENT_MARK[agent(tab)]}
+        <span class="mark" style="color:{AGENT_MARK[agent(tab)].color}" title={agent(tab)}>
+          <Icon name={AGENT_MARK[agent(tab)].icon} size={12} />
+        </span>
+      {:else}
+        <span class="agent" style={AGENT_STYLE[agent(tab)] ?? AGENT_STYLE.SH}>{agent(tab)}</span>
+      {/if}
       {#if editing === tab.id}
         <input
           class="rename"
@@ -217,6 +228,12 @@
     padding: 1px 5px;
     border-radius: 3px;
     font-weight: 700;
+  }
+  /* The mark identifies on its own; a pill behind it would just add noise. */
+  .mark {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
   }
   .label {
     overflow: hidden;
