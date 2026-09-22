@@ -67,13 +67,28 @@
     border-radius: 50%;
     flex: 0 0 auto;
   }
+  /* Both dots animate opacity alone, on their own compositor layer: the
+     sidebar and tab strip repaint around them constantly, and a dot that
+     shares those repaints stutters instead of pulsing. */
+  .ast.running,
+  .ast.needs_input {
+    will-change: opacity;
+  }
   .ast.running {
     background: var(--run);
-    animation: pulse 1.5s ease-in-out infinite;
+    animation: pulse 1.6s ease-in-out infinite;
   }
   .ast.needs_input {
     background: var(--wait);
-    animation: blink 1s step-end infinite;
+    animation: blink 1.2s ease-in-out infinite;
+  }
+  /* Respect a system-level request for less motion: the colour still carries
+     the state, so the animation is the only thing lost. */
+  @media (prefers-reduced-motion: reduce) {
+    .ast.running,
+    .ast.needs_input {
+      animation: none;
+    }
   }
   .ast.idle {
     background: transparent;

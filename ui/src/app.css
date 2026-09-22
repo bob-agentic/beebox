@@ -87,13 +87,18 @@ button {
    plain terminal. The six-phase styles live in StatusIcon.svelte; the shared
    keyframes stay here. */
 
+/* Opacity only. Scaling a 7px dot lands its edge between pixels, and the
+   renderer re-antialiases it every frame — which reads as a stutter rather
+   than a pulse, most visibly on a light theme where the fringing shows. */
 @keyframes pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.45; transform: scale(0.8); }
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }
+/* Eased, not stepped. A hard on/off is a strobe at this size; the dot needs to
+   be noticeable, not agitating. */
 @keyframes blink {
-  0%, 50% { opacity: 1; }
-  51%, 100% { opacity: 0.25; }
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
 }
 
 .xterm .xterm-viewport::-webkit-scrollbar { width: 8px; }

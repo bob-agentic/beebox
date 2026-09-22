@@ -415,13 +415,14 @@ impl App {
                 match tab {
                     Some(t) => {
                         tree.active_tab = Some(t);
-                        // Remember it for the next return to this workspace —
-                        // but only if it really is one of its tabs. Recording
-                        // a foreign id would poison the memory permanently,
-                        // since nothing would ever match it again.
+                        // Records where you are, and pushes where you were
+                        // behind it — that history is what lets closing a tab
+                        // return you to the one you came from. Only if the tab
+                        // really belongs here: a foreign id would sit at the
+                        // head of the list matching nothing.
                         if let Some(w) = tree.workspaces.iter_mut().find(|w| w.id == ws) {
                             if w.tabs.iter().any(|x| x.id == t) {
-                                w.active_tab = Some(t);
+                                w.touch_tab(t);
                             }
                         }
                     }
@@ -432,7 +433,7 @@ impl App {
                     // tab lost your place instead.
                     None => {
                         tree.active_tab = tree.workspaces.iter().find(|w| w.id == ws).and_then(|w| {
-                            w.active_tab
+                            w.active_tab()
                                 .filter(|t| w.tabs.iter().any(|x| x.id == *t))
                                 .or_else(|| w.tabs.first().map(|t| t.id))
                         });
@@ -1355,6 +1356,90 @@ mod tests {
             Some(second),
             "returning to a workspace lands on the tab it was last showing"
         );
+    }
+
+    #[tokio::test]
+    async fn closing_a_tab_returns_to_the_one_you_came_from() {
+        // Eight tabs, sitting on the fourth, step to the fifth, close it. You
+        // came from the fourth, so that is where you land. Falling back to the
+        // first tab — which is what this did — threw you across the whole strip
+        // to somewhere you had never been.
+        let a = app().await;
+        let owner = a.owner_grant().await;
+        let ws = a.tree.lock().await.workspaces[0].id;
+
+        for _ in 0..7 {
+            a.handle_owner(&owner, In::OpenTab { ws }).await.unwrap();
+        }
+        let ids: Vec<TabId> = a.tree.lock().await.workspaces[0]
+            .tabs
+            .iter()
+            .map(|t| t.id)
+            .collect();
+        assert_eq!(ids.len(), 8);
+
+        a.handle_owner(&owner, In::Activate { ws, tab: Some(ids[3]) }).await.unwrap();
+        a.handle_owner(&owner, In::Activate { ws, tab: Some(ids[4]) }).await.unwrap();
+        a.handle_owner(&owner, In::CloseTab { tab: ids[4] }).await.unwrap();
+
+        assert_eq!(
+            a.tree.lock().await.active_tab,
+            Some(ids[3]),
+            "closing a tab lands on the one you were looking at before it"
+        );
+    }
+
+    #[tokio::test]
+    async fn closing_walks_back_through_tabs_you_actually_visited() {
+        // The tab you came from may itself be gone. Each close steps one
+        // further back through where you have been, never to a tab you never
+        // opened.
+        let a = app().await;
+        let owner = a.owner_grant().await;
+        let ws = a.tree.lock().await.workspaces[0].id;
+
+        for _ in 0..3 {
+            a.handle_owner(&owner, In::OpenTab { ws }).await.unwrap();
+        }
+        let ids: Vec<TabId> = a.tree.lock().await.workspaces[0]
+            .tabs
+            .iter()
+            .map(|t| t.id)
+            .collect();
+
+        // Visit second, then third, then fourth.
+        for i in [1usize, 2, 3] {
+            a.handle_owner(&owner, In::Activate { ws, tab: Some(ids[i]) }).await.unwrap();
+        }
+
+        a.handle_owner(&owner, In::CloseTab { tab: ids[3] }).await.unwrap();
+        assert_eq!(a.tree.lock().await.active_tab, Some(ids[2]));
+
+        a.handle_owner(&owner, In::CloseTab { tab: ids[2] }).await.unwrap();
+        assert_eq!(a.tree.lock().await.active_tab, Some(ids[1]));
+    }
+
+    #[tokio::test]
+    async fn closing_a_tab_you_are_not_on_leaves_you_where_you_are() {
+        // Only the tab in front decides where you go. Closing some other tab —
+        // from its own × — must not move you at all.
+        let a = app().await;
+        let owner = a.owner_grant().await;
+        let ws = a.tree.lock().await.workspaces[0].id;
+
+        for _ in 0..2 {
+            a.handle_owner(&owner, In::OpenTab { ws }).await.unwrap();
+        }
+        let ids: Vec<TabId> = a.tree.lock().await.workspaces[0]
+            .tabs
+            .iter()
+            .map(|t| t.id)
+            .collect();
+
+        a.handle_owner(&owner, In::Activate { ws, tab: Some(ids[2]) }).await.unwrap();
+        a.handle_owner(&owner, In::CloseTab { tab: ids[0] }).await.unwrap();
+
+        assert_eq!(a.tree.lock().await.active_tab, Some(ids[2]));
     }
 
     #[tokio::test]

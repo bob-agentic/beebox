@@ -63,12 +63,60 @@ pub struct Workspace {
     pub name: String,
     pub path: String,
     pub branch: String,
-    /// The tab to return to when this workspace is activated without naming
-    /// one. Kept per workspace, not globally: coming back to a project should
-    /// land where you left it, and a single shared value cannot express that.
+    /// Tabs in the order they were last looked at, most recent first.
+    ///
+    /// The head is the tab currently in front, so activating this workspace
+    /// without naming a tab returns to where you left it — kept per workspace,
+    /// because a single shared value cannot say that about several projects.
+    ///
+    /// The rest is what makes closing a tab land somewhere sensible: you go
+    /// back to the one you came from, as a browser does, rather than being
+    /// thrown to the first tab from wherever you happened to be.
+    ///
     /// Not persisted — after a restart the first tab is the honest answer.
-    pub active_tab: Option<TabId>,
+    recent: Vec<TabId>,
     pub tabs: Vec<Tab>,
+}
+
+impl Workspace {
+    /// Rebuilds a workspace from storage. The visit order is not persisted, so
+    /// it starts at the first tab — the only answer a restart can honestly
+    /// give. Kept a constructor rather than a public field so the invariant
+    /// (head of `recent` is the tab in front) has one owner.
+    pub fn restored(id: WsId, name: String, path: String, tabs: Vec<Tab>) -> Self {
+        Self {
+            id,
+            name,
+            path,
+            branch: String::new(),
+            recent: tabs.first().map(|t| t.id).into_iter().collect(),
+            tabs,
+        }
+    }
+
+    /// The tab in front, if it still exists.
+    pub fn active_tab(&self) -> Option<TabId> {
+        self.recent.first().copied()
+    }
+
+    /// Records `tab` as the one in front, keeping the previous order behind it.
+    pub fn touch_tab(&mut self, tab: TabId) {
+        self.recent.retain(|t| *t != tab);
+        self.recent.insert(0, tab);
+    }
+
+    /// Discards entries for tabs that no longer exist, so a stale id can never
+    /// be handed back as "where to go next".
+    fn prune_recent(&mut self) {
+        let tabs = &self.tabs;
+        self.recent.retain(|id| tabs.iter().any(|t| t.id == *id));
+        // A workspace always has somewhere to be, as long as it has tabs.
+        if self.recent.is_empty() {
+            if let Some(first) = self.tabs.first() {
+                self.recent.push(first.id);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -100,7 +148,7 @@ impl SessionTree {
             name,
             path,
             branch: String::new(),
-            active_tab: None,
+            recent: Vec::new(),
             tabs: Vec::new(),
         });
         self.active_ws = Some(id);
@@ -117,7 +165,7 @@ impl SessionTree {
             self.active_ws = next.map(|w| w.id);
             // Land on whatever that workspace was last showing, rather than
             // leaving nothing active and making the tab bar pick for us.
-            self.active_tab = next.and_then(|w| w.active_tab.or(w.tabs.first().map(|t| t.id)));
+            self.active_tab = next.and_then(|w| w.active_tab().or(w.tabs.first().map(|t| t.id)));
         }
         removed
             .tabs
@@ -155,7 +203,7 @@ impl SessionTree {
             layout: Node::Leaf { pane: pane_id },
             panes: vec![pane],
         });
-        w.active_tab = Some(tab_id);
+        w.touch_tab(tab_id);
         self.active_ws = Some(ws);
         self.active_tab = Some(tab_id);
         Ok(tab_id)
@@ -165,12 +213,12 @@ impl SessionTree {
         for w in &mut self.workspaces {
             if let Some(i) = w.tabs.iter().position(|t| t.id == tab) {
                 let removed = w.tabs.remove(i);
-                let fallback = w.tabs.first().map(|t| t.id);
-                // The workspace must not go on pointing at a tab that is gone,
-                // or returning to it would find nothing to activate.
-                if w.active_tab == Some(tab) {
-                    w.active_tab = fallback;
-                }
+                // Dropping the closed tab from the history promotes the one
+                // behind it, so you return to where you came from the way a
+                // browser does. Falling back to the first tab meant closing
+                // tab five threw you to tab one — nowhere you had been.
+                w.prune_recent();
+                let fallback = w.active_tab();
                 if self.active_tab == Some(tab) {
                     self.active_tab = fallback;
                 }

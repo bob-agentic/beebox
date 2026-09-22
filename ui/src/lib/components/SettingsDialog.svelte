@@ -27,9 +27,16 @@
     );
   });
 
-  /** Keeps the chosen theme in view when the dialog opens. */
+  /** Keeps the chosen theme in view when the dialog opens.
+   *
+   *  Scrolls the list by hand rather than with `scrollIntoView`, which walks
+   *  up and scrolls *every* scrollable ancestor — including the panel itself,
+   *  which it dragged to the bottom, hiding the heading and opening the dialog
+   *  somewhere the user never asked to be. */
   function scrollToCurrent(el: HTMLElement) {
-    el.querySelector('.theme.on')?.scrollIntoView({ block: 'center' });
+    const on = el.querySelector<HTMLElement>('.theme.on');
+    if (!on) return;
+    el.scrollTop = on.offsetTop - el.clientHeight / 2 + on.offsetHeight / 2;
   }
 
   // The Agents toggles are daemon-owned and owner-only. OpenCode is not part
@@ -394,6 +401,9 @@
     height: 200px;
     overflow-y: auto;
     padding-right: 4px;
+    /* The offset parent for the cards, so centring the chosen one is a
+       subtraction against this box rather than against the page. */
+    position: relative;
   }
   .theme {
     display: flex;

@@ -256,18 +256,10 @@ impl Store {
                 tabs.push(Tab { id: tab_id, title, layout, panes });
             }
 
-            tree.workspaces.push(Workspace {
-                id: ws_id,
-                name,
-                path,
-                branch: String::new(),
-                // Which tab was in front is not persisted; after a restart the
-                // first one is the honest answer. Seeding it here rather than
-                // leaving None means switching workspaces behaves the same on
-                // the first switch as on every later one.
-                active_tab: tabs.first().map(|t| t.id),
-                tabs,
-            });
+            // Which tab was in front, and the order tabs were visited in, are
+            // not persisted; `restored` starts at the first tab, which is the
+            // only answer a restart can honestly give.
+            tree.workspaces.push(Workspace::restored(ws_id, name, path, tabs));
         }
 
         // Resume id allocation above everything ever handed out.
