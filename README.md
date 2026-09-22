@@ -4,7 +4,7 @@
 
 **A web terminal built for running many agent CLIs in parallel.**
 
-`v0.1.2`
+`v0.1.3`
 
 </div>
 
