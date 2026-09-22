@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The daemon listens on a LAN address over plain HTTP, and always will:
+     there is no certificate authority that will issue for 192.168.x.x, and
+     no domain to put in front of it. Android blocks cleartext by default
+     since 9, so the private ranges are opened explicitly — and only those.
+     Anything routable stays on the default deny. -->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <!-- RFC 1918, plus the CGNAT range Tailscale hands out. -->
+        <domain includeSubdomains="true">10.0.0.0/8</domain>
+        <domain includeSubdomains="true">172.16.0.0/12</domain>
+        <domain includeSubdomains="true">192.168.0.0/16</domain>
+        <domain includeSubdomains="true">100.64.0.0/10</domain>
+    </domain-config>
+</network-security-config>

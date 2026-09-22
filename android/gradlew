@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Bootstraps Gradle itself, so the repo needs no gradle-wrapper.jar and no
+# system Gradle. Downloads once into ~/.gradle and reuses it thereafter.
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+ver="$(sed -n 's/.*gradle-\(.*\)-bin\.zip/\1/p' "$here/gradle/wrapper/gradle-wrapper.properties")"
+home="${GRADLE_USER_HOME:-$HOME/.gradle}"
+dist="$home/beebox-dists/gradle-$ver"
+
+if [ ! -x "$dist/bin/gradle" ]; then
+  echo "==> fetching gradle $ver (once)"
+  mkdir -p "$home/beebox-dists"
+  tmp="$(mktemp -d)"
+  curl -fsSL "https://services.gradle.org/distributions/gradle-$ver-bin.zip" -o "$tmp/g.zip"
+  unzip -q "$tmp/g.zip" -d "$home/beebox-dists"
+  rm -rf "$tmp"
+fi
+
+export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@21}"
+export ANDROID_HOME="${ANDROID_HOME:-/opt/homebrew/share/android-commandlinetools}"
+exec "$dist/bin/gradle" --project-dir "$here" "$@"

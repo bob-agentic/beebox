@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">BeeBox</string>
+    <string name="connect_title">Connect to BeeBox</string>
+    <string name="connect_hint">Scan the code from Share on your desktop</string>
+    <string name="scan">Scan code</string>
+    <string name="scan_hint">Point at the code in the Share dialog</string>
+    <string name="paste">Paste a link instead</string>
+    <string name="connect">Connect</string>
+    <string name="link_hint">beebox://192.168.1.10:17788/t/…</string>
+</resources>

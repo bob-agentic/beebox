@@ -1,0 +1,6 @@
+# Build output and local machine paths.
+.gradle/
+build/
+local.properties
+*.apk
+*.aab

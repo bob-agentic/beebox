@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The app's own chrome only. Once connected the page paints itself,
+         and its theme — one of 607 — decides every colour on screen. -->
+    <color name="bg">#0e1116</color>
+    <color name="panel">#161b22</color>
+    <color name="fg">#e6edf3</color>
+    <color name="dim">#8b949e</color>
+    <color name="accent">#3fb950</color>
+</resources>

@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The same honeycomb-and-prompt mark the desktop app uses, hand-translated
+     from design/beebox-icon.svg. Kept as a vector so one drawable covers the
+     launcher, the connect screen, and every density. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="128dp"
+    android:height="128dp"
+    android:viewportWidth="128"
+    android:viewportHeight="128">
+
+    <!-- Outer cell -->
+    <path
+        android:pathData="M64,16 L105.57,40 L105.57,88 L64,112 L22.43,88 L22.43,40 Z"
+        android:strokeColor="#4ade80"
+        android:strokeWidth="4" />
+
+    <!-- Inner cell, filled faintly -->
+    <path
+        android:pathData="M64,34 L89.98,49 L89.98,79 L64,94 L38.02,79 L38.02,49 Z"
+        android:fillColor="#4ade80"
+        android:fillAlpha="0.16" />
+
+    <!-- The prompt: chevron and cursor rule -->
+    <path
+        android:pathData="M45.1,53.2 L58.6,64 L45.1,74.8"
+        android:strokeColor="#4ade80"
+        android:strokeWidth="6"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M64.9,71.8 L82.9,71.8"
+        android:strokeColor="#4ade80"
+        android:strokeWidth="6"
+        android:strokeLineCap="round" />
+</vector>
