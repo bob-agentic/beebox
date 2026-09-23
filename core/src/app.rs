@@ -329,13 +329,22 @@ impl App {
         cols: u16,
         rows: u16,
     ) -> Option<(u16, u16)> {
-        if !grant.host && !sizing {
-            return None;
-        }
         if cols == 0 || rows == 0 {
             return None;
         }
-        self.owner_size.lock().await.insert(pane, (cols, rows));
+        {
+            let mut owner = self.owner_size.lock().await;
+            if grant.host || sizing {
+                owner.insert(pane, (cols, rows));
+            } else if owner.contains_key(&pane) {
+                return None;
+            }
+            // Otherwise no one with a say has sized this pane — typically a tab
+            // a share opened, which the owner has not even looked at. Left at
+            // the spawn default, the prompt is drawn for a width the viewer
+            // does not have and wraps. So the viewer sizes it, without claiming
+            // it: the owner's first viewport still wins.
+        }
 
         // A pane with no process yet still records the size, so when it does
         // start it starts at the right width.
@@ -1155,8 +1164,14 @@ mod tests {
             t.workspaces[0].tabs[0].panes[0].id
         };
 
-        // A read-only viewer reaching in would repaint the owner's TUI.
+        // A pane nobody has sized yet takes whoever is looking at it.
         let viewer = shared(Scope::Pane(pane), false);
+        assert_eq!(a.set_viewport(&viewer, false, pane, 50, 12).await, Some((50, 12)));
+
+        // Once the owner has sized it, a read-only viewer reaching in would
+        // repaint the owner's TUI.
+        let owner = a.owner_grant().await;
+        a.set_viewport(&owner, false, pane, 100, 30).await;
         assert!(a.set_viewport(&viewer, false, pane, 40, 10).await.is_none());
 
         // So would a writable one: size is not a write, it is ownership.
@@ -1170,7 +1185,6 @@ mod tests {
             "a link with sizing rights may resize the terminal"
         );
 
-        let owner = a.owner_grant().await;
         assert_eq!(a.set_viewport(&owner, false, pane, 96, 38).await, Some((96, 38)));
         assert_eq!(a.tree.lock().await.pane(pane).unwrap().cols, 96);
     }
