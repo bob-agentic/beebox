@@ -57,10 +57,31 @@ pub fn router(app: Arc<App>, ui: Option<std::path::PathBuf>) -> Router {
         key: Option<String>,
     }
 
+    // The owner's page needs the key; without it there is nothing here.
     let index = get({
         let ui = ui.clone();
         move |State(app): State<Arc<App>>, Query(q): Query<KeyQuery>| {
-            index_html(ui.clone(), app, q.key)
+            let ui = ui.clone();
+            async move {
+                match q.key.filter(|k| app.is_owner_key(k)) {
+                    Some(k) => index_html(ui, &app, Some(k)).await,
+                    None => not_found(),
+                }
+            }
+        }
+    });
+    // A share page only for a link that exists, under its own scope's prefix.
+    let share = get({
+        let ui = ui.clone();
+        move |State(app): State<Arc<App>>, Path((prefix, token)): Path<(String, String)>| {
+            let ui = ui.clone();
+            async move {
+                let grant = app.store.lock().await.grant(&token).expect("read state.db");
+                match grant {
+                    Some(g) if g.scope.url_prefix() == prefix => index_html(ui, &app, None).await,
+                    _ => not_found(),
+                }
+            }
         }
     });
 
@@ -72,15 +93,11 @@ pub fn router(app: Arc<App>, ui: Option<std::path::PathBuf>) -> Router {
                 crate::hooks::MAX_BODY_BYTES,
             )),
         )
-        .route("/a/{token}", index.clone())
-        .route("/w/{token}", index.clone())
-        .route("/t/{token}", index.clone())
-        .route("/p/{token}", index.clone())
-        .route("/", index);
+        .route("/{prefix}/{token}", share)
+        .route("/", index)
+        .fallback(|| async { not_found() });
 
     // `--ui` serves from disk for development; otherwise the embedded copy.
-    // Unknown paths fall through to the SPA document above, so a share link
-    // deep-links correctly.
     r = match ui {
         Some(dir) => r
             .nest_service("/assets", tower_http::services::ServeDir::new(dir.join("assets")))
@@ -97,7 +114,7 @@ pub fn router(app: Arc<App>, ui: Option<std::path::PathBuf>) -> Router {
          req: axum::extract::Request,
          next: axum::middleware::Next| async move {
             if !addr.ip().is_loopback() && !app.is_exposed() {
-                return (StatusCode::FORBIDDEN, "sharing is off").into_response();
+                return not_found();
             }
             next.run(req).await
         },
@@ -105,7 +122,21 @@ pub fn router(app: Arc<App>, ui: Option<std::path::PathBuf>) -> Router {
     r.layer(gate).with_state(app)
 }
 
-async fn index_html(ui: Option<std::path::PathBuf>, app: Arc<App>, key: Option<String>) -> Response {
+/// What anything unknown, revoked or not let in gets: a page that could have
+/// come from any web server. Nothing in it says what is running here, so
+/// probing the port teaches nobody that a terminal sits behind it.
+const NOT_FOUND_HTML: &str = "<!doctype html>\n<html><head><meta charset=\"utf-8\">\
+<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
+<title>404 Not Found</title></head>\
+<body style=\"font-family:system-ui,sans-serif;text-align:center;padding-top:18vh;color:#555\">\
+<h1 style=\"font-weight:500\">404 Not Found</h1>\
+<p>The page you requested is not available.</p></body></html>\n";
+
+pub fn not_found() -> Response {
+    (StatusCode::NOT_FOUND, Html(NOT_FOUND_HTML)).into_response()
+}
+
+async fn index_html(ui: Option<std::path::PathBuf>, app: &App, key: Option<String>) -> Response {
     // `--ui` serves from disk for development, otherwise the embedded copy.
     // Either way the key must still be injected — returning the disk copy
     // early left the page unable to authenticate its own socket.
@@ -117,7 +148,7 @@ async fn index_html(ui: Option<std::path::PathBuf>, app: Arc<App>, key: Option<S
     // Only reachable if the UI was never built.
     .unwrap_or_else(|| include_str!("../assets/index.html").to_string());
 
-    Html(inject_key(html, &app, key)).into_response()
+    Html(inject_key(html, app, key)).into_response()
 }
 
 /// Hands the owner key to a page that presented it in the URL. Everything else
@@ -153,7 +184,7 @@ async fn embedded(uri: axum::http::Uri) -> Response {
             let mime = mime_guess::from_path(path).first_or_octet_stream();
             ([(header::CONTENT_TYPE, mime.as_ref())], f.data.into_owned()).into_response()
         }
-        None => StatusCode::NOT_FOUND.into_response(),
+        None => not_found(),
     }
 }
 
@@ -218,12 +249,15 @@ fn share_hosts(port: u16) -> Vec<String> {
 }
 
 async fn ws_upgrade(
-    ws: WebSocketUpgrade,
+    ws: Result<WebSocketUpgrade, axum::extract::ws::rejection::WebSocketUpgradeRejection>,
     State(app): State<Arc<App>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Query(q): Query<WsQuery>,
     headers: axum::http::HeaderMap,
 ) -> Response {
+    // A plain GET here would otherwise get axum's own 400, which says a
+    // WebSocket lives at this path.
+    let Ok(ws) = ws else { return not_found() };
     let device = device_name(headers.get(axum::http::header::USER_AGENT));
     let grant = match (&q.token, &q.key) {
         (Some(t), _) => {
@@ -235,22 +269,17 @@ async fn ws_upgrade(
                 }
                 _ => false,
             };
-            match grant.filter(|_| mine) {
-                Some(g) => g,
-                // Revoked, never existed, or another device's. Said over the
-                // socket rather than as an HTTP status, which a browser's
-                // WebSocket never shows the page.
-                None => return ws.on_upgrade(refuse),
+            match (grant, mine) {
+                (Some(g), true) => g,
+                // Another device's. Its page loaded, so say so over the
+                // socket — a browser's WebSocket never shows the page an
+                // HTTP status.
+                (Some(_), false) => return ws.on_upgrade(refuse),
+                (None, _) => return not_found(),
             }
         }
         (None, Some(k)) if app.is_owner_key(k) => app.owner_grant().await,
-        _ => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                "owner key required — open the URL printed at startup",
-            )
-                .into_response()
-        }
+        _ => return not_found(),
     };
 
     let replay = q.replay;
@@ -613,15 +642,16 @@ async fn hook(
     Path((pane, secret)): Path<(PaneId, String)>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     body: axum::body::Bytes,
-) -> StatusCode {
+) -> Response {
+    // From anywhere else, not even the admission that hooks exist.
     if !addr.ip().is_loopback() {
-        return StatusCode::FORBIDDEN;
+        return not_found();
     }
     if !app.check_hook_secret(pane, &secret).await {
-        return StatusCode::FORBIDDEN;
+        return StatusCode::FORBIDDEN.into_response();
     }
     let Ok(v) = serde_json::from_slice::<serde_json::Value>(&body) else {
-        return StatusCode::BAD_REQUEST;
+        return StatusCode::BAD_REQUEST.into_response();
     };
 
     // The adapter stamps the capture time; without one, receipt time is the
@@ -647,7 +677,7 @@ async fn hook(
         // across file IO (the transcript read happened inside normalize).
         app.apply_agent_event(pane, ev).await;
     }
-    StatusCode::NO_CONTENT
+    StatusCode::NO_CONTENT.into_response()
 }
 
 fn random_token() -> String {

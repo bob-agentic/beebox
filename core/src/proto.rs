@@ -289,7 +289,7 @@ pub struct Peer {
     pub paired_at: i64,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CloseReason {
     /// The link was revoked; it will not work again.

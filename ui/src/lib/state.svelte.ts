@@ -270,6 +270,7 @@ class Store {
       case 'closed':
         this.connected = false;
         this.closedReason = msg.reason;
+        document.title = '404 Not Found';
         break;
       case 'pong':
         break;

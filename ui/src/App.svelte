@@ -244,6 +244,15 @@
 
 <svelte:window {onkeydown} {oncontextmenu} />
 
+{#if store.closedReason === 'revoked'}
+  <!-- The same page the server gives any unknown address, so a link that
+       has been disconnected says nothing about what used to be behind it. -->
+  <div class="gone">
+    <h1>404 Not Found</h1>
+    <p>The page you requested is not available.</p>
+  </div>
+{/if}
+
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="titlebar" onpointerdown={startDrag} ondblclick={titleDoubleClick}>
   <!-- In the desktop shell macOS draws the real traffic lights on top, so we
@@ -405,8 +414,6 @@
   <span class="item" class:off={!store.connected}>
     {#if store.connected}
       daemon connected · :{location.port || 17788}
-    {:else if store.closedReason === 'revoked'}
-      this link belongs to another device, or was disconnected
     {:else}
       reconnecting…
     {/if}
@@ -454,6 +461,21 @@
 {/if}
 
 <style>
+  .gone {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    background: #fff;
+    color: #555;
+    font-family: system-ui, sans-serif;
+    text-align: center;
+    padding-top: 18vh;
+  }
+  .gone h1 {
+    font-size: 2em;
+    font-weight: 500;
+    margin-bottom: 0.67em;
+  }
   .titlebar {
     height: 38px;
     flex: 0 0 38px;
