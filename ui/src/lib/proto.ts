@@ -116,6 +116,8 @@ export interface Caps {
 
 export interface Peer {
   session: SessionId;
+  /** This very connection; it is not offered a way to kick itself. */
+  is_you: boolean;
   /** Self-declared at pairing; there is no account system. */
   label: string;
   device: string;

@@ -56,7 +56,7 @@ export function sortable(node: HTMLElement, opts: SortOptions) {
     let index = 0;
     let others: { el: HTMLElement; home: number; shift: number }[] = [];
     /** The drop target currently under the pointer, if any. */
-    let overZone: Element | null = null;
+    let overZone: HTMLElement | null = null;
 
     const rows = () =>
       [...(node.parentElement?.children ?? [])].filter(
@@ -106,7 +106,7 @@ export function sortable(node: HTMLElement, opts: SortOptions) {
       const zone = current.dropTarget
         ? document
             .elementFromPoint(ev.clientX, ev.clientY)
-            ?.closest(current.dropTarget) ?? null
+            ?.closest<HTMLElement>(current.dropTarget) ?? null
         : null;
       if (zone !== overZone) {
         overZone?.classList.remove('drop-over');
