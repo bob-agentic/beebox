@@ -35,39 +35,43 @@ caps sharing, extensibility, and multimedia. BeeBox's core is the browser.
 
 **It is a terminal first.** Raw PTY bytes go to the browser untouched — the
 server does no VT parsing and no output summarization. On top of an ordinary
-terminal it adds exactly two things: a **status dot per pane**, driven by agent
+terminal it adds two main things: a **status dot per pane**, driven by agent
 hooks, and the ability to **share any level of a session over a URL**.
-
-UI prototype: [proto/index.html](proto/index.html)
 
 ---
 
-## Two ways to run it
+## Install
 
-### Desktop app (macOS · Apple Silicon)
+Download from [Releases](https://github.com/bob-agentic/beebox/releases/latest).
+
+### macOS (Apple Silicon only)
+
+Unzip `BeeBox-vX.Y.Z-macos.zip` and drag **BeeBox.app** into Applications. The
+app is not notarized, so macOS will refuse to open it ("damaged" or "cannot be
+verified"). Clear the quarantine flag once:
 
 ```bash
-cd ui && pnpm install && pnpm build       # frontend first, produces dist
-./mac/scripts/build-app.sh                # one command → mac/build/BeeBox.app
-open mac/build/BeeBox.app
+xattr -dr com.apple.quarantine /Applications/BeeBox.app
 ```
 
-**Apple Silicon (`arm64`) only** — Intel Macs are not a supported target.
+Everything is inside the app — interface, fonts and daemon. The daemon is its
+child process and quitting the app takes every terminal with it; nothing is
+left running behind.
 
-Self-contained — frontend, fonts, and daemon all live inside the app, no
-external dependencies. The desktop shell is a thin Swift `WKWebView` layer (no
-longer Tauri); the daemon (`beebox-core`) is spawned as a child process, listens
-on loopback only, and **quitting the app takes every terminal with it — no
-orphaned processes left behind**.
+### Android
 
-> No Xcode required: `build-app.sh` uses SwiftPM to produce the executable and
-> assembles the `.app` by hand.
+Install `BeeBox-vX.Y.Z-android.apk` (Android 10+, arm64/armv7). You will need to
+allow installing from your browser or file manager. The app holds no terminals
+of its own: it connects to a BeeBox on your computer. Point the system camera
+at a share code and the session opens in the app — or scan or paste a link from
+inside it.
 
-### Headless daemon (remote access)
+### Headless daemon (a server, or any machine without the app)
 
 ```bash
-cd core && cargo build --release
-./target/release/beebox-core --ui ../ui/dist
+cd ui && pnpm install && pnpm build        # the daemon embeds the interface
+cd ../core && cargo build --release
+./target/release/beebox-core
 ```
 
 On startup it prints the **full URL, owner key included**, for every reachable
@@ -89,8 +93,8 @@ it's dead. To give someone access, send a **share link**, not this URL.
 >
 > **BeeBox only does the "sharing" part itself**: it mints token-bearing share
 > links, enforces four scopes (All / Workspace / Tab / Pane), binds each link to
-> the first device that opens it, and lets you see and disconnect those devices. **How you actually get that
-> port in front of another person — a tunnel, frp,
+> the first device that opens it, and lets you see and disconnect those devices.
+> **How you actually get that port in front of another person — a tunnel, frp,
 > [Tailscale](https://tailscale.com),
 > [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/),
 > a reverse proxy, or anything else — BeeBox does not decide for you, and ships
@@ -101,26 +105,85 @@ it's dead. To give someone access, send a **share link**, not this URL.
 > once someone can reach the port: how access is scoped, and how a share is
 > revoked.
 
-### Flags
-
 | Flag | Default | Meaning |
 |---|---|---|
 | `--listen` | `0.0.0.0:17788` | Bind address. How it's exposed is up to you; no restrictions imposed. |
 | `--home` | `~/.beebox` | State directory (the layout database). |
-| `--scrollback` | `200000` | Scrollback lines per pane. |
+| `--scrollback` | `200000` | Scrollback lines per pane, kept by the daemon. |
 | `--ui` | (embedded) | Serve the frontend from disk. For development. |
-| `--exit-with-parent` | off | Exit when the parent process does (the desktop shell uses this to own the daemon's lifetime). |
+| `--exit-with-parent` | off | Exit when the parent process does (the desktop app uses this to own the daemon's lifetime). |
 
-### Development
+---
+
+## What it does
+
+- **A real terminal.** PTY pool, raw byte passthrough, 200k lines of scrollback
+  kept by the daemon, correct CJK and emoji widths, Chinese IME that works.
+- **Workspaces × tabs × splits.** A workspace is a project directory; each has
+  tabs, each tab a split tree (capped at two levels). Everything is saved and
+  restored on restart, and terminals in the background keep running.
+- **Agent status.** Claude Code and Codex report through hooks: a status dot per
+  pane (rolled up to its tab and workspace), the tool being run, a summary when
+  it finishes, automatic tab titles, and sessions resumed after a restart.
+  Toggle them under Settings → Agents.
+- **Sharing by link or QR code.** Four scopes — All / Workspace / Tab / Pane. A
+  link belongs to the first device that opens it; every paired device is listed
+  under Connections until you disconnect it. A scanned code lets the phone set
+  the terminal's width.
+- **Open files from the terminal (macOS).** ⌘-click a path an agent printed to
+  open it in VS Code at that line; right-click it to reveal it in Finder. Links
+  appear only over files that exist.
+- **Panes close when their shell does.** `exit` closes the pane, as in iTerm2. A
+  non-zero exit leaves it open with its output and a Restart button.
+- **607 themes**, from Ghostty's set, with the window chrome derived from each.
+- **Phones.** A key bar for what a phone keyboard lacks (Esc, Tab, Ctrl, Alt,
+  arrows), no autocorrect in the terminal, and a sidebar that gets out of the way.
+
+---
+
+## Keyboard shortcuts
+
+| | |
+|---|---|
+| `⌘N` | Open a workspace (pick a project directory) |
+| `⌘T` | New tab |
+| `⌘D` | Split right |
+| `⇧⌘D` | Split down |
+| `⌘W` | Close the current pane |
+| `⇧⌘[` / `⇧⌘]` | Previous / next tab |
+| `⌘B` | Fold / unfold the sidebar |
+| `⌘,` | Settings |
+
+### Mouse
+
+| | |
+|---|---|
+| `⌘`-click a file path | Open it in VS Code (macOS app) |
+| Right-click a file path | Reveal in Finder (macOS app) |
+| Double-click a workspace / tab title | Rename |
+| Right-click a workspace | Menu: Rename / Close |
+| Hover a workspace → `×` | Close it and its terminals (asks first) |
+| A tab's `×`, or middle-click | Close tab |
+| Drag a divider | Resize the split |
+| Drag a workspace row / tab | Reorder |
+
+---
+
+## Development
 
 ```bash
-cd core && cargo run -- --ui ../ui/dist    # backend
+cd core && cargo run -- --ui ../ui/dist    # daemon, serving the UI from disk
 cd ui   && pnpm dev                        # frontend hot reload, proxies to :17788
-./mac/scripts/build-app.sh                 # one command → mac/build/BeeBox.app
+./mac/scripts/build-app.sh                 # → mac/build/BeeBox.app
 ./mac/scripts/run.sh                       # build + relaunch "BeeBox Dev": its own bundle id and
                                            # ~/.beebox-dev, so it runs beside an installed BeeBox
 ./mac/scripts/check.sh                     # full test suite (incl. desktop self-test)
+cd android && ./gradlew assembleRelease    # → app/build/outputs/apk/release
 ```
+
+The desktop shell is a thin Swift `WKWebView` layer built with SwiftPM — no
+Xcode needed; `build-app.sh` assembles the `.app` by hand. The Android app is a
+Kotlin `WebView` shell.
 
 ### Fonts
 
@@ -134,120 +197,42 @@ cd ui && python3 scripts/build-font.py
 
 ### Themes
 
-**607 of them**, from Ghostty's theme set (i.e. iTerm2-Color-Schemes), with a
-full ANSI 16-color palette. Searchable and filterable by light/dark in the
-settings panel. Regenerate:
-
 ```bash
 git clone --depth 1 https://github.com/mbadolato/iTerm2-Color-Schemes.git
 cd ui && python3 scripts/build-themes.py ../iTerm2-Color-Schemes/ghostty
 ```
 
-The window chrome color is derived from each theme's background, so none of the
-600 themes ever produces a window that clashes with its terminal.
-
----
-
-## Keyboard shortcuts
-
-| | |
-|---|---|
-| `⌘N` | New workspace — **opens a directory picker** (pick a project folder to open). |
-| `⌘T` | New tab |
-| `⌘D` | Split vertically (left/right) |
-| `⇧⌘D` | Split horizontally (top/bottom) |
-| `⌘W` | Close the current pane |
-| `⇧⌘[` / `⇧⌘]` | Previous / next tab (same as Chrome) |
-| `⌘,` | Appearance settings |
-
-### Mouse (matching mux0)
-
-| | |
-|---|---|
-| Double-click a workspace / tab title | Rename |
-| Right-click a workspace | Menu: Rename / Close |
-| Hover a workspace → `×` | Quick close (takes all its terminals; asks first) |
-| A tab's `×`, or middle-click | Close tab |
-| Drag a divider | Resize the split |
-| Drag a workspace row / tab | Reorder (persisted) |
-
-> **A workspace is a project directory.** On a fresh install with no workspace,
-> BeeBox pops a picker to open one — it never guesses implicitly.
-
----
-
-## Done
-
-- **A real terminal**: PTY pool, raw byte passthrough, 200k-line scrollback,
-  correct CJK/emoji.
-- **Matrix structure**: workspace × tab × split tree (iTerm2-style, capped at 2 levels).
-- **Layout persistence**: SQLite, restored on restart.
-- **Mode sniffing**: alt screen / bracketed paste / cursor-key mode restored on replay.
-- **Four-scope sharing**: All / Workspace / Tab / Pane. A link belongs to the first
-  device that opens it; reloading is fine, any other device is turned away.
-- **Device management**: every paired device is listed, online or not, until you
-  disconnect it (in place of expiry timers).
-- **Desktop client**: thin Swift `WKWebView` shell, daemon as a child process,
-  frontend embedded, honeycomb `.icns` icon.
-- **Background terminal survival**: terminals in tabs/workspaces you switch away
-  from are not destroyed; come back and the content is still there.
-- **Agent hooks**: six-state status dots for Claude Code / Codex, tool detail,
-  completion summaries, auto tab titles, an Agents settings page, and
-  auto-resume on restart. OpenCode and bash/fish are explicitly skipped.
-- **Workspace interaction**: open = pick a directory, auto-prompt on cold start,
-  right-click menu (Rename / Close).
-- **Share by QR code**: every share link is also offered as a code, so a phone
-  can join by pointing its camera at the screen. Codes carry a `beebox://` URL,
-  which a native client can claim, and tell the terminal to take its size from
-  the device that scanned it.
-- **Panes close when their shell does**: `exit` or `Ctrl-D` closes the pane, as
-  in iTerm2. A non-zero exit leaves it open with its output and a Restart
-  button — the case where you want to read what happened.
-
-## Roadmap / TODO
-
-### Sharing pipeline
-- [ ] **Land grants on real connections**: wire a generated share link through to an actual WebSocket session.
-- [ ] **Peer reporting**: live sync of the connection list.
-
-### Agent collaboration
-- [ ] **Claude ↔ Codex handoff**: hand one agent's context off to another.
-
-### Mobile & native apps
-- [ ] **Responsive mobile layout**: phone/tablet.
-- [ ] **Image upload via `@path`**.
-- [ ] **Native Android app**: targeting foldables (folded/unfolded dual-form adaptation).
-- [ ] **Native Apple app**: targeting foldables / iPad multi-form.
-
-### Plugin system
-- [ ] **Plugin protocol research**: evaluate compatibility with an existing
-      plugin-market protocol (e.g. the Herd/Herdr marketplace), so the ecosystem's
-      plugins can be reused rather than all built from scratch. The titlebar already
-      reserves a slot for plugins.
-- [ ] **Plugin runtime & extension points**: settle the permission model and loading mechanism.
-
----
-
-## Code layout
+### Code layout
 
 ```
 core/src/
-  proto.rs     wire protocol, the single source of truth
-  session.rs   workspace/tab/split tree
-  share.rs     the two authorization predicates
-  pty.rs       PTY registry, batching, fan-out
-  ring.rs      line-based scrollback ring
-  modes.rs     mode sniffing (not a VT parser)
-  store.rs     SQLite
-  app.rs       state and mutation ops
-  http.rs      axum: /ws, /a /w /t /p, /hooks
+  proto.rs          wire protocol, the single source of truth
+  session.rs        workspace/tab/split tree
+  share.rs          the two authorization predicates
+  pty.rs            PTY registry, batching, fan-out
+  ring.rs           line-based scrollback ring
+  modes.rs          mode sniffing (not a VT parser)
+  store.rs          SQLite
+  app.rs            state and mutation ops
+  http.rs           axum: /ws, /a /w /t /p, /hooks
+  agent*.rs         agent hooks and adapters (Claude Code, Codex)
 ui/src/
   lib/proto.ts           TS mirror of proto.rs
   lib/conn.ts            WebSocket + MessagePack + reconnect heartbeat
   lib/state.svelte.ts    state + terminal registry
-  lib/components/        Sidebar, TabBar, SplitTree, Pane, ContextMenu, dialogs
+  lib/file-links.ts      file paths in terminal output
+  lib/components/        Sidebar, TabBar, SplitTree, Pane, dialogs
 mac/
-  Sources/BeeBoxShell/   Swift WKWebView shell: opens the window + runs the daemon as a child
-  scripts/build-app.sh   assembles the .app without Xcode
-  icons/                 icon source (.icns generated by make-icns.sh)
+  Sources/BeeBoxShell/   Swift WKWebView shell: the window, the menu, the daemon as a child
+  scripts/               build-app.sh, run.sh, check.sh
+android/                 Kotlin WebView shell: QR scanning, key bar
 ```
+
+---
+
+## Roadmap
+
+- [ ] **Claude ↔ Codex handoff**: hand one agent's context to another.
+- [ ] **Image upload via `@path`**.
+- [ ] **Native Apple app** for iPad and foldables.
+- [ ] **Plugins**: a protocol and runtime; the titlebar already reserves a slot.
