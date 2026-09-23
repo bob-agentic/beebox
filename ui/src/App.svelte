@@ -91,7 +91,7 @@
       Until someone makes one, a narrow screen starts folded and a wide one
       open, decided afresh on each load. */
   const FOLD_KEY = 'beebox.sidebar-folded';
-  const FOLD_MS = 260;
+  const FOLD_MS = 240;
   let folded = $state(loadFolded());
 
   function loadFolded(): boolean {
@@ -105,7 +105,8 @@
   }
 
   function setFolded(on: boolean) {
-    // Matches the sidebar's transition, plus a frame to land.
+    // The sidebar's slide. Terminals fit once it lands, not on every frame of
+    // it — each fit would resize the PTY and make the shell repaint.
     store.holdFitFor(FOLD_MS + 20);
     folded = on;
     try {
