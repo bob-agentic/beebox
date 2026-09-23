@@ -306,12 +306,12 @@
       <Icon name="unplug" size={15} />
     </button>
   {/if}
-  <!-- Only where this client drives the terminal's size — which today means
-       the Android app, the one thing that sends `?phone=1`. Carrying a
-       session from a phone to a tablet leaves the terminal at the first
-       screen's width, and nothing re-measures on its own; this asks. On a
-       desktop the size is the owner's and the button would do nothing. -->
-  {#if store.sizing}
+  <!-- For anyone who may set the size: the owner, and a phone that asked to.
+       The terminal has one size, and whoever spoke last holds it — so after a
+       phone narrows a session to 46 columns the desktop stays there, with
+       nothing to make it measure again. Its ResizeObserver only fires when
+       the window changes, and the window did not. This asks. -->
+  {#if store.sizing || store.caps.owner}
     <button
       class="tb-btn command"
       aria-label="Re-fit to this screen"
