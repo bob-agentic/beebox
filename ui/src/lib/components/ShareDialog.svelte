@@ -172,7 +172,7 @@
 
         <button class:on={kind === 'workspace'} onclick={() => (kind = 'workspace')}>
           <b>This workspace</b>
-          <small>{ws?.name ?? '—'} · all {ws?.tabs.length ?? 0} tabs, switchable</small>
+          <small>{ws?.name ?? '—'} · all {ws?.tabs.length ?? 0} tabs</small>
         </button>
 
         <button class:on={kind === 'tab'} onclick={() => (kind = 'tab')}>
@@ -215,10 +215,6 @@
   <div class="qr-mask" onclick={() => (showing = null)}>
     <div class="qr-card">
       <div class="qr-svg">{@html codeSvg}</div>
-      <div class="qr-url">{showing}</div>
-      <div class="qr-note">
-        Scan with the phone's own camera — the app opens it directly.
-      </div>
     </div>
   </div>
 {/if}
@@ -259,18 +255,6 @@
     width: 100%;
     height: 100%;
     display: block;
-  }
-  .qr-url {
-    font: 10.5px/1.4 ui-monospace, monospace;
-    color: var(--dim);
-    word-break: break-all;
-    text-align: center;
-  }
-  .qr-note {
-    font-size: 11px;
-    color: var(--faint);
-    text-align: center;
-    line-height: 1.5;
   }
   .qr-btn {
     color: var(--faint);

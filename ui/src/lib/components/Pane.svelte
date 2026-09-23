@@ -223,7 +223,11 @@
     store.register(pane.id, term, report);
     report();
 
-    const ro = new ResizeObserver(() => report());
+    // Not while the sidebar is moving: a terminal re-laid out on every frame
+    // of the slide is what made it stutter. It fits once, when it lands.
+    const ro = new ResizeObserver(() => {
+      if (!store.holdFit) report();
+    });
     ro.observe(host);
 
     // Appearance changes apply to terminals that already exist, so you can see

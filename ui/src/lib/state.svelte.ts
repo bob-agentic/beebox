@@ -464,6 +464,21 @@ class Store {
     for (const t of this.terms.values()) t.report(true);
   }
 
+  /** True while the layout is animating, so terminals keep their size until
+   *  it settles instead of re-fitting on every frame. */
+  holdFit = false;
+  private holdTimer = 0;
+
+  /** Holds every terminal's size for `ms`, then fits each once. */
+  holdFitFor(ms: number) {
+    this.holdFit = true;
+    clearTimeout(this.holdTimer);
+    this.holdTimer = window.setTimeout(() => {
+      this.holdFit = false;
+      for (const t of this.terms.values()) t.report();
+    }, ms);
+  }
+
   /** The native folder chooser. `null` means the user cancelled it,
       `undefined` means there is none — the caller needs to tell those apart.
       Opens beside the workspace you added last, since the next project is

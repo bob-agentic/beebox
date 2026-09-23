@@ -174,6 +174,31 @@
     border-right: 1px solid var(--border);
     display: flex;
     flex-direction: column;
+    overflow: hidden;
+    /* Keep in step with FOLD_MS in App.svelte. The curve is the one UIKit
+       uses for sheets: quick off the mark, a long soft landing. */
+    transition:
+      flex-basis 260ms cubic-bezier(0.32, 0.72, 0, 1),
+      width 260ms cubic-bezier(0.32, 0.72, 0, 1),
+      transform 260ms cubic-bezier(0.32, 0.72, 0, 1),
+      opacity 260ms ease;
+  }
+  /* The rail and the full list are different markup; each fades in as it
+     appears rather than snapping over the other. */
+  .ws > :global(*) {
+    animation: sb-in 200ms ease both;
+  }
+  @keyframes sb-in {
+    from {
+      opacity: 0;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .sidebar,
+    .ws > :global(*) {
+      transition: none;
+      animation: none;
+    }
   }
   .sb-head {
     padding: 9px 11px;
@@ -357,15 +382,20 @@
      and open means laid over the top, dismissed by tapping beside it. Same
      state, one rule; the width decides what folding costs. */
   @container body (max-width: 560px) {
-    .sidebar.folded {
-      display: none;
-    }
-    .sidebar:not(.folded) {
+    .sidebar {
       position: absolute;
       top: 0;
       bottom: 0;
       left: 0;
       z-index: 20;
+    }
+    /* Slid off the edge rather than removed, so it can slide back. */
+    .sidebar.folded {
+      width: 206px;
+      flex-basis: 206px;
+      transform: translateX(-100%);
+      opacity: 0;
+      pointer-events: none;
     }
   }
 </style>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fade } from 'svelte/transition';
   import { store } from './lib/state.svelte';
   import Sidebar from './lib/components/Sidebar.svelte';
   import TabBar from './lib/components/TabBar.svelte';
@@ -90,6 +91,7 @@
       Until someone makes one, a narrow screen starts folded and a wide one
       open, decided afresh on each load. */
   const FOLD_KEY = 'beebox.sidebar-folded';
+  const FOLD_MS = 260;
   let folded = $state(loadFolded());
 
   function loadFolded(): boolean {
@@ -103,6 +105,8 @@
   }
 
   function setFolded(on: boolean) {
+    // Matches the sidebar's transition, plus a frame to land.
+    store.holdFitFor(FOLD_MS + 20);
     folded = on;
     try {
       localStorage.setItem(FOLD_KEY, on ? '1' : '0');
@@ -366,7 +370,11 @@
            beside it puts it away. -->
       <!-- svelte-ignore a11y_click_events_have_key_events -->
       <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="scrim" onclick={() => setFolded(true)}></div>
+      <div
+        class="scrim"
+        transition:fade={{ duration: FOLD_MS }}
+        onclick={() => setFolded(true)}
+      ></div>
     {/if}
   {/if}
 
