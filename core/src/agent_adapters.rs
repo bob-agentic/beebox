@@ -203,7 +203,11 @@ set -e
 
 real="${BEEBOX_REAL_CODEX:?}"
 user_home="${BEEBOX_USER_CODEX_HOME:-${HOME}/.codex}"
-overlay="${HOME}/.beebox/codex-overlay"
+# Beside hooks/, so a second daemon home keeps its own. `:h` rather than `..`:
+# for ~/.beebox this must stay the exact path it always was, because Codex's
+# hook trust keys on it.
+overlay="${BEEBOX_AGENT_HOOKS_DIR:?}"
+overlay="${overlay:h}/codex-overlay"
 mkdir -p "$overlay"
 
 sync_back() {

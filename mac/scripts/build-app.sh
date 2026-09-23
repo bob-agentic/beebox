@@ -1,11 +1,23 @@
 #!/usr/bin/env bash
 # Builds BeeBox.app from a clean checkout. No Xcode: SwiftPM produces the
 # executable and the bundle is assembled here.
+#
+#   ./mac/scripts/build-app.sh        the app you ship
+#   ./mac/scripts/build-app.sh dev    "BeeBox Dev", which runs beside it
+#
+# The dev build has its own bundle id, so it launches alongside an installed
+# BeeBox rather than bringing that one forward, and its own daemon home
+# (~/.beebox-dev), so the two never share workspaces or terminals.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 ROOT=$PWD
-APP=mac/build/BeeBox.app
+case "${1:-}" in
+  "") NAME=BeeBox; ID=dev.beebox.app; HOME_DIR=.beebox ;;
+  dev) NAME="BeeBox Dev"; ID=dev.beebox.app.dev; HOME_DIR=.beebox-dev ;;
+  *) echo "usage: $0 [dev]" >&2; exit 64 ;;
+esac
+APP="mac/build/$NAME.app"
 
 step() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 
@@ -26,7 +38,8 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp mac/.build/release/BeeBoxShell "$APP/Contents/MacOS/BeeBox"
 cp core/target/release/beebox-core "$APP/Contents/MacOS/beebox-core"
-sed "s/__VERSION__/$(grep -m1 '^version' core/Cargo.toml | cut -d'"' -f2)/" \
+sed -e "s/__VERSION__/$(grep -m1 '^version' core/Cargo.toml | cut -d'"' -f2)/" \
+    -e "s/__NAME__/$NAME/" -e "s/__ID__/$ID/" -e "s/__HOME__/$HOME_DIR/" \
     mac/Resources/Info.plist.in > "$APP/Contents/Info.plist"
 
 step "drawing the icon"

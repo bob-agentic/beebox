@@ -147,16 +147,15 @@ async fn typing_codex_drives_status_and_syncs_config_back() {
     tokio::time::sleep(Duration::from_millis(800)).await;
     // BEEBOX_USER_CODEX_HOME points the launcher at the fixture instead of
     // the real ~/.codex; the wrapper resolves the fake binary explicitly.
-    // Overlay path also redirected under the fixture so tests never touch
-    // the real ~/.beebox.
+    // The overlay sits in the daemon home, which is the fixture, so tests
+    // never touch the real ~/.beebox.
     app.ptys
         .write(
             pty,
             format!(
-                "export BEEBOX_CODEX_BIN={}/codex BEEBOX_USER_CODEX_HOME={} HOME={}; codex --full-auto; echo EXIT_''CODE=$?\r",
+                "export BEEBOX_CODEX_BIN={}/codex BEEBOX_USER_CODEX_HOME={}; codex --full-auto; echo EXIT_''CODE=$?\r",
                 bin.0.display(),
                 user_codex.0.display(),
-                daemon_home.0.display(),
             )
             .as_bytes(),
         )
@@ -197,7 +196,7 @@ async fn typing_codex_drives_status_and_syncs_config_back() {
     assert_eq!(user_hooks, "{\"user\":\"own\"}");
 
     // The overlay is stable and survives the exit (trust depends on it).
-    let overlay = daemon_home.0.join(".beebox/codex-overlay");
+    let overlay = daemon_home.0.join("codex-overlay");
     assert!(overlay.join("hooks.json").is_file(), "overlay must not be deleted");
 }
 

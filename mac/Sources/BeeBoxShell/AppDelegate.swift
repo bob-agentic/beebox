@@ -138,7 +138,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         let base = FileManager.default.homeDirectoryForCurrentUser
         // The self-test must not disturb real workspaces, and must start from a
         // known-empty tree for its counts to mean anything.
-        guard isSelfTest else { return base.appendingPathComponent(".beebox") }
+        guard isSelfTest else {
+            let dir = Bundle.main.object(forInfoDictionaryKey: "BeeBoxHome") as? String
+            return base.appendingPathComponent(dir ?? ".beebox")
+        }
         let scratch = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("beebox-self-test-\(ProcessInfo.processInfo.processIdentifier)")
         try? FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)

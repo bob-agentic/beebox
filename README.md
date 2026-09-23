@@ -117,6 +117,8 @@ it's dead. To give someone access, send a **share link**, not this URL.
 cd core && cargo run -- --ui ../ui/dist    # backend
 cd ui   && pnpm dev                        # frontend hot reload, proxies to :17788
 ./mac/scripts/build-app.sh                 # one command → mac/build/BeeBox.app
+./mac/scripts/run.sh                       # build + relaunch "BeeBox Dev": its own bundle id and
+                                           # ~/.beebox-dev, so it runs beside an installed BeeBox
 ./mac/scripts/check.sh                     # full test suite (incl. desktop self-test)
 ```
 
