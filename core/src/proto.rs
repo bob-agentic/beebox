@@ -487,7 +487,6 @@ pub enum In {
     CreateGrant {
         scope: GrantScope,
         writable: bool,
-        pairing: bool,
     },
     /// Owner-only. Flips one of the six agent toggles.
     SetAgentSetting {

@@ -10,21 +10,12 @@
   type ScopeKind = 'all' | 'workspace' | 'tab' | 'pane';
   let kind = $state<ScopeKind>('tab');
   let writable = $state(false);
-  let pairing = $state(false);
   /** Which URL's code is being shown, if any. */
   let showing = $state<string | null>(null);
 
   const ws = $derived(store.activeWs);
   const tab = $derived(store.activeTab);
   const pane = $derived(store.focused !== null ? store.pane(store.focused) : undefined);
-
-  /** Workspace level and up reveals which projects and tabs exist, so those
-      scopes always pair. Tab and pane are the user's call. */
-  const forced = $derived(kind === 'all' || kind === 'workspace');
-
-  $effect(() => {
-    if (forced) pairing = true;
-  });
 
   const WHAT_THEY_SEE: Record<ScopeKind, string> = {
     all: 'They see: full sidebar and every tab',
@@ -48,7 +39,7 @@
 
   function create() {
     const scope = scopeValue();
-    if (scope) store.send({ t: 'create_grant', scope, writable, pairing });
+    if (scope) store.send({ t: 'create_grant', scope, writable });
   }
 
   // Every reachable base URL, dev-server style: what the daemon enumerated
@@ -143,20 +134,6 @@
       </button>
     </div>
 
-    <label class="pair-toggle" class:forced>
-      <input type="checkbox" bind:checked={pairing} disabled={forced} />
-      <span class="pt-text">
-        <b>
-          Require a pairing code
-          {#if forced}<span class="lock">locked on</span>{/if}
-        </b>
-        <small>
-          {forced
-            ? 'Always required at workspace scope and above'
-            : 'A forwarded link alone will not get in · optional at this scope'}
-        </small>
-      </span>
-    </label>
 
 
     {#if store.share?.pair_code}
@@ -389,52 +366,6 @@
     margin-top: 2px;
   }
 
-  .pair-toggle {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    cursor: pointer;
-    padding: 9px 11px;
-    border: 1px solid var(--border);
-    border-radius: 7px;
-    background: var(--bg);
-    margin-bottom: 8px;
-  }
-  .pair-toggle:has(input:checked) {
-    border-color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 12%, transparent);
-  }
-  .pair-toggle.forced {
-    cursor: default;
-  }
-  .pair-toggle input {
-    margin-top: 2px;
-    accent-color: var(--accent);
-  }
-  .pt-text b {
-    font-size: 11.5px;
-    font-weight: 600;
-    display: block;
-    color: var(--dim);
-  }
-  .pair-toggle:has(input:checked) .pt-text b {
-    color: var(--fg);
-  }
-  .pt-text small {
-    font-size: 10px;
-    color: var(--faint);
-    display: block;
-    margin-top: 1px;
-  }
-  .lock {
-    font-size: 8.5px;
-    font-weight: 600;
-    padding: 1px 5px;
-    border-radius: 3px;
-    background: #3d2416;
-    color: #fbbf24;
-    vertical-align: 1px;
-  }
 
   .urls {
     display: flex;

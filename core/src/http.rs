@@ -593,16 +593,13 @@ async fn handle(
             }
         }
 
-        In::CreateGrant { scope, writable, pairing } => {
+        In::CreateGrant { scope, writable } => {
             if !grant.host {
                 return Continue(());
             }
             let scope: Scope = scope.into();
             let token = random_token();
-            // Workspace level and above always pair: those scopes reveal which
-            // projects and tabs exist.
-            let needs_pairing = pairing || scope.pairing_forced();
-            let code = needs_pairing.then(random_pair_code);
+            let code = scope.needs_pairing().then(random_pair_code);
 
             let g = Grant {
                 token: token.clone(),

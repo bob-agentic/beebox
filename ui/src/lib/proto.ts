@@ -168,7 +168,7 @@ export type In =
   | { t: 'shelve_tab'; tab: TabId; shelf: Shelf | null }
   | { t: 'reorder_workspaces'; order: WsId[] }
   | { t: 'reorder_tabs'; ws: WsId; order: TabId[] }
-  | { t: 'create_grant'; scope: GrantScope; writable: boolean; pairing: boolean }
+  | { t: 'create_grant'; scope: GrantScope; writable: boolean }
   | { t: 'set_agent_setting'; agent: AgentKind; setting: AgentSetting; on: boolean }
   | { t: 'reset_agent_settings' }
   | { t: 'set_web_server'; exposed: boolean }
