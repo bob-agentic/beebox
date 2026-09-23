@@ -343,7 +343,8 @@ impl App {
         }
         {
             let mut owner = self.owner_size.lock().await;
-            if grant.host || sizing {
+            // Whoever shares the owner's view shares its size too.
+            if grant.may_navigate() || sizing {
                 owner.insert(pane, (cols, rows));
             } else if owner.contains_key(&pane) {
                 return None;
@@ -1167,7 +1168,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn only_the_owner_resizes_the_pty() {
+    async fn only_the_owner_and_its_peers_resize_the_pty() {
         let a = app().await;
         let pane = {
             let t = a.tree.lock().await;
@@ -1194,6 +1195,9 @@ mod tests {
             Some((40, 10)),
             "a link with sizing rights may resize the terminal"
         );
+        // So may a whole-machine writable link: it shares the owner's view.
+        let partner = shared(Scope::All, true);
+        assert_eq!(a.set_viewport(&partner, false, pane, 60, 20).await, Some((60, 20)));
 
         assert_eq!(a.set_viewport(&owner, false, pane, 96, 38).await, Some((96, 38)));
         assert_eq!(a.tree.lock().await.pane(pane).unwrap().cols, 96);

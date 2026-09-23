@@ -209,7 +209,7 @@
       // has. Fitted to its own window instead, every line the shell laid out
       // for the owner's width wrapped here — a prompt became three rows. A
       // narrower window loses the right edge; nothing is mis-drawn.
-      const cols = store.caps.host || store.sizing ? dims.cols : pane.cols;
+      const cols = store.caps.may_open_tab || store.sizing ? dims.cols : pane.cols;
       if (term.cols !== cols || term.rows !== dims.rows) term.resize(cols, dims.rows);
       refresh();
       if (!force && dims.cols === lastCols && dims.rows === lastRows) return;

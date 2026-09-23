@@ -332,12 +332,13 @@
       <Icon name="unplug" size={15} />
     </button>
   {/if}
-  <!-- The owner, and a phone that asked to drive its own size.
+  <!-- The owner, a share that moves the owner's view, and a phone that
+       asked to drive its own size.
        The terminal has one size, and whoever spoke last holds it — so after a
        phone narrows a session to 46 columns the desktop stays there, with
        nothing to make it measure again. Its ResizeObserver only fires when
        the window changes, and the window did not. This asks. -->
-  {#if store.sizing || store.caps.host}
+  {#if store.sizing || store.caps.may_open_tab}
     <button
       class="tb-btn command"
       aria-label="Re-fit to this screen"
