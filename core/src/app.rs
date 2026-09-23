@@ -379,7 +379,18 @@ impl App {
                 self.commit().await;
             }
             In::OpenTab { ws } => {
-                let tab = self.tree.lock().await.open_tab(ws)?;
+                let tab = {
+                    let mut t = self.tree.lock().await;
+                    let owner_view = (t.active_ws, t.active_tab);
+                    let tab = t.open_tab(ws)?;
+                    // The active ids are the owner's screen. A share's new tab
+                    // must not pull the owner off what they are typing into;
+                    // the share follows it locally instead.
+                    if !grant.host {
+                        (t.active_ws, t.active_tab) = owner_view;
+                    }
+                    tab
+                };
                 let pane = self
                     .tree
                     .lock()
@@ -1387,6 +1398,11 @@ mod tests {
             a.tree.lock().await.workspaces[0].tabs.len(),
             tabs + 1,
             "the one thing a link may do",
+        );
+        assert_eq!(
+            a.tree.lock().await.active_tab,
+            Some(tab),
+            "a share's new tab leaves the owner where they were",
         );
 
         a.handle_host(&guest, In::ShelveTab { tab, shelf: Some(Shelf::Archive) })
