@@ -271,6 +271,8 @@ class Store {
         this.connected = false;
         this.closedReason = msg.reason;
         document.title = '404 Not Found';
+        // In the app, back to its connect screen instead of a dead page.
+        (window as any).__beeboxShell?.linkGone?.();
         break;
       case 'pong':
         break;
