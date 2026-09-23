@@ -352,6 +352,9 @@ impl Store {
             scope: scope_from(&kind, id),
             writable: r.get::<_, i64>(3)? != 0,
             pair_hash: r.get(4)?,
+            // Everything in this table is a share link. The owner never has a
+            // row here — its grant is made fresh from the key.
+            host: false,
         }))
     }
 
@@ -611,6 +614,7 @@ mod tests {
                 scope,
                 writable: true,
                 pair_hash: Some("hash".into()),
+                host: false,
             };
             s.put_grant(&g).unwrap();
             let back = s.grant(&g.token).unwrap().expect("grant missing");
@@ -627,6 +631,7 @@ mod tests {
             scope: Scope::Pane(1),
             writable: false,
             pair_hash: Some("hash".into()),
+            host: false,
         };
         s.put_grant(&g).unwrap();
         s.clear_pairing("t").unwrap();
@@ -641,6 +646,7 @@ mod tests {
             scope: Scope::All,
             writable: true,
             pair_hash: None,
+            host: false,
         })
         .unwrap();
 
@@ -666,6 +672,7 @@ mod tests {
             scope: Scope::All,
             writable: true,
             pair_hash: None,
+            host: false,
         })
         .unwrap();
         let id = s.open_session("t", "a", "b", "c").unwrap();

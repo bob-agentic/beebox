@@ -12,7 +12,7 @@
   // alone and no section list ceremony for a single entry.
   type Section = 'appearance' | 'agents';
   let section = $state<Section>('appearance');
-  const showAgents = $derived(store.caps.owner && store.agentSettings !== null);
+  const showAgents = $derived(store.caps.host && store.agentSettings !== null);
 
   // 600 themes need finding, not scrolling.
   let query = $state('');

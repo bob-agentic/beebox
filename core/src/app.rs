@@ -189,7 +189,8 @@ impl App {
         let view = tree.to_view(&visible);
         let caps = Caps {
             writable: grant.writable,
-            owner: grant.may_mutate(),
+            host: grant.host,
+            may_open_tab: grant.host || grant.may_open_tab(),
             // Chrome is trimmed to the scope so a viewer is never shown
             // navigation into places it cannot reach.
             show_sidebar: matches!(grant.scope, Scope::All),
@@ -343,7 +344,7 @@ impl App {
         cols: u16,
         rows: u16,
     ) -> Option<(u16, u16)> {
-        if !grant.may_mutate() && !sizing {
+        if !grant.host && !sizing {
             return None;
         }
         if cols == 0 || rows == 0 {
@@ -365,12 +366,17 @@ impl App {
         Some((cols, rows))
     }
 
-    /// Handles one owner-only structural message. Returns the frames to send
-    /// back to the caller; the tree broadcast reaches everyone else.
-    pub async fn handle_owner(&self, grant: &Grant, msg: In) -> Result<Vec<Out>> {
-        if !grant.may_mutate() {
+    /// Handles one structural message. Returns the frames to send back to the
+    /// caller; the tree broadcast reaches everyone else.
+    pub async fn handle_host(&self, grant: &Grant, msg: In) -> Result<Vec<Out>> {
+        // The owner may do all of this. A share may open a tab, and only in a
+        // scope that will hold one — see `Grant::may_open_tab`. Nothing else:
+        // a link lets someone type into terminals someone else owns.
+        let allowed = grant.host
+            || (matches!(msg, In::OpenTab { .. }) && grant.may_open_tab());
+        if !allowed {
             // Not an error worth telling the client about in detail — a
-            // well-behaved client never sends these without `caps.owner`.
+            // well-behaved client never sends these without `caps.host`.
             return Ok(Vec::new());
         }
 
@@ -691,6 +697,7 @@ impl App {
             scope: Scope::All,
             writable: true,
             pair_hash: None,
+            host: true,
         }
     }
 
@@ -1020,7 +1027,7 @@ impl App {
     pub async fn is_banned(&self, grant: &Grant, addr: &str, device: &str) -> bool {
         // The owner's own window can always reconnect; locking yourself out of
         // your own machine would be absurd.
-        if grant.may_mutate() && addr.starts_with("127.") {
+        if grant.host && addr.starts_with("127.") {
             return false;
         }
         self.banned
@@ -1051,7 +1058,7 @@ impl App {
         let conn = Conn {
             session,
             // Self-declared; there is no account system, and the UI says so.
-            label: if grant.may_mutate() { "You".into() } else { "Guest".into() },
+            label: if grant.host { "You".into() } else { "Guest".into() },
             device,
             addr,
             scope: Self::session_scope_label(&grant.scope),
@@ -1156,14 +1163,14 @@ mod tests {
     async fn app() -> Arc<App> {
         let a = App::new(Store::in_memory().unwrap(), 1000);
         a.bootstrap().await.unwrap();
-        a.handle_owner(&a.owner_grant().await, In::OpenWorkspace { path: "/tmp".into() })
+        a.handle_host(&a.owner_grant().await, In::OpenWorkspace { path: "/tmp".into() })
             .await
             .unwrap();
         a
     }
 
     fn shared(scope: Scope, writable: bool) -> Grant {
-        Grant { token: "t".into(), scope, writable, pair_hash: None }
+        Grant { token: "t".into(), scope, writable, pair_hash: None, host: false }
     }
 
     #[tokio::test]
@@ -1195,7 +1202,7 @@ mod tests {
             t.workspaces[0].tabs[0].panes[0].id
         };
 
-        a.handle_owner(&owner, In::Split { pane, dir: Dir::Vertical })
+        a.handle_host(&owner, In::Split { pane, dir: Dir::Vertical })
             .await
             .unwrap();
 
@@ -1227,7 +1234,7 @@ mod tests {
             In::CloseWorkspace { ws },
             In::OpenWorkspace { path: "/etc".into() },
         ] {
-            a.handle_owner(&viewer, msg).await.unwrap();
+            a.handle_host(&viewer, msg).await.unwrap();
         }
 
         let t = a.tree.lock().await;
@@ -1273,21 +1280,21 @@ mod tests {
         };
 
         let (_, owner_caps) = a.view_for(&a.owner_grant().await).await;
-        assert!(owner_caps.show_sidebar && owner_caps.show_tabs && owner_caps.owner);
+        assert!(owner_caps.show_sidebar && owner_caps.show_tabs && owner_caps.host);
 
         let (view, caps) = a.view_for(&shared(Scope::Pane(pane), false)).await;
         assert!(!caps.show_sidebar, "a pane share must not reveal the sidebar");
         assert!(!caps.show_tabs);
-        assert!(!caps.owner && !caps.writable);
+        assert!(!caps.host && !caps.may_open_tab && !caps.writable);
         assert_eq!(view.workspaces[0].tabs[0].panes.len(), 1);
     }
 
     /// The connection-time replay in http.rs skips a barely-started pane for
-    /// the owner only (whose browser issued the spawn and would double-print
-    /// the prompt), gated on `may_mutate()`. A workspace share — even a
-    /// writable one — must therefore report `may_mutate() == false`, or a
-    /// viewer switching to a tab the owner never opened gets a blank sheet
-    /// because its resumed-but-quiet pane sits under the replay threshold.
+    /// the owner only — whose browser issued the spawn and would double-print
+    /// the prompt — gated on `may_administer()`. A share must therefore not
+    /// count as the owner, however writable, or a viewer switching to a tab
+    /// the owner never opened gets a blank sheet: its resumed-but-quiet pane
+    /// sits under the replay threshold.
     #[tokio::test]
     async fn a_workspace_viewer_is_not_the_owner_and_sees_every_tab() {
         let a = app().await;
@@ -1295,7 +1302,7 @@ mod tests {
 
         // A second tab the owner has "opened" but that has produced little —
         // exactly the case that used to replay as blank for a viewer.
-        a.handle_owner(&a.owner_grant().await, In::OpenTab { ws })
+        a.handle_host(&a.owner_grant().await, In::OpenTab { ws })
             .await
             .unwrap();
         assert_eq!(a.tree.lock().await.workspaces[0].tabs.len(), 2);
@@ -1305,7 +1312,7 @@ mod tests {
             // The replay gate keys on this: a viewer never spawned anything,
             // so it must not inherit the owner's just-spawned skip.
             assert!(
-                !viewer.may_mutate(),
+                !viewer.host,
                 "a workspace share (writable={writable}) must not count as owner",
             );
             // Both tabs' panes are in scope, so both are replayable — the
@@ -1327,7 +1334,7 @@ mod tests {
         assert_eq!(a.visible(&viewer).await.len(), 1);
 
         let mut rx = a.subscribe_tree();
-        a.handle_owner(&a.owner_grant().await, In::Split { pane, dir: Dir::Horizontal })
+        a.handle_host(&a.owner_grant().await, In::Split { pane, dir: Dir::Horizontal })
             .await
             .unwrap();
 
@@ -1345,7 +1352,7 @@ mod tests {
         let a = app().await;
         let owner = a.owner_grant().await;
         let ws1 = a.tree.lock().await.workspaces[0].id;
-        a.handle_owner(&owner, In::OpenWorkspace { path: "/tmp".into() }).await.unwrap();
+        a.handle_host(&owner, In::OpenWorkspace { path: "/tmp".into() }).await.unwrap();
         let (ws2, tab2) = {
             let t = a.tree.lock().await;
             (t.workspaces[1].id, t.workspaces[1].tabs[0].id)
@@ -1353,7 +1360,7 @@ mod tests {
         assert_eq!(a.tree.lock().await.active_tab, Some(tab2));
 
         // Back to workspace 1 by clicking it (no tab named).
-        a.handle_owner(&owner, In::Activate { ws: ws1, tab: None }).await.unwrap();
+        a.handle_host(&owner, In::Activate { ws: ws1, tab: None }).await.unwrap();
         let t = a.tree.lock().await;
         let active_tab = t.active_tab.expect("a tab must be active");
         assert!(
@@ -1363,7 +1370,7 @@ mod tests {
         drop(t);
 
         // And going forward again keeps ws2's tab.
-        a.handle_owner(&owner, In::Activate { ws: ws2, tab: None }).await.unwrap();
+        a.handle_host(&owner, In::Activate { ws: ws2, tab: None }).await.unwrap();
         assert_eq!(a.tree.lock().await.active_tab, Some(tab2));
     }
 
@@ -1397,20 +1404,20 @@ mod tests {
         let owner = a.owner_grant().await;
         let ws1 = a.tree.lock().await.workspaces[0].id;
 
-        a.handle_owner(&owner, In::OpenTab { ws: ws1 }).await.unwrap();
+        a.handle_host(&owner, In::OpenTab { ws: ws1 }).await.unwrap();
         let second = {
             let t = a.tree.lock().await;
             t.workspaces[0].tabs[1].id
         };
-        a.handle_owner(&owner, In::Activate { ws: ws1, tab: Some(second) }).await.unwrap();
+        a.handle_host(&owner, In::Activate { ws: ws1, tab: Some(second) }).await.unwrap();
 
         // Away to another project...
-        a.handle_owner(&owner, In::OpenWorkspace { path: "/tmp/other".into() }).await.unwrap();
+        a.handle_host(&owner, In::OpenWorkspace { path: "/tmp/other".into() }).await.unwrap();
         let ws2 = a.tree.lock().await.workspaces[1].id;
         assert_ne!(ws1, ws2);
 
         // ...and back, by clicking the workspace (no tab named).
-        a.handle_owner(&owner, In::Activate { ws: ws1, tab: None }).await.unwrap();
+        a.handle_host(&owner, In::Activate { ws: ws1, tab: None }).await.unwrap();
         assert_eq!(
             a.tree.lock().await.active_tab,
             Some(second),
@@ -1432,7 +1439,7 @@ mod tests {
         let live = a.ptys.live_count();
         assert_eq!(live, 1);
 
-        a.handle_owner(&owner, In::ShelveTab { tab, shelf: Some(Shelf::Archive) }).await.unwrap();
+        a.handle_host(&owner, In::ShelveTab { tab, shelf: Some(Shelf::Archive) }).await.unwrap();
 
         assert_eq!(a.ptys.live_count(), live, "shelving must not kill a pty");
         let t = a.tree.lock().await;
@@ -1446,19 +1453,93 @@ mod tests {
         let a = app().await;
         let owner = a.owner_grant().await;
         let ws = a.tree.lock().await.workspaces[0].id;
-        a.handle_owner(&owner, In::OpenTab { ws }).await.unwrap();
+        a.handle_host(&owner, In::OpenTab { ws }).await.unwrap();
         let (first, second) = {
             let t = a.tree.lock().await;
             (t.workspaces[0].tabs[0].id, t.workspaces[0].tabs[1].id)
         };
         assert_eq!(a.tree.lock().await.active_tab, Some(second));
 
-        a.handle_owner(&owner, In::ShelveTab { tab: second, shelf: Some(Shelf::Archive) }).await.unwrap();
+        a.handle_host(&owner, In::ShelveTab { tab: second, shelf: Some(Shelf::Archive) }).await.unwrap();
         assert_eq!(a.tree.lock().await.active_tab, Some(first));
 
         // And taking it back brings you to it.
-        a.handle_owner(&owner, In::ShelveTab { tab: second, shelf: None }).await.unwrap();
+        a.handle_host(&owner, In::ShelveTab { tab: second, shelf: None }).await.unwrap();
         assert_eq!(a.tree.lock().await.active_tab, Some(second));
+    }
+
+    #[tokio::test]
+    async fn a_whole_machine_link_may_open_a_tab_and_nothing_more() {
+        // The widest share there is — every workspace, writable. It may open
+        // a tab, because someone working across the machine needs another
+        // terminal sometimes and the result lands where they can see it. It
+        // may not file the owner's tabs, close their workspaces, or open the
+        // port: handing out a link is not handing over the machine.
+        let a = app().await;
+        let owner = a.owner_grant().await;
+        let (ws, tab) = {
+            let t = a.tree.lock().await;
+            (t.workspaces[0].id, t.workspaces[0].tabs[0].id)
+        };
+        let guest = Grant {
+            token: "guest".into(),
+            scope: Scope::All,
+            writable: true,
+            pair_hash: None,
+            host: false,
+        };
+
+        let tabs = a.tree.lock().await.workspaces[0].tabs.len();
+        a.handle_host(&guest, In::OpenTab { ws }).await.unwrap();
+        assert_eq!(
+            a.tree.lock().await.workspaces[0].tabs.len(),
+            tabs + 1,
+            "the one thing a link may do",
+        );
+
+        a.handle_host(&guest, In::ShelveTab { tab, shelf: Some(Shelf::Archive) })
+            .await
+            .unwrap();
+        assert_eq!(
+            a.tree.lock().await.workspaces[0].tabs[0].shelf,
+            None,
+            "filing is the owner's own organisation of their work",
+        );
+
+        let before = a.tree.lock().await.workspaces.len();
+        a.handle_host(&guest, In::CloseWorkspace { ws }).await.unwrap();
+        assert_eq!(a.tree.lock().await.workspaces.len(), before);
+
+        a.handle_host(&guest, In::SetWebServer { exposed: true }).await.unwrap();
+        assert!(!a.is_exposed(), "a link must not open the port");
+
+        // The owner, through the same door, is obeyed.
+        a.handle_host(&owner, In::ShelveTab { tab, shelf: Some(Shelf::Archive) })
+            .await
+            .unwrap();
+        assert_eq!(
+            a.tree.lock().await.workspaces[0].tabs[0].shelf,
+            Some(Shelf::Archive),
+        );
+    }
+
+    #[tokio::test]
+    async fn a_narrower_link_cannot_even_open_a_tab() {
+        // The exception is whole-machine scope only. Anywhere narrower, the
+        // tab would land somewhere the person who asked cannot see.
+        let a = app().await;
+        let ws = a.tree.lock().await.workspaces[0].id;
+        let guest = Grant {
+            token: "guest".into(),
+            scope: Scope::Workspace(ws),
+            writable: true,
+            pair_hash: None,
+            host: false,
+        };
+
+        let tabs = a.tree.lock().await.workspaces[0].tabs.len();
+        a.handle_host(&guest, In::OpenTab { ws }).await.unwrap();
+        assert_eq!(a.tree.lock().await.workspaces[0].tabs.len(), tabs);
     }
 
     #[tokio::test]
@@ -1470,7 +1551,7 @@ mod tests {
         let tab = a.tree.lock().await.workspaces[0].tabs[0].id;
 
         for shelf in [Some(Shelf::Archive), Some(Shelf::Later), None] {
-            a.handle_owner(&owner, In::ShelveTab { tab, shelf }).await.unwrap();
+            a.handle_host(&owner, In::ShelveTab { tab, shelf }).await.unwrap();
             assert_eq!(a.tree.lock().await.workspaces[0].tabs[0].shelf, shelf);
         }
     }
@@ -1486,7 +1567,7 @@ mod tests {
             (t.workspaces[0].id, t.workspaces[0].tabs[0].id)
         };
 
-        a.handle_owner(&owner, In::ShelveTab { tab, shelf: Some(Shelf::Archive) }).await.unwrap();
+        a.handle_host(&owner, In::ShelveTab { tab, shelf: Some(Shelf::Archive) }).await.unwrap();
 
         let t = a.tree.lock().await;
         assert_eq!(t.workspaces.len(), 1, "the workspace survives an empty strip");
@@ -1500,15 +1581,15 @@ mod tests {
         let a = app().await;
         let owner = a.owner_grant().await;
         let ws = a.tree.lock().await.workspaces[0].id;
-        a.handle_owner(&owner, In::OpenTab { ws }).await.unwrap();
+        a.handle_host(&owner, In::OpenTab { ws }).await.unwrap();
         let (first, second) = {
             let t = a.tree.lock().await;
             (t.workspaces[0].tabs[0].id, t.workspaces[0].tabs[1].id)
         };
 
         // Set the *first* aside, then ask for the workspace with no tab named.
-        a.handle_owner(&owner, In::ShelveTab { tab: first, shelf: Some(Shelf::Archive) }).await.unwrap();
-        a.handle_owner(&owner, In::Activate { ws, tab: None }).await.unwrap();
+        a.handle_host(&owner, In::ShelveTab { tab: first, shelf: Some(Shelf::Archive) }).await.unwrap();
+        a.handle_host(&owner, In::Activate { ws, tab: None }).await.unwrap();
 
         assert_eq!(a.tree.lock().await.active_tab, Some(second));
     }
@@ -1524,7 +1605,7 @@ mod tests {
         let ws = a.tree.lock().await.workspaces[0].id;
 
         for _ in 0..7 {
-            a.handle_owner(&owner, In::OpenTab { ws }).await.unwrap();
+            a.handle_host(&owner, In::OpenTab { ws }).await.unwrap();
         }
         let ids: Vec<TabId> = a.tree.lock().await.workspaces[0]
             .tabs
@@ -1533,9 +1614,9 @@ mod tests {
             .collect();
         assert_eq!(ids.len(), 8);
 
-        a.handle_owner(&owner, In::Activate { ws, tab: Some(ids[3]) }).await.unwrap();
-        a.handle_owner(&owner, In::Activate { ws, tab: Some(ids[4]) }).await.unwrap();
-        a.handle_owner(&owner, In::CloseTab { tab: ids[4] }).await.unwrap();
+        a.handle_host(&owner, In::Activate { ws, tab: Some(ids[3]) }).await.unwrap();
+        a.handle_host(&owner, In::Activate { ws, tab: Some(ids[4]) }).await.unwrap();
+        a.handle_host(&owner, In::CloseTab { tab: ids[4] }).await.unwrap();
 
         assert_eq!(
             a.tree.lock().await.active_tab,
@@ -1554,7 +1635,7 @@ mod tests {
         let ws = a.tree.lock().await.workspaces[0].id;
 
         for _ in 0..3 {
-            a.handle_owner(&owner, In::OpenTab { ws }).await.unwrap();
+            a.handle_host(&owner, In::OpenTab { ws }).await.unwrap();
         }
         let ids: Vec<TabId> = a.tree.lock().await.workspaces[0]
             .tabs
@@ -1564,13 +1645,13 @@ mod tests {
 
         // Visit second, then third, then fourth.
         for i in [1usize, 2, 3] {
-            a.handle_owner(&owner, In::Activate { ws, tab: Some(ids[i]) }).await.unwrap();
+            a.handle_host(&owner, In::Activate { ws, tab: Some(ids[i]) }).await.unwrap();
         }
 
-        a.handle_owner(&owner, In::CloseTab { tab: ids[3] }).await.unwrap();
+        a.handle_host(&owner, In::CloseTab { tab: ids[3] }).await.unwrap();
         assert_eq!(a.tree.lock().await.active_tab, Some(ids[2]));
 
-        a.handle_owner(&owner, In::CloseTab { tab: ids[2] }).await.unwrap();
+        a.handle_host(&owner, In::CloseTab { tab: ids[2] }).await.unwrap();
         assert_eq!(a.tree.lock().await.active_tab, Some(ids[1]));
     }
 
@@ -1583,7 +1664,7 @@ mod tests {
         let ws = a.tree.lock().await.workspaces[0].id;
 
         for _ in 0..2 {
-            a.handle_owner(&owner, In::OpenTab { ws }).await.unwrap();
+            a.handle_host(&owner, In::OpenTab { ws }).await.unwrap();
         }
         let ids: Vec<TabId> = a.tree.lock().await.workspaces[0]
             .tabs
@@ -1591,8 +1672,8 @@ mod tests {
             .map(|t| t.id)
             .collect();
 
-        a.handle_owner(&owner, In::Activate { ws, tab: Some(ids[2]) }).await.unwrap();
-        a.handle_owner(&owner, In::CloseTab { tab: ids[0] }).await.unwrap();
+        a.handle_host(&owner, In::Activate { ws, tab: Some(ids[2]) }).await.unwrap();
+        a.handle_host(&owner, In::CloseTab { tab: ids[0] }).await.unwrap();
 
         assert_eq!(a.tree.lock().await.active_tab, Some(ids[2]));
     }
@@ -1603,15 +1684,15 @@ mod tests {
         let owner = a.owner_grant().await;
         let ws = a.tree.lock().await.workspaces[0].id;
 
-        a.handle_owner(&owner, In::OpenTab { ws }).await.unwrap();
+        a.handle_host(&owner, In::OpenTab { ws }).await.unwrap();
         let (first, second) = {
             let t = a.tree.lock().await;
             (t.workspaces[0].tabs[0].id, t.workspaces[0].tabs[1].id)
         };
-        a.handle_owner(&owner, In::Activate { ws, tab: Some(second) }).await.unwrap();
-        a.handle_owner(&owner, In::CloseTab { tab: second }).await.unwrap();
+        a.handle_host(&owner, In::Activate { ws, tab: Some(second) }).await.unwrap();
+        a.handle_host(&owner, In::CloseTab { tab: second }).await.unwrap();
 
-        a.handle_owner(&owner, In::Activate { ws, tab: None }).await.unwrap();
+        a.handle_host(&owner, In::Activate { ws, tab: None }).await.unwrap();
         assert_eq!(
             a.tree.lock().await.active_tab,
             Some(first),
@@ -1637,7 +1718,7 @@ mod tests {
         };
         a.update_cwd(old, "/private/tmp/elsewhere".into(), None).await;
 
-        a.handle_owner(&owner, In::OpenTab { ws }).await.unwrap();
+        a.handle_host(&owner, In::OpenTab { ws }).await.unwrap();
 
         let t = a.tree.lock().await;
         let fresh = t.workspaces[0].tabs.last().unwrap();
@@ -1661,7 +1742,7 @@ mod tests {
         };
         a.update_cwd(src, "/private/tmp/elsewhere".into(), None).await;
 
-        a.handle_owner(&owner, In::Split { pane: src, dir: Dir::Vertical })
+        a.handle_host(&owner, In::Split { pane: src, dir: Dir::Vertical })
             .await
             .unwrap();
 
@@ -1684,7 +1765,7 @@ mod tests {
             let t = a.tree.lock().await;
             t.workspaces[0].tabs[0].panes[0].id
         };
-        a.handle_owner(&owner, In::ClosePane { pane }).await.unwrap();
+        a.handle_host(&owner, In::ClosePane { pane }).await.unwrap();
 
         assert!(a.tree.lock().await.workspaces.is_empty(), "ghost workspace left behind");
         let reloaded = a.store.lock().await.load_tree().unwrap();
@@ -1716,7 +1797,7 @@ mod tests {
         // A workspace with a tab is real work; bootstrap's ghost sweep must not
         // touch it.
         let a = App::new(Store::in_memory().unwrap(), 100);
-        a.handle_owner(&a.owner_grant().await, In::OpenWorkspace { path: "/keep".into() })
+        a.handle_host(&a.owner_grant().await, In::OpenWorkspace { path: "/keep".into() })
             .await
             .unwrap();
         a.bootstrap().await.unwrap();
@@ -1728,14 +1809,14 @@ mod tests {
         let a = app().await;
         let owner = a.owner_grant().await;
         let ws = a.tree.lock().await.workspaces[0].id;
-        a.handle_owner(&owner, In::OpenTab { ws }).await.unwrap();
+        a.handle_host(&owner, In::OpenTab { ws }).await.unwrap();
         assert_eq!(a.tree.lock().await.workspaces[0].tabs.len(), 2);
 
         let pane = {
             let t = a.tree.lock().await;
             t.workspaces[0].tabs[1].panes[0].id
         };
-        a.handle_owner(&owner, In::ClosePane { pane }).await.unwrap();
+        a.handle_host(&owner, In::ClosePane { pane }).await.unwrap();
         assert_eq!(a.tree.lock().await.workspaces[0].tabs.len(), 1);
     }
 
@@ -1746,7 +1827,7 @@ mod tests {
             let t = a.tree.lock().await;
             t.workspaces[0].tabs[0].panes[0].id
         };
-        a.handle_owner(&a.owner_grant().await, In::Split { pane, dir: Dir::Vertical })
+        a.handle_host(&a.owner_grant().await, In::Split { pane, dir: Dir::Vertical })
             .await
             .unwrap();
 
@@ -1763,7 +1844,7 @@ mod tests {
         let owner = a.owner_grant().await;
         let ws = a.tree.lock().await.workspaces[0].id;
         // A second tab, so closing this pane cannot take the workspace with it.
-        a.handle_owner(&owner, In::OpenTab { ws }).await.unwrap();
+        a.handle_host(&owner, In::OpenTab { ws }).await.unwrap();
         let (doomed_tab, pane) = {
             let t = a.tree.lock().await;
             let tab = &t.workspaces[0].tabs[1];
@@ -1845,7 +1926,7 @@ mod tests {
         drop(t);
 
         // And it can be re-run, which is the whole point of the split ids.
-        a.handle_owner(&a.owner_grant().await, In::Respawn { pane })
+        a.handle_host(&a.owner_grant().await, In::Respawn { pane })
             .await
             .unwrap();
         assert!(a.tree.lock().await.pane(pane).unwrap().pty.is_some());

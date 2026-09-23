@@ -36,7 +36,13 @@ const EMPTY_TREE: TreeView = { workspaces: [], active_ws: null, active_tab: null
 
 class Store {
   tree = $state<TreeView>(EMPTY_TREE);
-  caps = $state<Caps>({ writable: false, owner: false, show_sidebar: false, show_tabs: false });
+  caps = $state<Caps>({
+    writable: false,
+    host: false,
+    may_open_tab: false,
+    show_sidebar: false,
+    show_tabs: false,
+  });
   connected = $state(false);
   /** Why the server closed us, if it did. */
   closedReason = $state<string | null>(null);
@@ -211,10 +217,10 @@ class Store {
       case 'tree': {
         this.tree = msg.tree;
         // Anything clicked before the first frame arrived was handled as a
-        // viewer would handle it, because `owner` starts false — and the local
+        // viewer would handle it, because `host` starts false — and the local
         // override that leaves behind outranks the server's own active ids
         // forever after, so a new workspace would open behind the old one.
-        if (msg.caps.owner && !this.caps.owner) {
+        if (msg.caps.host && !this.caps.host) {
           this.localWs = null;
           this.localTab = null;
         }
@@ -533,7 +539,7 @@ class Store {
   private localTab = $state<TabId | null>(null);
 
   activate(ws: WsId, tab: TabId | null) {
-    if (this.caps.owner) {
+    if (this.caps.host) {
       this.send({ t: 'activate', ws, tab });
       return;
     }
@@ -557,7 +563,7 @@ class Store {
       choose one. Viewers never see this: a share with nothing in it is the
       owner's problem to fix, not theirs. */
   get needsWorkspacePrompt(): boolean {
-    return this.caps.owner && this.connected && this.tree.workspaces.length === 0;
+    return this.caps.host && this.connected && this.tree.workspaces.length === 0;
   }
 
   visiblePanes(): PaneView[] {

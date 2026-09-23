@@ -102,7 +102,14 @@ export interface TreeView {
 export interface Caps {
   writable: boolean;
   /** May restructure the tree and set pane size. Owner only. */
-  owner: boolean;
+  /** Holds the owner key, and so may change anything. Never a share link,
+      however wide its scope: a link lets someone type into terminals someone
+      else owns, and nothing more. */
+  host: boolean;
+  /** May open a tab — a writable whole-machine share, or the owner. The one
+      structural thing a link can do, because the new tab lands where whoever
+      asked for it can see it. */
+  may_open_tab: boolean;
   show_sidebar: boolean;
   show_tabs: boolean;
 }

@@ -134,7 +134,10 @@
   };
 
   function run(cmd: string) {
-    if (!store.caps.owner) return;
+    // Opening a tab is the one thing a share may do, and only a writable
+    // whole-machine one. The server enforces this too; this only keeps the
+    // shortcut from looking broken.
+    if (cmd === 'new_tab' ? !store.caps.may_open_tab : !store.caps.host) return;
     COMMANDS[cmd]?.();
   }
 
@@ -159,7 +162,7 @@
       dialog = 'settings';
       return;
     }
-    if (!store.caps.owner) return;
+    if (!store.caps.host && !store.caps.may_open_tab) return;
 
     // In the desktop shell the menu already owns these, and handling them
     // twice would open two workspaces for one keypress.
@@ -263,7 +266,7 @@
   <div class="slot-hint">+ plugins</div>
 
   <div class="spacer"></div>
-  {#if store.caps.owner}
+  {#if store.caps.host}
     <button
       class="tb-btn with-icon"
       onclick={() => (dialog = 'share')}
@@ -306,12 +309,12 @@
       <Icon name="unplug" size={15} />
     </button>
   {/if}
-  <!-- For anyone who may set the size: the owner, and a phone that asked to.
+  <!-- The owner, and a phone that asked to drive its own size.
        The terminal has one size, and whoever spoke last holds it — so after a
        phone narrows a session to 46 columns the desktop stays there, with
        nothing to make it measure again. Its ResizeObserver only fires when
        the window changes, and the window did not. This asks. -->
-  {#if store.sizing || store.caps.owner}
+  {#if store.sizing || store.caps.host}
     <button
       class="tb-btn command"
       aria-label="Re-fit to this screen"
@@ -357,7 +360,7 @@
         {/each}
       {:else}
         <div class="empty">
-          {#if store.caps.owner}
+          {#if store.caps.host}
             <div class="empty-icon"><Icon name="folder" size={30} stroke={1.5} /></div>
             <div class="empty-title">No workspace open</div>
             <p class="empty-sub">
@@ -399,7 +402,7 @@
   {/if}
 
   <div class="spacer"></div>
-  {#if store.caps.owner}
+  {#if store.caps.host}
     <!-- The daemon always serves loopback (the terminal itself rides on it);
          this toggles whether anyone else on the network is let in. -->
     <button

@@ -170,7 +170,7 @@
   <!-- Outside the scroller, not pinned inside it: the shelves own their width
        and the tabs simply have less room. Nothing of theirs can pass under
        them, which is the only way an edge this busy stays clean. -->
-  {#if store.caps.owner}
+  {#if store.caps.host}
     <div class="shelves">
       {#each shelves as s (s.key)}
         <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -222,7 +222,7 @@
       class:active={tab.id === store.activeTab?.id}
       onclick={() => ws && store.activate(ws.id, tab.id)}
       onauxclick={(e) => {
-        if (e.button === 1 && store.caps.owner) {
+        if (e.button === 1 && store.caps.host) {
           e.preventDefault();
           if (confirm('Close this tab? Its terminals will be terminated.'))
             store.send({ t: 'close_tab', tab: tab.id });
@@ -253,14 +253,14 @@
         <span
           class="label"
           ondblclick={(e) => {
-            if (!store.caps.owner) return;
+            if (!store.caps.host) return;
             e.stopPropagation();
             beginRename(tab);
           }}
           oncontextmenu={(e) => {
             // Right-click on a manually named tab offers the way back to the
             // automatic title; an empty rename is exactly that on the wire.
-            if (!store.caps.owner || !tab.title) return;
+            if (!store.caps.host || !tab.title) return;
             e.preventDefault();
             store.send({ t: 'rename_tab', tab: tab.id, title: '' });
           }}
@@ -268,7 +268,7 @@
           >{labels.get(tab.id) ?? label(tab)}</span
         >
       {/if}
-      {#if store.caps.owner}
+      {#if store.caps.host}
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <span
           class="x"
@@ -285,7 +285,7 @@
     </div>
     {/each}
 
-    {#if store.caps.owner && ws}
+    {#if store.caps.may_open_tab && ws}
       <button
         class="add"
         title="New tab"

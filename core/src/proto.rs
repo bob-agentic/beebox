@@ -258,9 +258,18 @@ pub struct TreeView {
 pub struct Caps {
     /// May send `Input`.
     pub writable: bool,
-    /// May restructure the tree and set pane size. Owner only — a shared link
-    /// is for showing someone a terminal, not rearranging the desk.
-    pub owner: bool,
+    /// Holds the owner key, and so may change anything: splitting, opening
+    /// and closing tabs and workspaces, renaming, reordering, filing on
+    /// shelves, minting links, configuring the daemon, kicking sessions.
+    ///
+    /// Never a share link, however wide its scope. A link lets someone type
+    /// into terminals someone else owns, and nothing more — handing out a
+    /// whole-machine link is not handing over the machine.
+    pub host: bool,
+    /// May open a tab: a writable share of a workspace or wider. The one
+    /// structural thing a link can do, because a new tab lands where whoever
+    /// asked for it can see it.
+    pub may_open_tab: bool,
     pub show_sidebar: bool,
     pub show_tabs: bool,
 }

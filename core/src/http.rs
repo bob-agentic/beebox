@@ -381,9 +381,9 @@ async fn serve(
         app.remove_conn(session).await;
         return;
     }
-    if grant.may_mutate() {
+    if grant.host {
         let _ = tx.send(Out::Peers { peers: app.peers(session).await }).await;
-        // Agents toggles are owner-level; viewers never see or set them.
+        // Agents toggles are the owner's; a share never sees or sets them.
         let _ = tx
             .send(Out::AgentSettings {
                 settings: app.agent_settings().await,
@@ -408,7 +408,10 @@ async fn serve(
     // replay, and first make sure the pane has a process at all (idempotent
     // with resume_all — a no-op when it is already running).
     const JUST_SPAWNED: u64 = 4096;
-    let owner = grant.may_mutate();
+    // The owner's own window, as against anyone arriving on a link. Theirs is
+    // the connection that already has the terminals in front of it; a visitor
+    // needs them started and replayed.
+    let host = grant.host;
 
     // Before the replay, not after: a client that will resize should be sent
     // history already laid out for the width it is about to use.
@@ -421,12 +424,12 @@ async fn serve(
     }
 
     for pane in app.visible(&grant).await {
-        if !owner {
+        if !host {
             let _ = app.ensure_running(pane).await;
         }
         if let Some(pty) = app.pty_of(pane).await {
             if let Some((modes, data, through)) = app.ptys.attach_snapshot(pty, replay) {
-                if !owner || through > JUST_SPAWNED {
+                if !host || through > JUST_SPAWNED {
                     let _ = tx.send(Out::Resync { pty, modes, data, through }).await;
                 }
             }
@@ -500,7 +503,7 @@ async fn serve(
                             Out::Cwd { pane, path, git }
                         }
                         crate::app::AgentDelta::Settings { settings } => {
-                            if !grant.may_mutate() { continue }
+                            if !grant.host { continue }
                             Out::AgentSettings {
                                 settings,
                                 codex_hooks: app.codex_hooks_state().to_string(),
@@ -522,7 +525,7 @@ async fn serve(
                     if tx.send(Out::Tree { tree, caps }).await.is_err() {
                         break;
                     }
-                    if grant.may_mutate() {
+                    if grant.host {
                         let _ = tx.send(Out::Peers { peers: app.peers(session).await }).await;
                         let _ = tx.send(Out::WebServer { exposed: app.is_exposed() }).await;
                     }
@@ -591,7 +594,7 @@ async fn handle(
         }
 
         In::CreateGrant { scope, writable, pairing } => {
-            if !grant.may_mutate() {
+            if !grant.host {
                 return Continue(());
             }
             let scope: Scope = scope.into();
@@ -608,6 +611,8 @@ async fn handle(
                 // Only the hash is stored; the code itself goes back to the
                 // owner once, to be spoken over a second channel.
                 pair_hash: code.as_deref().map(|c| hash_pair_code(c, &token)),
+                // A link, never the machine.
+                host: false,
             };
             if app.store.lock().await.put_grant(&g).is_ok() {
                 // Creating a link implies wanting it reachable: open the web
@@ -627,13 +632,13 @@ async fn handle(
         }
 
         In::Kick { session: target } => {
-            if grant.may_mutate() {
+            if grant.host {
                 app.kick(target).await;
             }
         }
 
         In::KickAll => {
-            if grant.may_mutate() {
+            if grant.host {
                 // Never the connection that asked, or "disconnect all" would
                 // close the window you clicked it in.
                 app.kick_all_except(me).await;
@@ -642,7 +647,7 @@ async fn handle(
 
         other => {
             // Everything else is owner-only and checked inside.
-            if let Err(e) = app.handle_owner(grant, other).await {
+            if let Err(e) = app.handle_host(grant, other).await {
                 tracing::debug!("owner action refused: {e}");
             }
         }

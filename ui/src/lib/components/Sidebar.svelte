@@ -55,7 +55,7 @@
   let menu = $state<{ x: number; y: number; items: MenuItem[] } | null>(null);
 
   function openMenu(e: MouseEvent, ws: WorkspaceView) {
-    if (!store.caps.owner) return;
+    if (!store.caps.host) return;
     e.preventDefault();
     menu = {
       x: e.clientX,
@@ -76,7 +76,7 @@
 <aside class="sidebar">
   <div class="sb-head">
     Workspaces
-    {#if store.caps.owner}
+    {#if store.caps.host}
       <button class="add" title="Open a workspace  ⌘N" aria-label="Open a workspace" onclick={onnew}>
         <Icon name="plus" size={15} />
       </button>
@@ -120,13 +120,13 @@
               class="name"
               title={ws.path}
               ondblclick={(e) => {
-                if (!store.caps.owner) return;
+                if (!store.caps.host) return;
                 e.stopPropagation();
                 beginRename(ws);
               }}>{ws.name}</span
             >
             <span class="count">{ws.tabs.length}</span>
-            {#if store.caps.owner}
+            {#if store.caps.host}
               <!-- svelte-ignore a11y_click_events_have_key_events -->
               <span
                 class="x"

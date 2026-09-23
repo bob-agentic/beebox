@@ -15,7 +15,7 @@
 
   /** Drag a gutter: resolve to fractions, then let the server normalise. */
   function startDrag(e: PointerEvent, index: number) {
-    if (!store.caps.owner || node.kind !== 'split') return;
+    if (!store.caps.host || node.kind !== 'split') return;
     e.preventDefault();
 
     const container = (e.currentTarget as HTMLElement).parentElement!;
@@ -68,7 +68,7 @@
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
           class="gutter"
-          class:disabled={!store.caps.owner}
+          class:disabled={!store.caps.host}
           onpointerdown={(e) => startDrag(e, i - 1)}
         ></div>
       {/if}

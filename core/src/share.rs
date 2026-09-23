@@ -4,7 +4,8 @@
 //!
 //! * [`visible_panes`] — which panes a grant may see, and therefore which
 //!   output it receives and which panes it may type into.
-//! * [`Grant::may_mutate`] — whether it may restructure the tree at all.
+//! * [`Grant::host`] — whether it owns the machine, and so may change
+//!   anything at all beyond typing.
 //!
 //! The second exists because half the protocol is not about panes. `OpenTab`,
 //! `CloseTab` and `Split` name no pane, so a pane-set check cannot authorise
@@ -60,19 +61,35 @@ pub struct Grant {
     pub writable: bool,
     /// Argon2 hash of the pairing code, cleared once spent.
     pub pair_hash: Option<String>,
+    /// Holds the owner key, and so may change anything: splitting, opening
+    /// and closing tabs and workspaces, renaming, reordering, filing on
+    /// shelves, minting links, configuring the daemon, kicking sessions.
+    ///
+    /// Never true for a share link, however wide its scope. A link lets
+    /// someone type into terminals someone else owns, and nothing more —
+    /// every structural thing beyond that raised a question about where the
+    /// result belongs. Handing out a whole-machine link is not handing over
+    /// the machine.
+    pub host: bool,
 }
 
 impl Grant {
-    /// Structural changes — spawning panes, opening and closing tabs, resizing
-    /// splits, issuing grants, kicking sessions.
+    /// Opening a tab.
     ///
-    /// Owner only. A shared link is for showing someone a terminal, not
-    /// rearranging the desk; and a remote-supplied command string is a
-    /// different risk class from a keystroke.
-    pub fn may_mutate(&self) -> bool {
+    /// The whole machine, writable, and nothing narrower. Someone working
+    /// across all of it plainly needs another terminal sometimes, and the
+    /// result lands where they can reach it. A narrower share does not get
+    /// this: the tab would appear on the owner's machine in a place whoever
+    /// asked for it cannot see.
+    ///
+    /// Everything else structural stays with [`Grant::host`].
+    pub fn may_open_tab(&self) -> bool {
         self.writable && self.scope == Scope::All
     }
 
+    /// Structural changes — spawning panes, opening and closing tabs, resizing
+    /// splits, issuing grants, kicking sessions.
+    ///
     /// Typing into a pane. Requires both the write bit and visibility.
     pub fn may_type(&self, pane: PaneId, tree: &SessionTree) -> bool {
         self.writable && visible_panes(&self.scope, tree).contains(&pane)
@@ -177,21 +194,41 @@ mod tests {
 
     /// The hole the review found: a writable Pane grant must not be able to
     /// spawn processes or destroy tabs it cannot see.
+    /// The whole permission model.
+    ///
+    /// The owner key may do anything. A link may type — and, at whole-machine
+    /// scope with the write bit, open a tab. Nothing else, ever: every other
+    /// structural act raised a question about where the result belongs.
     #[test]
-    fn only_the_owner_may_mutate_the_tree() {
-        let shared = Grant {
+    fn who_may_do_what() {
+        let link = |scope, writable| Grant {
             token: "x".into(),
-            scope: Scope::Pane(1),
-            writable: true,
+            scope,
+            writable,
             pair_hash: None,
+            host: false,
         };
-        assert!(!shared.may_mutate());
+        let scopes = [Scope::All, Scope::Workspace(1), Scope::Tab(1), Scope::Pane(1)];
 
-        let owner = Grant { scope: Scope::All, ..shared.clone() };
-        assert!(owner.may_mutate());
+        // The owner owns the machine, whatever else is true of the grant.
+        assert!(Grant { host: true, ..link(Scope::All, true) }.host);
 
-        let readonly_owner = Grant { writable: false, ..owner.clone() };
-        assert!(!readonly_owner.may_mutate());
+        // A link never does.
+        for scope in scopes {
+            for writable in [false, true] {
+                assert!(!link(scope, writable).host, "{scope:?} writable={writable}");
+            }
+        }
+
+        // Opening a tab: the whole machine, writable, and nothing else.
+        assert!(link(Scope::All, true).may_open_tab());
+        assert!(!link(Scope::All, false).may_open_tab(), "read-only opens nothing");
+        for scope in [Scope::Workspace(1), Scope::Tab(1), Scope::Pane(1)] {
+            assert!(
+                !link(scope, true).may_open_tab(),
+                "a {scope:?} share cannot open a tab: it would land out of sight",
+            );
+        }
     }
 
     #[test]
@@ -205,6 +242,7 @@ mod tests {
             scope: Scope::Pane(mine),
             writable: true,
             pair_hash: None,
+            host: false,
         };
         assert!(g.may_type(mine, &t));
         assert!(!g.may_type(other, &t), "outside the scope");
