@@ -1,7 +1,7 @@
 <script lang="ts">
   import { fade } from 'svelte/transition';
   import { store } from './lib/state.svelte';
-  import Sidebar from './lib/components/Sidebar.svelte';
+  import Sidebar, { FOLD_MS } from './lib/components/Sidebar.svelte';
   import TabBar from './lib/components/TabBar.svelte';
   import SplitTree from './lib/components/SplitTree.svelte';
   import ShareDialog from './lib/components/ShareDialog.svelte';
@@ -91,7 +91,6 @@
       Until someone makes one, a narrow screen starts folded and a wide one
       open, decided afresh on each load. */
   const FOLD_KEY = 'beebox.sidebar-folded';
-  const FOLD_MS = 240;
   let folded = $state(loadFolded());
 
   function loadFolded(): boolean {
@@ -535,31 +534,6 @@
   .tl:hover { filter: brightness(1.15); }
   .tl:active { filter: brightness(0.85); }
 
-  .plugin-slot {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    background: var(--panel-2);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 3px 9px;
-    font-size: 11px;
-    max-width: 200px;
-    overflow: hidden;
-    white-space: nowrap;
-  }
-  .plugin-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--run);
-    flex: 0 0 auto;
-  }
-  .plugin-label { color: var(--dim); }
-  .plugin-value {
-    color: var(--fg);
-    font-family: ui-monospace, monospace;
-  }
   .slot-hint {
     font-size: 10px;
     color: var(--faint);
@@ -723,7 +697,7 @@
   }
 
   @media (max-width: 640px) {
-    .slot-hint, .plugin-slot { display: none; }
+    .slot-hint { display: none; }
     .titlebar { gap: 6px; padding-inline: 8px; }
     .tb-btn { padding-inline: 7px; }
     .statusbar .stats, .statusbar .scope-sep { display: none; }

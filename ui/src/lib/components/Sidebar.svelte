@@ -1,3 +1,8 @@
+<script lang="ts" module>
+  /** How long the sidebar takes to fold; App times its scrim and fit hold by it. */
+  export const FOLD_MS = 240;
+</script>
+
 <script lang="ts">
   import { slide } from 'svelte/transition';
   import { cubicOut } from 'svelte/easing';
@@ -79,7 +84,7 @@
 <!-- Keyed on the fold, so the rail and the full list are two elements: one
      slides shut while the other slides open, and Svelte runs both. -->
 {#key folded}
-<aside class="sidebar" class:folded transition:slide={{ axis: 'x', duration: 240, easing: cubicOut }}>
+<aside class="sidebar" class:folded transition:slide={{ axis: 'x', duration: FOLD_MS, easing: cubicOut }}>
   <div class="sb-head">
     {#if !folded}Workspaces{/if}
     {#if store.caps.host}
