@@ -70,11 +70,17 @@ export interface PaneView {
   rows: number;
 }
 
+/** The two shelves a tab can be filed on, mirroring `proto.rs`. */
+export type Shelf = 'archive' | 'later';
+
 export interface TabView {
   id: TabId;
   title: string;
   /** Set aside: still running, just not on the strip. */
-  hibernated: boolean;
+  /** Where this tab is filed, or null for one on the strip. Filing only —
+      a shelved tab runs, is shared, and carries a status dot exactly as it
+      did on the strip. */
+  shelf: Shelf | null;
   layout: Node;
   panes: PaneView[];
 }
@@ -152,7 +158,7 @@ export type In =
   | { t: 'close_workspace'; ws: WsId }
   | { t: 'rename_workspace'; ws: WsId; name: string }
   | { t: 'rename_tab'; tab: TabId; title: string }
-  | { t: 'hibernate_tab'; tab: TabId; on: boolean }
+  | { t: 'shelve_tab'; tab: TabId; shelf: Shelf | null }
   | { t: 'reorder_workspaces'; order: WsId[] }
   | { t: 'reorder_tabs'; ws: WsId; order: TabId[] }
   | { t: 'create_grant'; scope: GrantScope; writable: boolean; pairing: boolean }

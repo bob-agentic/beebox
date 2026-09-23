@@ -425,7 +425,7 @@ impl App {
                     // lost its highlight entirely; falling back to the first
                     // tab lost your place instead.
                     None => {
-                        // `active_tab` already skips hibernated tabs and falls
+                        // `active_tab` already skips shelved tabs and falls
                         // back to the first one on the strip.
                         tree.active_tab = tree
                             .workspaces
@@ -495,10 +495,10 @@ impl App {
                 }
                 self.commit().await;
             }
-            In::HibernateTab { tab, on } => {
-                // No pty is touched: the point of setting a tab aside rather
-                // than closing it is that whatever is running keeps running.
-                self.tree.lock().await.hibernate_tab(tab, on);
+            In::ShelveTab { tab, shelf } => {
+                // No pty is touched: the point of filing a tab rather than
+                // closing it is that whatever is running keeps running.
+                self.tree.lock().await.shelve_tab(tab, shelf);
                 self.commit().await;
             }
             In::ReorderWorkspaces { order } => {
@@ -1147,7 +1147,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::Dir;
+    use crate::proto::{Dir, Shelf};
     use crate::share::Scope;
 
     /// A ready app with one workspace open, as most tests assume. `bootstrap`
@@ -1419,7 +1419,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hibernating_a_tab_keeps_its_terminal_running() {
+    async fn shelving_a_tab_keeps_its_terminal_running() {
         // The whole point of setting a tab aside rather than closing it: the
         // agent in there carries on, and is still there when you come back.
         let a = app().await;
@@ -1432,16 +1432,16 @@ mod tests {
         let live = a.ptys.live_count();
         assert_eq!(live, 1);
 
-        a.handle_owner(&owner, In::HibernateTab { tab, on: true }).await.unwrap();
+        a.handle_owner(&owner, In::ShelveTab { tab, shelf: Some(Shelf::Archive) }).await.unwrap();
 
-        assert_eq!(a.ptys.live_count(), live, "hibernating must not kill a pty");
+        assert_eq!(a.ptys.live_count(), live, "shelving must not kill a pty");
         let t = a.tree.lock().await;
-        assert!(t.workspaces[0].tabs[0].hibernated);
+        assert_eq!(t.workspaces[0].tabs[0].shelf, Some(Shelf::Archive));
         assert_eq!(t.workspaces[0].tabs.len(), 1, "the tab is set aside, not removed");
     }
 
     #[tokio::test]
-    async fn hibernating_the_current_tab_moves_you_off_it() {
+    async fn shelving_the_current_tab_moves_you_off_it() {
         // You cannot be left looking at a tab that is no longer on the strip.
         let a = app().await;
         let owner = a.owner_grant().await;
@@ -1453,16 +1453,30 @@ mod tests {
         };
         assert_eq!(a.tree.lock().await.active_tab, Some(second));
 
-        a.handle_owner(&owner, In::HibernateTab { tab: second, on: true }).await.unwrap();
+        a.handle_owner(&owner, In::ShelveTab { tab: second, shelf: Some(Shelf::Archive) }).await.unwrap();
         assert_eq!(a.tree.lock().await.active_tab, Some(first));
 
-        // And waking it brings you back to it.
-        a.handle_owner(&owner, In::HibernateTab { tab: second, on: false }).await.unwrap();
+        // And taking it back brings you to it.
+        a.handle_owner(&owner, In::ShelveTab { tab: second, shelf: None }).await.unwrap();
         assert_eq!(a.tree.lock().await.active_tab, Some(second));
     }
 
     #[tokio::test]
-    async fn hibernating_every_tab_keeps_the_workspace() {
+    async fn the_two_shelves_are_told_apart() {
+        // Filing only: a tab moves between shelves and back to the strip
+        // without anything else about it changing.
+        let a = app().await;
+        let owner = a.owner_grant().await;
+        let tab = a.tree.lock().await.workspaces[0].tabs[0].id;
+
+        for shelf in [Some(Shelf::Archive), Some(Shelf::Later), None] {
+            a.handle_owner(&owner, In::ShelveTab { tab, shelf }).await.unwrap();
+            assert_eq!(a.tree.lock().await.workspaces[0].tabs[0].shelf, shelf);
+        }
+    }
+
+    #[tokio::test]
+    async fn shelving_every_tab_keeps_the_workspace() {
         // Closing the last tab takes its workspace along; setting them all
         // aside must not, or the den would be a way to lose a project.
         let a = app().await;
@@ -1472,7 +1486,7 @@ mod tests {
             (t.workspaces[0].id, t.workspaces[0].tabs[0].id)
         };
 
-        a.handle_owner(&owner, In::HibernateTab { tab, on: true }).await.unwrap();
+        a.handle_owner(&owner, In::ShelveTab { tab, shelf: Some(Shelf::Archive) }).await.unwrap();
 
         let t = a.tree.lock().await;
         assert_eq!(t.workspaces.len(), 1, "the workspace survives an empty strip");
@@ -1481,7 +1495,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_hibernated_tab_is_never_activated_by_fallback() {
+    async fn a_shelved_tab_is_never_activated_by_fallback() {
         // Clicking the workspace must land on a tab you can actually see.
         let a = app().await;
         let owner = a.owner_grant().await;
@@ -1493,7 +1507,7 @@ mod tests {
         };
 
         // Set the *first* aside, then ask for the workspace with no tab named.
-        a.handle_owner(&owner, In::HibernateTab { tab: first, on: true }).await.unwrap();
+        a.handle_owner(&owner, In::ShelveTab { tab: first, shelf: Some(Shelf::Archive) }).await.unwrap();
         a.handle_owner(&owner, In::Activate { ws, tab: None }).await.unwrap();
 
         assert_eq!(a.tree.lock().await.active_tab, Some(second));

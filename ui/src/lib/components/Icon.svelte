@@ -23,6 +23,8 @@
     | 'refresh'
     | 'unplug'
     | 'top'
+    | 'archive'
+    | 'later'
     | 'bottom'
     | 'claude'
     | 'codex';
@@ -59,6 +61,12 @@
     moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
     // Lucide's refresh-cw. Two arcs with arrowheads, not a closed circle:
     // the gap is what makes it read as "again" rather than "loading".
+    // The two shelves. Lucide's archive and clock: a lid over a drawer for
+    // what is finished with, a clock for what is not started. Both read at
+    // 14px, which is all the room the strip has beside a count.
+    archive:
+      '<rect x="2" y="3" width="20" height="5" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/>',
+    later: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
     // Lucide's arrow-up-to-line / arrow-down-to-line: an arrow meeting a
     // wall, which reads as "as far as it goes" rather than "one step".
     top: '<path d="M5 3h14"/><path d="m18 13-6-6-6 6"/><path d="M12 7v14"/>',

@@ -2,7 +2,7 @@
   import { store } from '../state.svelte';
   import { sortable } from '../dragsort.svelte';
   import { agentBadge, rollupWithUnread } from '../agent-status';
-  import type { TabId, TabView } from '../proto';
+  import type { Shelf, TabId, TabView } from '../proto';
   import StatusIcon from './StatusIcon.svelte';
   import Icon from './Icon.svelte';
 
@@ -47,29 +47,37 @@
   // Only what is on the strip. Hibernated tabs are still in `ws.tabs` — they
   // are running — so every walk of the strip goes through the store's filter.
   const tabs = $derived(store.liveTabs);
-  const denned = $derived(store.hibernatedTabs);
+  // Filing only. A shelved tab runs, is shared, and carries a status dot
+  // exactly as it did on the strip — it has simply given up its place.
+  const SHELVES = [
+    { key: 'archive' as const, icon: 'archive' as const, label: 'Archive', hint: 'done with, kept to look back at' },
+    { key: 'later' as const, icon: 'later' as const, label: 'Later', hint: 'not started yet' },
+  ];
 
-  // The den's own dot, rolled up from everything asleep in it: an agent that
-  // finishes in there should still be able to catch your eye.
-  const denDot = $derived.by(() => {
+  /** What is on each shelf, and the dot rolled up from it. Same rollup the
+      strip uses, so a shelved agent catches your eye the same way. */
+  const shelves = $derived.by(() => {
     void store.readRev;
-    return rollupWithUnread(denned.flatMap((t) => t.panes));
+    return SHELVES.map((s) => {
+      const tabs = store.shelved(s.key);
+      return { ...s, tabs, dot: rollupWithUnread(tabs.flatMap((t) => t.panes)) };
+    });
   });
 
-  let denOpen = $state(false);
-  let denPos = $state({ top: 0, left: 0 });
-  function openDen(e: MouseEvent) {
+  let openShelf = $state<Shelf | null>(null);
+  let shelfPos = $state({ top: 0, left: 0 });
+  function toggleShelf(e: MouseEvent, key: Shelf) {
     e.stopPropagation();
-    if (denOpen) {
-      denOpen = false;
+    if (openShelf === key) {
+      openShelf = null;
       return;
     }
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    denPos = { top: r.bottom + 6, left: r.left };
-    denOpen = true;
+    shelfPos = { top: r.bottom + 6, left: r.left };
+    openShelf = key;
   }
-  function hibernate(tab: TabId, on: boolean) {
-    store.send({ t: 'hibernate_tab', tab, on });
+  function shelve(tab: TabId, shelf: Shelf | null) {
+    store.send({ t: 'shelve_tab', tab, shelf });
   }
 
   // Once the strip overflows, a tab opened with ⌘T lands past the right edge:
@@ -159,27 +167,36 @@
 </script>
 
 <div class="tabrow">
-  <!-- Outside the scroller, not pinned inside it: the den owns its width and
-       the tabs simply have less room. Nothing of theirs can pass under it,
-       which is the only way an edge this busy stays clean. -->
-  {#if store.caps.owner && (denned.length > 0 || tabs.length > 0)}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="den"
-      class:empty={denned.length === 0}
-      title={denned.length
-        ? `${denned.length} hibernated — click to open, or drop a tab here`
-        : 'Drop a tab here to set it aside'}
-      onclick={openDen}
-    >
-      <span class="den-pill">
-        <Icon name="moon" size={12} />
-        <span class="n">{denned.length}</span>
-        {#if denned.length}
-          <StatusIcon phase={denDot.phase} unread={denDot.unread} />
-        {/if}
-      </span>
+  <!-- Outside the scroller, not pinned inside it: the shelves own their width
+       and the tabs simply have less room. Nothing of theirs can pass under
+       them, which is the only way an edge this busy stays clean. -->
+  {#if store.caps.owner}
+    <div class="shelves">
+      {#each shelves as s (s.key)}
+        <!-- svelte-ignore a11y_click_events_have_key_events -->
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+          class="shelf shelf-{s.key}"
+          data-shelf={s.key}
+          class:empty={s.tabs.length === 0}
+          title={s.tabs.length
+            ? `${s.label} — ${s.tabs.length} ${s.hint}. Click to open, or drop a tab here`
+            : `${s.label} — ${s.hint}. Drop a tab here`}
+          onclick={(e) => toggleShelf(e, s.key)}
+        >
+          <!-- The dot is the icon: colour and breathing come from the same
+               rollup the strip's own dots use, so there is nothing new to
+               learn. The count beside it stays still — a number that pulses
+               is hard to read. -->
+          <span
+            class="shelf-icon phase-{s.dot.phase}"
+            class:unread={s.dot.unread}
+          >
+            <Icon name={s.icon} size={13} />
+          </span>
+          <span class="n">{s.tabs.length}</span>
+        </div>
+      {/each}
     </div>
   {/if}
 
@@ -197,8 +214,10 @@
         // rejects every drag.
         order: () => tabs.map((t) => t.id),
         commit: (order) => ws && store.send({ t: 'reorder_tabs', ws: ws.id, order }),
-        dropTarget: '.den',
-        drop: (id) => hibernate(id, true),
+        // Either shelf takes a drop; which one is read off the element.
+        dropTarget: '.shelf',
+        drop: (id, el) =>
+          shelve(id, (el?.dataset.shelf as Shelf | undefined) ?? 'archive'),
       }}
       class:active={tab.id === store.activeTab?.id}
       onclick={() => ws && store.activate(ws.id, tab.id)}
@@ -279,37 +298,39 @@
   </div>
 </div>
 
-{#if denOpen}
+{#if openShelf}
+  {@const cur = shelves.find((s) => s.key === openShelf)!}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="den-scrim" onclick={() => (denOpen = false)}></div>
-  <div class="den-drawer" style="top:{denPos.top}px; left:{denPos.left}px">
-    <div class="den-head">
-      <span>Hibernated{denned.length ? ` · ${denned.length}` : ''}</span>
-      {#if denned.length > 1}
+  <div class="shelf-scrim" onclick={() => (openShelf = null)}></div>
+  <div class="shelf-drawer" style="top:{shelfPos.top}px; left:{shelfPos.left}px">
+    <div class="shelf-head">
+      <span>{cur.label}{cur.tabs.length ? ` · ${cur.tabs.length}` : ''}</span>
+      {#if cur.tabs.length > 1}
         <button
-          class="wake-all"
+          class="take-all"
           onclick={() => {
-            for (const t of denned) hibernate(t.id, false);
-            denOpen = false;
-          }}>Wake all</button
+            for (const t of cur.tabs) shelve(t.id, null);
+            openShelf = null;
+          }}>Take all back</button
         >
       {/if}
     </div>
-    {#if denned.length === 0}
-      <p class="den-empty">
-        Nothing set aside yet. Drag a tab onto the den to park it — it keeps
-        running, it just gives up its place on the strip.
+    {#if cur.tabs.length === 0}
+      <p class="shelf-empty">
+        Nothing here — {cur.hint}. Drag a tab onto this icon to file it. It
+        keeps running and stays shared; it just gives up its place on the
+        strip.
       </p>
     {:else}
-      {#each denned as tab (tab.id)}
+      {#each cur.tabs as tab (tab.id)}
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
-          class="den-row"
+          class="shelf-row"
           onclick={() => {
-            hibernate(tab.id, false);
-            denOpen = false;
+            shelve(tab.id, null);
+            openShelf = null;
           }}
         >
           <StatusIcon phase={tabDot(tab).phase} unread={tabDot(tab).unread} />
@@ -320,8 +341,21 @@
           {:else}
             <span class="agent" style={AGENT_STYLE[agent(tab)] ?? AGENT_STYLE.SH}>{agent(tab)}</span>
           {/if}
-          <span class="den-label">{label(tab)}</span>
-          <span class="den-wake">Wake</span>
+          <span class="shelf-label">{label(tab)}</span>
+          <!-- The other shelf, one click away: a thing you meant to do and
+               then did belongs in the archive, and moving it should not mean
+               putting it back on the strip first. -->
+          <button
+            class="shelf-move"
+            title={openShelf === 'archive' ? 'Move to Later' : 'Move to Archive'}
+            onclick={(e) => {
+              e.stopPropagation();
+              shelve(tab.id, openShelf === 'archive' ? 'later' : 'archive');
+            }}
+          >
+            <Icon name={openShelf === 'archive' ? 'later' : 'archive'} size={12} />
+          </button>
+          <span class="shelf-take">Take back</span>
         </div>
       {/each}
     {/if}
@@ -405,68 +439,95 @@
      target at all. */
   /* Its own fixed area, not something the tabs pass beneath: they scroll in
      the box to its right and simply have that much less room. */
-  .den {
+  .shelves {
     flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
     align-self: center;
-    gap: 5px;
-    color: var(--dim);
-    cursor: pointer;
-    white-space: nowrap;
+    gap: 2px;
     padding-right: 6px;
     margin-right: 2px;
     border-right: 1px solid var(--border);
   }
-  .den-pill {
+  .shelf {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
+    gap: 4px;
     height: 24px;
-    padding: 0 8px;
+    padding: 0 7px;
     border-radius: 7px;
+    color: var(--dim);
+    cursor: pointer;
+    white-space: nowrap;
     background: var(--panel-2);
     border: 1px solid var(--border);
     transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
   }
-  .den:hover .den-pill {
+  .shelf:hover {
+    color: var(--fg);
     border-color: var(--faint);
   }
-  .den:hover {
-    color: var(--fg);
-  }
-  /* Nothing in it yet: present enough to be found, quiet enough to ignore. */
-  .den.empty {
+  /* Nothing on it yet: present enough to be found, quiet enough to ignore. */
+  .shelf.empty {
     color: var(--faint);
-  }
-  .den.empty .den-pill {
     border-style: dashed;
   }
   /* Lit while a tab is held over it — the only signal that letting go will
      do something. Toggled by the sortable action, not the markup. */
-  .den:global(.drop-over) {
+  .shelf:global(.drop-over) {
     color: var(--fg);
-  }
-  .den:global(.drop-over) .den-pill {
     background: color-mix(in srgb, var(--accent) 18%, var(--panel-2));
     border-color: var(--accent);
   }
-  .den .n {
+  .shelf .n {
     font-size: 10.5px;
     font-weight: 700;
-    min-width: 16px;
+    min-width: 9px;
     text-align: center;
   }
 
-  /* Catches the click-away without dimming: the den is a shelf, not a modal. */
-  .den-scrim {
+  /* The icon carries the status, in the same colours the strip's dots use —
+     there is no second vocabulary to learn. Only the icon breathes; the count
+     beside it holds still, because a number that pulses is hard to read. */
+  .shelf-icon {
+    display: inline-flex;
+    line-height: 0;
+  }
+  .shelf-icon.phase-running,
+  .shelf-icon.phase-needs_input {
+    color: var(--accent);
+    animation: shelf-breathe 1.8s ease-in-out infinite;
+  }
+  .shelf-icon.phase-success.unread {
+    color: var(--accent);
+  }
+  .shelf-icon.phase-failed.unread {
+    color: var(--danger, #f85149);
+  }
+  @keyframes shelf-breathe {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.4;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .shelf-icon {
+      animation: none !important;
+    }
+  }
+
+  /* Catches the click-away without dimming: a shelf is not a modal. */
+  .shelf-scrim {
     position: fixed;
     inset: 0;
     z-index: 30;
   }
   /* Fixed and positioned from the strip's own box: the tab bar's ancestors
      carry no positioning, and `.tabbar` itself clips on the x axis. */
-  .den-drawer {
+  .shelf-drawer {
     position: fixed;
     z-index: 31;
     width: 330px;
@@ -478,7 +539,7 @@
     border-radius: 10px;
     box-shadow: 0 10px 34px rgba(0, 0, 0, 0.5);
   }
-  .den-head {
+  .shelf-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -489,16 +550,16 @@
     color: var(--faint);
     font-weight: 600;
   }
-  .wake-all {
+  .take-all {
     font-size: 10.5px;
     color: var(--faint);
     text-transform: none;
     letter-spacing: 0;
   }
-  .wake-all:hover {
+  .take-all:hover {
     color: var(--fg);
   }
-  .den-row {
+  .shelf-row {
     display: flex;
     align-items: center;
     gap: 7px;
@@ -508,25 +569,25 @@
     color: var(--dim);
     cursor: pointer;
   }
-  .den-row:hover {
+  .shelf-row:hover {
     background: var(--panel-2);
     color: var(--fg);
   }
-  .den-label {
+  .shelf-label {
     flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .den-wake {
+  .shelf-take {
     opacity: 0;
     font-size: 10.5px;
     color: var(--accent);
   }
-  .den-row:hover .den-wake {
+  .shelf-row:hover .shelf-take {
     opacity: 1;
   }
-  .den-empty {
+  .shelf-empty {
     margin: 0;
     padding: 4px 9px 12px;
     color: var(--faint);

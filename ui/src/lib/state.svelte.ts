@@ -17,6 +17,7 @@ import type {
   PaneId,
   PaneView,
   Peer,
+  Shelf,
   TabId,
   TreeView,
   WsId,
@@ -482,7 +483,7 @@ class Store {
   /** ⌘] / ⌘[ — move through the current workspace's tabs. */
   cycleTab(delta: number) {
     const ws = this.activeWs;
-    // Only what is on the strip: cycling onto a hibernated tab would move you
+    // Only what is on the strip: cycling onto a shelved tab would move you
     // somewhere with nothing to show.
     const tabs = this.liveTabs;
     if (!ws || tabs.length < 2) return;
@@ -498,16 +499,16 @@ class Store {
     return this.tree.workspaces.find((w) => w.id === id) ?? this.tree.workspaces[0];
   }
 
-  /** The tabs on the strip. Hibernated ones still exist and still run; they
-      have simply given up their place, so everything that walks the strip —
-      the tab bar, ⌘]/⌘[, the duplicate-name numbering — goes through here. */
+  /** The tabs on the strip. Shelved ones still exist and still run; they have
+      simply given up their place, so everything that walks the strip — the tab
+      bar, ⌘]/⌘[, the duplicate-name numbering — goes through here. */
   get liveTabs() {
-    return this.activeWs?.tabs.filter((t) => !t.hibernated) ?? [];
+    return this.activeWs?.tabs.filter((t) => t.shelf === null) ?? [];
   }
 
-  /** The tabs set aside, in the den. */
-  get hibernatedTabs() {
-    return this.activeWs?.tabs.filter((t) => t.hibernated) ?? [];
+  /** The tabs on one shelf. */
+  shelved(shelf: Shelf) {
+    return this.activeWs?.tabs.filter((t) => t.shelf === shelf) ?? [];
   }
 
   get activeTab() {
@@ -515,9 +516,13 @@ class Store {
     if (!ws) return undefined;
     const id = this.localTab ?? this.tree.active_tab;
     const live = this.liveTabs;
-    // Never a hibernated tab, even as a fallback: it is not on the strip, so
-    // landing on one would leave the bar with nothing selected.
-    return live.find((t) => t.id === id) ?? live[0];
+    const found = live.find((t) => t.id === id);
+    if (found) return found;
+    // Normally the strip's first tab. But a viewer whose whole share is a tab
+    // the owner then filed would have an empty strip and see nothing at all —
+    // filing is not a permission, and it was never meant to take the terminal
+    // away from them. So fall back to anything visible.
+    return live[0] ?? ws.tabs[0];
   }
 
   /** Viewer-local navigation. `Activate` is owner-only on the server — the
@@ -537,7 +542,7 @@ class Store {
       tab ??
       this.tree.workspaces
         .find((w) => w.id === ws)
-        ?.tabs.find((t) => !t.hibernated)?.id ??
+        ?.tabs.find((t) => t.shelf === null)?.id ??
       null;
     // A viewer's navigation produces no tree frame, so reconcile never runs and
     // would leave the keyboard on the pane they just navigated away from. They

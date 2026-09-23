@@ -10,9 +10,29 @@ use std::path::Path;
 use anyhow::Result;
 use rusqlite::{params, Connection};
 
-use crate::proto::{Node, TabId, WsId};
+use crate::proto::{Node, Shelf, TabId, WsId};
 use crate::session::{Pane, SessionTree, Tab, Workspace};
 use crate::share::{Grant, Scope};
+
+/// A shelf as stored: its own name, or the empty string for a tab that is on
+/// the strip. Not NULL, so the column reads back without a nullable type.
+fn shelf_to_text(shelf: Option<Shelf>) -> &'static str {
+    match shelf {
+        Some(Shelf::Archive) => "archive",
+        Some(Shelf::Later) => "later",
+        None => "",
+    }
+}
+
+/// The inverse. An unrecognised value means the strip, so a database written
+/// by a newer version stays readable rather than refusing to load.
+fn text_to_shelf(text: &str) -> Option<Shelf> {
+    match text {
+        "archive" => Some(Shelf::Archive),
+        "later" => Some(Shelf::Later),
+        _ => None,
+    }
+}
 
 pub struct Store {
     db: Connection,
@@ -138,11 +158,19 @@ impl Store {
         // Tabs set aside rather than closed. Defaulted for the same reason as
         // the sizes above: an older row is simply a tab that was never set
         // aside, which is what 0 says.
-        let has_hibernated = db
-            .prepare("SELECT 1 FROM pragma_table_info('tabs') WHERE name = 'hibernated'")?
+        let has_shelf = db
+            .prepare("SELECT 1 FROM pragma_table_info('tabs') WHERE name = 'shelf'")?
             .exists([])?;
-        if !has_hibernated {
-            db.execute("ALTER TABLE tabs ADD COLUMN hibernated INTEGER NOT NULL DEFAULT 0", [])?;
+        if !has_shelf {
+            // Empty string rather than NULL for "on the strip": it reads back
+            // through the same TEXT column without a nullable type, and the
+            // older `hibernated` flag maps onto it — anything that was set
+            // aside was set aside to look at later, which is `archive`.
+            db.execute("ALTER TABLE tabs ADD COLUMN shelf TEXT NOT NULL DEFAULT ''", [])?;
+            let _ = db.execute(
+                "UPDATE tabs SET shelf = 'archive' WHERE hibernated = 1",
+                [],
+            );
         }
         Ok(())
     }
@@ -171,7 +199,7 @@ impl Store {
             )?;
             for (ti, tab) in ws.tabs.iter().enumerate() {
                 tx.execute(
-                    "INSERT INTO tabs (id, ws_id, title, ord, layout_json, hibernated)
+                    "INSERT INTO tabs (id, ws_id, title, ord, layout_json, shelf)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                     params![
                         to_db(tab.id),
@@ -179,7 +207,7 @@ impl Store {
                         tab.title,
                         ti as i64,
                         serde_json::to_string(&tab.layout)?,
-                        tab.hibernated as i64
+                        shelf_to_text(tab.shelf)
                     ],
                 )?;
                 for pane in &tab.panes {
@@ -221,21 +249,24 @@ impl Store {
             let mut tabs = Vec::new();
 
             let mut tab_stmt = self.db.prepare(
-                "SELECT id, title, layout_json, hibernated
+                "SELECT id, title, layout_json, shelf
                  FROM tabs WHERE ws_id = ?1 ORDER BY ord",
             )?;
-            let rows: Vec<(TabId, String, String, bool)> = tab_stmt
+            let rows: Vec<(TabId, String, String, String)> = tab_stmt
                 .query_map(params![to_db(ws_id)], |r| {
                     Ok((
                         from_db(r.get(0)?),
                         r.get(1)?,
                         r.get(2)?,
-                        r.get::<_, i64>(3)? != 0,
+                        // A database written before shelves has the column but
+                        // may hold the old integer; anything unrecognised reads
+                        // as the strip.
+                        r.get::<_, String>(3).unwrap_or_default(),
                     ))
                 })?
                 .collect::<rusqlite::Result<_>>()?;
 
-            for (tab_id, title, layout_json, hibernated) in rows {
+            for (tab_id, title, layout_json, shelf) in rows {
                 let layout: Node = serde_json::from_str(&layout_json)?;
 
                 let mut pane_stmt = self.db.prepare(
@@ -270,7 +301,7 @@ impl Store {
                     })?
                     .collect::<rusqlite::Result<_>>()?;
 
-                tabs.push(Tab { id: tab_id, title, hibernated, layout, panes });
+                tabs.push(Tab { id: tab_id, title, shelf: text_to_shelf(&shelf), layout, panes });
             }
 
             // Which tab was in front, and the order tabs were visited in, are
@@ -737,12 +768,12 @@ mod tests {
         assert_eq!((p.cols, p.rows), (80, 24));
         // A tab written before the column existed is simply one that was
         // never set aside.
-        assert!(!t.workspaces[0].tabs[0].hibernated);
+        assert_eq!(t.workspaces[0].tabs[0].shelf, None);
         assert_eq!(s.load_agent_settings().unwrap(), crate::proto::AgentSettings::default());
     }
 
     #[test]
-    fn a_hibernated_tab_stays_hibernated_across_a_restart() {
+    fn a_shelved_tab_keeps_its_shelf_across_a_restart() {
         // Setting a tab aside is for things to come back to later — including
         // after a restart, which is most of the point.
         let s = Store::in_memory().unwrap();
@@ -750,13 +781,16 @@ mod tests {
         let ws = tree.open_workspace("/w".into(), "w".into());
         let keep = tree.open_tab(ws).unwrap();
         let aside = tree.open_tab(ws).unwrap();
-        tree.hibernate_tab(aside, true);
+        tree.shelve_tab(aside, Some(Shelf::Archive));
         s.save_tree(&tree).unwrap();
 
         let back = s.load_tree().unwrap();
         let tabs = &back.workspaces[0].tabs;
-        assert!(!tabs.iter().find(|t| t.id == keep).unwrap().hibernated);
-        assert!(tabs.iter().find(|t| t.id == aside).unwrap().hibernated);
+        assert_eq!(tabs.iter().find(|t| t.id == keep).unwrap().shelf, None);
+        assert_eq!(
+            tabs.iter().find(|t| t.id == aside).unwrap().shelf,
+            Some(Shelf::Archive),
+        );
     }
 
     #[test]

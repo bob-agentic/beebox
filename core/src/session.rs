@@ -9,7 +9,7 @@ use anyhow::{anyhow, Result};
 
 use crate::agent::AgentState;
 use crate::proto::{
-    AgentKind, Dir, GitInfo, Node, PaneId, PaneView, PtyId, TabId, TabView, WsId,
+    AgentKind, Dir, GitInfo, Node, PaneId, PaneView, PtyId, Shelf, TabId, TabView, WsId,
 };
 
 /// The UI caps nesting here. `Node` stays recursive so lifting the cap is a
@@ -54,7 +54,7 @@ pub struct Tab {
     /// Set aside rather than closed: the tab keeps its panes and its processes
     /// keep running, it just gives up its place on the strip. For the ones you
     /// are not working on now but do not want to lose.
-    pub hibernated: bool,
+    pub shelf: Option<Shelf>,
     /// Authoritative for structure. Membership is never derived from anywhere
     /// else.
     pub layout: Node,
@@ -112,11 +112,11 @@ impl Workspace {
     }
 
     fn awake(&self, tab: TabId) -> bool {
-        self.tabs.iter().any(|t| t.id == tab && !t.hibernated)
+        self.tabs.iter().any(|t| t.id == tab && t.shelf.is_none())
     }
 
     fn first_awake(&self) -> Option<TabId> {
-        self.tabs.iter().find(|t| !t.hibernated).map(|t| t.id)
+        self.tabs.iter().find(|t| t.shelf.is_none()).map(|t| t.id)
     }
 
     /// Records `tab` as the one in front, keeping the previous order behind it.
@@ -139,19 +139,19 @@ impl Workspace {
         }
     }
 
-    /// Sets a tab aside, or brings it back. Unlike closing, the tab and its
-    /// processes stay — only its place on the strip is given up.
-    fn set_hibernated(&mut self, tab: TabId, on: bool) {
+    /// Files a tab on a shelf, or brings it back. Unlike closing, the tab and
+    /// its processes stay — only its place on the strip is given up.
+    fn set_shelf(&mut self, tab: TabId, shelf: Option<Shelf>) {
         let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) else {
             return;
         };
-        t.hibernated = on;
-        if on {
+        t.shelf = shelf;
+        if shelf.is_some() {
             // Drop it from the history so the tab behind it comes forward,
             // exactly as closing would.
             self.recent.retain(|id| *id != tab);
         } else {
-            // Waking one is a visit: it should be what you are looking at.
+            // Taking one back is a visit: it should be what you are looking at.
             self.touch_tab(tab);
         }
         self.prune_recent();
@@ -239,7 +239,7 @@ impl SessionTree {
         w.tabs.push(Tab {
             id: tab_id,
             title: String::new(),
-            hibernated: false,
+            shelf: None,
             layout: Node::Leaf { pane: pane_id },
             panes: vec![pane],
         });
@@ -268,18 +268,19 @@ impl SessionTree {
         Vec::new()
     }
 
-    /// Sets a tab aside, or brings it back.
+    /// Files a tab on a shelf, or brings it back to the strip.
     ///
     /// Deliberately not a variant of `close_tab`: nothing is removed and no
     /// pane ids are returned, because returning them is how closing tells the
-    /// caller which processes to kill. A hibernated tab keeps running.
-    pub fn hibernate_tab(&mut self, tab: TabId, on: bool) {
+    /// caller which processes to kill. A shelved tab keeps running.
+    pub fn shelve_tab(&mut self, tab: TabId, shelf: Option<Shelf>) {
         for w in &mut self.workspaces {
             if w.tabs.iter().any(|t| t.id == tab) {
-                w.set_hibernated(tab, on);
+                w.set_shelf(tab, shelf);
                 // Follow the workspace's own choice of what is in front now.
+                let filed = shelf.is_some();
                 if self.active_ws == Some(w.id)
-                    && (on && self.active_tab == Some(tab) || !on)
+                    && (filed && self.active_tab == Some(tab) || !filed)
                 {
                     self.active_tab = w.active_tab();
                 }
@@ -453,7 +454,7 @@ impl SessionTree {
                             // Sent, not filtered out here: the tab still exists
                             // and its panes are still reachable. Which tabs the
                             // strip draws is the client's business.
-                            hibernated: t.hibernated,
+                            shelf: t.shelf,
                             layout,
                             panes,
                         })

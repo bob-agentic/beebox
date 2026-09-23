@@ -204,12 +204,28 @@ pub struct PaneView {
     pub rows: u16,
 }
 
+/// Where a tab is filed, when it is not on the strip.
+///
+/// Filing only, not a mode: a shelved tab runs exactly as it did, is shared
+/// exactly as it was, and carries the same status dot. The two shelves exist
+/// because a tab you are done with and a tab you have not started are worth
+/// telling apart when you come back to them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Shelf {
+    /// Finished with, kept to look back at.
+    Archive,
+    /// Not started yet.
+    Later,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TabView {
     pub id: TabId,
     pub title: String,
-    /// Set aside: the tab keeps running but is off the strip, in the den.
-    pub hibernated: bool,
+    /// Off the strip and on a shelf, or `None` for a tab on the strip. The
+    /// tab keeps running either way.
+    pub shelf: Option<Shelf>,
     /// Authoritative for structure. Pane membership is never derived from
     /// anywhere else.
     pub layout: Node,
@@ -443,11 +459,12 @@ pub enum In {
         title: String,
     },
 
-    /// Sets a tab aside, or brings it back. The tab and its processes survive
-    /// either way — only its place on the strip changes.
-    HibernateTab {
+    /// Files a tab on a shelf, or `None` to bring it back to the strip. The
+    /// tab and its processes survive either way — only where it is filed
+    /// changes.
+    ShelveTab {
         tab: TabId,
-        on: bool,
+        shelf: Option<Shelf>,
     },
     /// Drag to reorder. The client sends the full order rather than a
     /// from/to pair, so a dropped frame cannot leave the two sides disagreeing.

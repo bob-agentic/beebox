@@ -24,8 +24,10 @@ export interface SortOptions {
   ignore?: string;
   /** Selector for somewhere outside the list a row can be dropped instead. */
   dropTarget?: string;
-  /** Called instead of `commit` when the drop landed on `dropTarget`. */
-  drop?: (id: number) => void;
+  /** Called instead of `commit` when the drop landed on `dropTarget`. The
+      element is passed too, since one selector can match several places to
+      drop — two shelves, say — and the caller has to tell them apart. */
+  drop?: (id: number, on: HTMLElement | null) => void;
 }
 
 /** Long enough that a sloppy click is not a drag, short enough to feel direct. */
@@ -184,11 +186,12 @@ export function sortable(node: HTMLElement, opts: SortOptions) {
       setTimeout(() => window.removeEventListener('click', swallow, { capture: true }), 0);
 
       if (overZone) {
-        overZone.classList.remove('drop-over');
+        const landed = overZone;
+        landed.classList.remove('drop-over');
         overZone = null;
         // The DOM is left alone: the row is about to leave this list, and the
         // server's next tree is what removes it.
-        current.drop?.(current.id);
+        current.drop?.(current.id, landed);
         return;
       }
 

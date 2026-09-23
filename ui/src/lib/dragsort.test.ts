@@ -146,14 +146,16 @@ describe('sortable', () => {
   });
 
   it('reports a drop on the zone instead of a reorder', () => {
-    // Dropping a tab on the den takes it out of the list, so the lengths can
-    // never match — the reorder path would discard it silently.
+    // Dropping a tab on a shelf takes it out of the list, so the lengths can
+    // never match — the reorder path would discard it silently. The element
+    // comes back with the id, since one selector can match several shelves
+    // and the caller has to tell which one took the drop.
     const { rows } = makeList(3);
     const commit = vi.fn();
     const drop = vi.fn();
 
     const zone = document.createElement('div');
-    zone.className = 'den';
+    zone.className = 'shelf';
     document.body.appendChild(zone);
     // jsdom resolves elementFromPoint to nothing; point it at the zone.
     const from = document.elementFromPoint;
@@ -166,12 +168,12 @@ describe('sortable', () => {
           order: () => [1, 2, 3],
           commit,
           drop,
-          dropTarget: '.den',
+          dropTarget: '.shelf',
         }),
       );
       drag(rows[0], 20, 90);
 
-      expect(drop).toHaveBeenCalledWith(1);
+      expect(drop).toHaveBeenCalledWith(1, zone);
       expect(commit).not.toHaveBeenCalled();
       expect(zone.classList.contains('drop-over')).toBe(false);
       // The row is left where it was: the server's next tree removes it.
