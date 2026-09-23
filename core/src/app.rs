@@ -362,9 +362,18 @@ impl App {
                 return None;
             }
         }
-        if let Some(p) = self.tree.lock().await.pane_mut(pane) {
-            p.cols = cols;
-            p.rows = rows;
+        let changed = match self.tree.lock().await.pane_mut(pane) {
+            Some(p) if (p.cols, p.rows) != (cols, rows) => {
+                p.cols = cols;
+                p.rows = rows;
+                true
+            }
+            _ => false,
+        };
+        // Everyone else watching draws at the PTY's width, so they need to
+        // hear it moved — not only the client that moved it.
+        if changed {
+            let _ = self.changed.send(TreeChanged);
         }
         Some((cols, rows))
     }

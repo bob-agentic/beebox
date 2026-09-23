@@ -24,6 +24,14 @@
   let { pane }: { pane: PaneView } = $props();
 
   let host: HTMLDivElement;
+  let reportSize: (() => void) | null = null;
+
+  // The PTY's width, as the server last said. Someone else resizing it has to
+  // reach a client that draws at that width.
+  $effect(() => {
+    void pane.cols;
+    reportSize?.();
+  });
   const focused = $derived(store.focused === pane.id);
 
   /** Same reasoning as the tab bar: "bob@Bobs-MacBook-Pro:~/x" is noise. */
@@ -190,18 +198,27 @@
     // server holds a size some other client set, and then silence is wrong.
     // Asking explicitly has to mean asking.
     const report = (force = false) => {
+      let dims;
       try {
-        fit.fit();
+        dims = fit.proposeDimensions();
       } catch {
         return;
       }
+      if (!dims || !(dims.cols > 0) || !(dims.rows > 0)) return;
+      // A client that cannot size the PTY draws at the width the PTY really
+      // has. Fitted to its own window instead, every line the shell laid out
+      // for the owner's width wrapped here — a prompt became three rows. A
+      // narrower window loses the right edge; nothing is mis-drawn.
+      const cols = store.caps.host || store.sizing ? dims.cols : pane.cols;
+      if (term.cols !== cols || term.rows !== dims.rows) term.resize(cols, dims.rows);
       refresh();
-      if (!force && term.cols === lastCols && term.rows === lastRows) return;
-      lastCols = term.cols;
-      lastRows = term.rows;
+      if (!force && dims.cols === lastCols && dims.rows === lastRows) return;
+      lastCols = dims.cols;
+      lastRows = dims.rows;
       // Advisory: the server decides, and the owner's viewport wins.
-      store.send({ t: 'viewport', pane: pane.id, cols: term.cols, rows: term.rows });
+      store.send({ t: 'viewport', pane: pane.id, cols: dims.cols, rows: dims.rows });
     };
+    reportSize = report;
 
     store.register(pane.id, term, report);
     report();
