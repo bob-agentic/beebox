@@ -290,7 +290,7 @@
         class="add"
         title="New tab"
         aria-label="New tab"
-        onclick={() => store.send({ t: 'open_tab', ws: ws.id })}
+        onclick={() => store.openTab(ws.id)}
       >
         <Icon name="plus" size={15} />
       </button>

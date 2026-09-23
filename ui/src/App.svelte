@@ -135,7 +135,7 @@
       // ⌘T needs a workspace to hold the tab. With none open, "give me a
       // terminal" first means "in which project?" — so route to the chooser
       // rather than silently conjuring a $HOME workspace no one asked for.
-      if (ws) store.send({ t: 'open_tab', ws: ws.id });
+      if (ws) store.openTab(ws.id);
       else void openWorkspace();
     },
     // ⌘D splits side by side, ⇧⌘D stacks — as iTerm2 does.

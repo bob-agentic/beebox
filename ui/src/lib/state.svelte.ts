@@ -197,12 +197,13 @@ class Store {
           this.localTab = null;
         }
         this.caps = msg.caps;
+        this.followOpenedTab();
         this.reconcile();
         break;
       }
       case 'output': {
         const pane = this.ptyToPane.get(msg.pty);
-        if (pane !== undefined) this.write(pane, msg.data);
+        if (pane !== undefined) this.write(pane, stripPartialLineMarkers(msg.data));
         break;
       }
       case 'resync': {
@@ -512,6 +513,29 @@ class Store {
       viewer just remembers its own selection here. */
   private localWs = $state<WsId | null>(null);
   private localTab = $state<TabId | null>(null);
+
+  /** Tabs that existed when this viewer asked for a new one. The server makes
+      the new tab active, but that is the owner's view; a viewer navigates
+      locally, so it has to find the new tab itself when the tree comes back. */
+  private tabsBeforeOpen: { ws: WsId; ids: Set<TabId> } | null = null;
+
+  openTab(ws: WsId) {
+    if (!this.caps.host) {
+      const w = this.tree.workspaces.find((x) => x.id === ws);
+      this.tabsBeforeOpen = { ws, ids: new Set(w?.tabs.map((t) => t.id)) };
+    }
+    this.send({ t: 'open_tab', ws });
+  }
+
+  private followOpenedTab() {
+    const before = this.tabsBeforeOpen;
+    if (!before) return;
+    const w = this.tree.workspaces.find((x) => x.id === before.ws);
+    const fresh = w?.tabs.find((t) => !before.ids.has(t.id));
+    if (!fresh) return;
+    this.tabsBeforeOpen = null;
+    this.activate(before.ws, fresh.id);
+  }
 
   activate(ws: WsId, tab: TabId | null) {
     if (this.caps.host) {
