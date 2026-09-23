@@ -40,17 +40,19 @@
     if (shown && owesFit) reportSize?.();
   });
 
-  /** WebGL only while on screen. A browser keeps a handful of GL contexts —
-      eight or so on Android — and drops the oldest past that, so with every
-      tab mounted the pane you were reading fell back to xterm's DOM renderer,
-      which rebuilds its rows on every frame of a scroll. */
-  let gl: { dispose(): void } | null = null;
-  let showGl: ((on: boolean) => void) | null = null;
+  /** A renderer only while on screen; hidden panes fall back to xterm's DOM
+      renderer, which costs next to nothing when not drawn. In a browser the
+      limit is GL contexts — eight or so on Android, the oldest dropped past
+      that — so with every tab mounted the pane you were reading lost its
+      WebGL. In the Mac shell it is memory: each Canvas2D pane holds four
+      full-size canvases at 2x, and ten mounted panes came to ~700 MB. */
+  let renderer: { dispose(): void } | null = null;
+  let showRenderer: ((on: boolean) => void) | null = null;
   $effect(() => {
-    // Read before the call: `showGl?.(shown)` skips its argument while the
-    // addon is still loading, and then the effect never tracks `shown`.
+    // Read before the call: `showRenderer?.(shown)` skips its argument while
+    // the addon is still loading, and then the effect never tracks `shown`.
     const on = shown;
-    showGl?.(on);
+    showRenderer?.(on);
   });
 
   // The PTY's width, as the server last said. Someone else resizing it has to
@@ -188,39 +190,35 @@
     // WebKit currently accepts the WebGL context but composites it as a blank
     // layer. Browsers keep the accelerated renderer; the native shell uses
     // xterm's Canvas2D addon, which WebKit snapshots and composites reliably.
-    if (macShell) {
-      void import('@xterm/addon-canvas').then(({ CanvasAddon }) => {
+    void (macShell
+      ? import('@xterm/addon-canvas').then(({ CanvasAddon }) => () => new CanvasAddon())
+      : import('@xterm/addon-webgl').then(({ WebglAddon }) => () => {
+          const addon = new WebglAddon();
+          addon.onContextLoss(() => {
+            addon.dispose();
+            if (renderer === addon) renderer = null;
+          });
+          return addon;
+        })
+    ).then((make) => {
+      showRenderer = (on) => {
+        if (!on) {
+          renderer?.dispose();
+          renderer = null;
+          return;
+        }
+        if (renderer) return;
         try {
-          term.loadAddon(new CanvasAddon());
+          const addon = make();
+          term.loadAddon(addon);
+          renderer = addon;
           refresh();
         } catch {
           // The built-in DOM renderer remains active.
         }
-      });
-    } else {
-      void import('@xterm/addon-webgl').then(({ WebglAddon }) => {
-        showGl = (on) => {
-          if (!on) {
-            gl?.dispose();
-            gl = null;
-            return;
-          }
-          if (gl) return;
-          try {
-            const addon = new WebglAddon();
-            addon.onContextLoss(() => {
-              addon.dispose();
-              if (gl === addon) gl = null;
-            });
-            term.loadAddon(addon);
-            gl = addon;
-          } catch {
-            // The built-in renderer remains active.
-          }
-        };
-        showGl(shown);
-      });
-    }
+      };
+      showRenderer(shown);
+    });
 
     const send = (data: Uint8Array) => store.send({ t: 'input', pane: pane.id, data });
     // `onData` is the user's own input — what the process prints never reaches
