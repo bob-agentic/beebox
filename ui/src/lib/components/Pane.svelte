@@ -15,6 +15,7 @@
   import { Unicode11Addon } from '@xterm/addon-unicode11';
   import { store } from '../state.svelte';
   import { settings } from '../settings.svelte';
+  import { fileLinkProvider } from '../file-links';
   import type { PaneView } from '../proto';
   import { agentBadge, isUnread } from '../agent-status';
   import Crumbs from './Crumbs.svelte';
@@ -176,6 +177,13 @@
       });
     };
     const writeParsed = term.onWriteParsed(refresh);
+
+    // ⌘-click a file path to open it in VS Code. Only in the Mac shell: it
+    // is the one client on the machine whose disk the paths are on, and it
+    // checks each one — a link appears only over a file that exists.
+    if (macShell) {
+      term.registerLinkProvider(fileLinkProvider(term, (window as any).__BEEBOX__, () => pane.cwd));
+    }
 
     // WebKit currently accepts the WebGL context but composites it as a blank
     // layer. Browsers keep the accelerated renderer; the native shell uses

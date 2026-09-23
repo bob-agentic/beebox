@@ -102,6 +102,8 @@ enum WebHost {
             minimize: () => post('minimize'),
             toggleMaximize: () => post('toggleMaximize'),
             pickDirectory: (opts) => post('pickDirectory', opts),
+            resolvePaths: (opts) => post('resolvePaths', opts),
+            openFile: (opts) => post('openFile', opts),
           };
         })();
         """

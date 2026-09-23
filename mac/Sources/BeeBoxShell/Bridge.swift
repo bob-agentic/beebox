@@ -54,6 +54,17 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
             reply(nil, nil)
         case "pickDirectory":
             pickDirectory(body, reply: reply)
+        case "resolvePaths":
+            let found = FileLinks.resolve(
+                body["paths"] as? [String] ?? [],
+                cwd: body["cwd"] as? String ?? ""
+            )
+            reply(found.map { ($0 as Any?) ?? NSNull() }, nil)
+        case "openFile":
+            if let path = body["path"] as? String {
+                FileLinks.open(path, line: body["line"] as? Int, col: body["col"] as? Int)
+            }
+            reply(nil, nil)
         default:
             reply(nil, "unknown bridge op: \(op)")
         }
