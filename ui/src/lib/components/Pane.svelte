@@ -189,7 +189,7 @@
     // it — so it is the right place to say "this is the tab I am working in".
     term.onData((s) => {
       store.noteTyping();
-      send(new TextEncoder().encode(s));
+      send(new TextEncoder().encode(store.withMods(s)));
     });
     term.onBinary((s) => {
       const bytes = new Uint8Array(s.length);

@@ -363,6 +363,35 @@ class Store {
    *  flag: the point is that it *changed*, not what it holds. */
   typedRev = $state(0);
 
+  /** CTRL and ALT from the phone's key bar. One-shot, as in Termux: they
+   *  apply to the next key typed, from the bar or the soft keyboard, and
+   *  then let go. */
+  mods = $state({ ctrl: false, alt: false });
+
+  /** Applies and releases the key bar's modifiers. Every keystroke passes
+   *  through here on its way to the pty. */
+  withMods(s: string): string {
+    const { ctrl, alt } = this.mods;
+    if (!ctrl && !alt) return s;
+    this.mods = { ctrl: false, alt: false };
+    if (ctrl && s.length === 1) {
+      const c = s.toUpperCase().charCodeAt(0);
+      if (c >= 64 && c <= 95) s = String.fromCharCode(c - 64);
+      else if (s === ' ') s = '\0';
+      else if (s === '?') s = '\x7f';
+    }
+    return alt ? '\x1b' + s : s;
+  }
+
+  /** Types a key-bar key into the pane on screen. `app` is its spelling in
+   *  application cursor mode, which vim and less switch on. */
+  typeKey(seq: string, app?: string) {
+    const pane = this.targetPane();
+    const t = pane === null ? undefined : this.terms.get(pane);
+    if (!t) return;
+    t.term.input(app && t.term.modes.applicationCursorKeysMode ? app : seq);
+  }
+
   /** Called by a pane when the user types into it. */
   noteTyping() {
     this.typedRev++;

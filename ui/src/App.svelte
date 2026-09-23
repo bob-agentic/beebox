@@ -9,6 +9,7 @@
   import SettingsDialog from './lib/components/SettingsDialog.svelte';
   import OpenWorkspaceDialog from './lib/components/OpenWorkspaceDialog.svelte';
   import Icon from './lib/components/Icon.svelte';
+  import KeyBar from './lib/components/KeyBar.svelte';
 
   let dialog = $state<'share' | 'conns' | 'settings' | 'openws' | null>(null);
 
@@ -460,6 +461,12 @@
   {/if}
   <span class="item">UTF-8</span>
 </div>
+
+<!-- A phone's keyboard has no Esc, Ctrl or arrows. Last on the page, so it
+     sits directly on top of the soft keyboard. -->
+{#if store.sizing}
+  <KeyBar />
+{/if}
 
 {#if dialog === 'share'}
   <ShareDialog onclose={() => (dialog = null)} />
