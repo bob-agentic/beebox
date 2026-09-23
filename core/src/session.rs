@@ -45,6 +45,9 @@ pub struct Pane {
     pub cmd: Vec<String>,
     /// The agent's own session id, for `claude --resume` / `codex resume`.
     pub session_ref: Option<String>,
+    /// When the event that set `session_ref` happened. Hooks can land out of
+    /// order, and an older one must not put back the id it carried.
+    pub session_ref_at: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -240,6 +243,7 @@ impl SessionTree {
             rows: DEFAULT_ROWS,
             cmd: Vec::new(),
             session_ref: None,
+            session_ref_at: 0,
         };
         w.tabs.push(Tab {
             id: tab_id,
@@ -325,6 +329,7 @@ impl SessionTree {
             rows: DEFAULT_ROWS,
             cmd: Vec::new(),
             session_ref: None,
+            session_ref_at: 0,
         };
         tab.panes.push(new_pane);
         insert_beside(&mut tab.layout, pane, new_id, dir);

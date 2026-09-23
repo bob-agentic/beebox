@@ -111,8 +111,18 @@ impl Registry {
         // PATH almost nothing runs. This is invisible when the daemon is
         // started from a terminal — it inherits a full environment that way —
         // and only shows up when launched from a bundled app.
+        //
+        // Except Claude Code's own markers. A daemon started from inside a
+        // Claude session carries them, and a Claude in a pane that inherits
+        // them takes itself for a child session and writes no transcript —
+        // leaving nothing for `--resume` to find. Removed explicitly, like
+        // NO_COLOR below, since CommandBuilder inherits them anyway.
         for (k, v) in std::env::vars() {
-            cmd.env(k, v);
+            if k == "CLAUDECODE" || k.starts_with("CLAUDE_") {
+                cmd.env_remove(k);
+            } else {
+                cmd.env(k, v);
+            }
         }
         // The desktop shell launches this daemon with NO_COLOR=1 so the
         // startup log (which the shell parses for the key) is plain. That is
@@ -392,6 +402,21 @@ mod tests {
             .spawn(spec(1, &["sh", "-c", "echo hello beebox; sleep 0.2"]))
             .unwrap();
         assert!(drain(&reg, id, rx).await.contains("hello beebox"));
+    }
+
+    #[tokio::test]
+    async fn panes_do_not_inherit_claude_session_markers() {
+        std::env::set_var("CLAUDECODE", "1");
+        std::env::set_var("CLAUDE_CODE_CHILD_SESSION", "1");
+        let reg = Registry::new();
+        let rx = reg.subscribe();
+        let id = reg
+            .spawn(spec(1, &["sh", "-c", "echo CC=${CLAUDECODE:-unset} CS=${CLAUDE_CODE_CHILD_SESSION:-unset}; sleep 0.2"]))
+            .unwrap();
+        std::env::remove_var("CLAUDECODE");
+        std::env::remove_var("CLAUDE_CODE_CHILD_SESSION");
+        let out = drain(&reg, id, rx).await;
+        assert!(out.contains("CC=unset CS=unset"), "Claude markers leaked into the pane: {out}");
     }
 
     #[tokio::test]

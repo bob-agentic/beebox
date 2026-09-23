@@ -41,36 +41,33 @@ pub struct AdapterAssets {
 /// Guarantees the handover requires: bounded time, silent, and exit 0 no
 /// matter what — a hook failure must never surface inside the agent.
 ///
-/// With no arguments the stdin JSON is posted as-is (Claude payloads carry
-/// their own `hook_event_name`). With `send <agent> <event>` the payload is
-/// wrapped so the daemon knows which normalizer to use — Codex events arrive
-/// this way, mirroring how mux0's agent-hook.sh passes the event in argv.
+/// With `send <agent> <event>` the payload is tagged so the daemon knows
+/// which normalizer to use — Codex events arrive this way, mirroring how
+/// mux0's agent-hook.sh passes the event in argv. Claude payloads carry their
+/// own `hook_event_name` and come with no arguments.
+///
+/// Every event is stamped here, when it happened: each hook is its own curl,
+/// they race to the daemon, and arrival order is not event order.
 const SEND: &str = r#"#!/bin/sh
 # BeeBox hook sender. Reads one JSON event on stdin and hands it to the
 # daemon. Always exits 0: status is best-effort, the agent is not.
 [ -n "$BEEBOX_HOOK_URL" ] || exit 0
-if [ -n "$1" ]; then
-  payload=$(python3 -c '
+payload=$(python3 -c '
 import json, sys, time
 try:
     body = json.load(sys.stdin)
 except Exception:
     body = {}
-body["agent"] = sys.argv[1]
+if len(sys.argv) > 1:
+    body["agent"] = sys.argv[1]
 if len(sys.argv) > 2:
     body.setdefault("hook_event_name", sys.argv[2])
 body["at_ms"] = int(time.time() * 1000)
 print(json.dumps(body))
-' "$1" "$2" 2>/dev/null) || exit 0
-  printf '%s' "$payload" | curl -s -o /dev/null --max-time 0.5 \
-    -H 'Content-Type: application/json' --data-binary @- \
-    "$BEEBOX_HOOK_URL" 2>/dev/null || true
-else
-  curl -s -o /dev/null --max-time 0.5 \
-    -H 'Content-Type: application/json' \
-    --data-binary @- \
-    "$BEEBOX_HOOK_URL" 2>/dev/null || true
-fi
+' "$@" 2>/dev/null) || exit 0
+printf '%s' "$payload" | curl -s -o /dev/null --max-time 0.5 \
+  -H 'Content-Type: application/json' --data-binary @- \
+  "$BEEBOX_HOOK_URL" 2>/dev/null || true
 exit 0
 "#;
 

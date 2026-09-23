@@ -293,6 +293,7 @@ impl Store {
                             rows: r.get(7)?,
                             cmd: cmd.split_whitespace().map(str::to_string).collect(),
                             session_ref: r.get(4)?,
+                            session_ref_at: 0,
                         })
                     })?
                     .collect::<rusqlite::Result<_>>()?;

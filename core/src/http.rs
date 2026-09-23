@@ -275,7 +275,7 @@ async fn ws_upgrade(
             .map(|p| hash_pair_code(&p.trim().to_uppercase(), &grant.token));
         match given {
             Some(h) if constant_time_eq(&h, want) => {
-                let _ = app.store.lock().await.clear_pairing(&grant.token);
+                app.store.lock().await.clear_pairing(&grant.token).expect("write state.db");
             }
             _ => {
                 // 428: the client knows to prompt for the code and retry.
@@ -611,21 +611,20 @@ async fn handle(
                 // A link, never the machine.
                 host: false,
             };
-            if app.store.lock().await.put_grant(&g).is_ok() {
-                // Creating a link implies wanting it reachable: open the web
-                // server with it, so the copied URL works without a second
-                // trip to the status-bar toggle.
-                if !app.is_exposed() {
-                    app.set_exposed(true).await;
-                }
-                let _ = tx
-                    .send(Out::Grant {
-                        url: format!("/{}/{}", scope.url_prefix(), token),
-                        pair_code: code,
-                        hosts: share_hosts(app.hook_port_now()),
-                    })
-                    .await;
+            app.store.lock().await.put_grant(&g).expect("write state.db");
+            // Creating a link implies wanting it reachable: open the web
+            // server with it, so the copied URL works without a second trip
+            // to the status-bar toggle.
+            if !app.is_exposed() {
+                app.set_exposed(true).await;
             }
+            let _ = tx
+                .send(Out::Grant {
+                    url: format!("/{}/{}", scope.url_prefix(), token),
+                    pair_code: code,
+                    hosts: share_hosts(app.hook_port_now()),
+                })
+                .await;
         }
 
         In::Kick { session: target } => {

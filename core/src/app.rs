@@ -142,8 +142,8 @@ impl App {
         scrollback_lines: usize,
         adapter_assets: Option<crate::agent_adapters::AdapterAssets>,
     ) -> Arc<Self> {
-        let tree = store.load_tree().unwrap_or_default();
-        let agent_settings = store.load_agent_settings().unwrap_or_default();
+        let tree = store.load_tree().expect("read state.db");
+        let agent_settings = store.load_agent_settings().expect("read state.db");
         let (changed, _) = broadcast::channel(64);
         let (agent_tx, _) = broadcast::channel(256);
         Arc::new(Self {
@@ -176,9 +176,7 @@ impl App {
     /// caller can forget half of it.
     async fn commit(&self) {
         let tree = self.tree.lock().await;
-        if let Err(e) = self.store.lock().await.save_tree(&tree) {
-            tracing::warn!("failed to persist layout: {e}");
-        }
+        self.store.lock().await.save_tree(&tree).expect("write state.db");
         drop(tree);
         let _ = self.changed.send(TreeChanged);
     }
@@ -841,15 +839,11 @@ impl App {
     /// clients hide them immediately — not on the next event (mux0's known
     /// stale-dot bug).
     pub async fn set_agent_setting(&self, agent: AgentKind, setting: AgentSetting, on: bool) {
-        if self
-            .store
+        self.store
             .lock()
             .await
             .put_agent_setting(setting, agent, on)
-            .is_err()
-        {
-            return;
-        }
+            .expect("write state.db");
         let snapshot = {
             let mut s = self.agent_settings.lock().await;
             s.set(agent, setting, on);
@@ -867,9 +861,7 @@ impl App {
 
     /// The Reset button: six toggles off, all resume ids gone, all dots gone.
     pub async fn reset_agent_settings(&self) {
-        if self.store.lock().await.reset_agent_settings().is_err() {
-            return;
-        }
+        self.store.lock().await.reset_agent_settings().expect("write state.db");
         *self.agent_settings.lock().await = AgentSettings::default();
         self.clear_agent_status(None).await;
         self.clear_session_refs(None).await;
@@ -950,8 +942,12 @@ impl App {
             // Resume gate: session ids are only stored while the toggle is
             // on. The read side re-checks at launch, so old rows cannot
             // sneak past either way.
-            if resume_on {
+            //
+            // Newest wins: hooks race each other to the daemon, and a late one
+            // from the session just left must not put its id back.
+            if resume_on && ev.at_ms >= p.session_ref_at {
                 if let Some(id) = &ev.session_id {
+                    p.session_ref_at = ev.at_ms;
                     if p.session_ref.as_deref() != Some(id.as_str()) {
                         p.session_ref = Some(id.clone());
                         dirty = true;
@@ -1008,9 +1004,7 @@ impl App {
         drop(tree);
         if dir_changed {
             let tree = self.tree.lock().await;
-            if let Err(e) = self.store.lock().await.save_tree(&tree) {
-                tracing::warn!("failed to persist cwd move: {e}");
-            }
+            self.store.lock().await.save_tree(&tree).expect("write state.db");
         }
         let _ = self.agent_tx.send(AgentDelta::Cwd { pane, path: cwd, git });
     }
@@ -1154,7 +1148,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::{Dir, Shelf};
+    use crate::proto::{AgentEventKind, Dir, Shelf};
     use crate::share::Scope;
 
     /// A ready app with one workspace open, as most tests assume. `bootstrap`
@@ -1698,6 +1692,27 @@ mod tests {
             Some(first),
             "a remembered tab that no longer exists must not leave the bar empty"
         );
+    }
+
+    #[tokio::test]
+    async fn a_late_hook_cannot_put_back_the_session_just_left() {
+        let a = app().await;
+        a.set_agent_setting(AgentKind::Claude, AgentSetting::Resume, true).await;
+        let pane = a.tree.lock().await.workspaces[0].tabs[0].panes[0].id;
+        let ev = |id: &str, at_ms| AgentEvent {
+            agent: AgentKind::Claude,
+            kind: AgentEventKind::SessionEnd,
+            at_ms,
+            session_id: Some(id.into()),
+            session_title: None,
+        };
+
+        a.apply_agent_event(pane, ev("new", 200)).await;
+        // The old session's last word, arriving after the new one's first.
+        a.apply_agent_event(pane, ev("old", 100)).await;
+
+        let t = a.tree.lock().await;
+        assert_eq!(t.pane(pane).unwrap().session_ref.as_deref(), Some("new"));
     }
 
     #[tokio::test]
