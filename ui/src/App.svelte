@@ -278,11 +278,11 @@
     </div>
   {/if}
 
-  <!-- Up here, not in the sidebar: on a phone the sidebar folds to nothing,
-       and a button inside it would fold away with it. -->
+  <!-- The sidebar has its own; this one is for a phone, where the folded
+       sidebar is gone and its button with it. -->
   {#if store.caps.show_sidebar}
     <button
-      class="tb-btn command"
+      class="tb-btn command phone-fold"
       aria-label={folded ? 'Show workspaces' : 'Hide workspaces'}
       title="Workspaces  ⌘B"
       onclick={() => setFolded(!folded)}
@@ -365,7 +365,7 @@
 
 <div class="body">
   {#if store.caps.show_sidebar}
-    <Sidebar onnew={openWorkspace} {folded} />
+    <Sidebar onnew={openWorkspace} ontoggle={() => setFolded(!folded)} {folded} />
     {#if !folded}
       <!-- Only drawn where the open sidebar lies over the terminal; tapping
            beside it puts it away. -->
@@ -573,6 +573,13 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
+  }
+  /* The same width as the sidebar's container query, which decides when
+     folded means gone. */
+  @media (min-width: 561px) {
+    .tb-btn.phone-fold {
+      display: none;
+    }
   }
 
   .body {

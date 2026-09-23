@@ -14,7 +14,11 @@
   import Icon from './Icon.svelte';
   import ContextMenu, { type MenuItem } from './ContextMenu.svelte';
 
-  let { onnew, folded }: { onnew: () => void; folded: boolean } = $props();
+  let {
+    onnew,
+    ontoggle,
+    folded,
+  }: { onnew: () => void; ontoggle: () => void; folded: boolean } = $props();
 
   /** A workspace shows the most urgent state among its panes; an unread
       completion keeps the aggregate dot solid. */
@@ -87,11 +91,14 @@
 <aside class="sidebar" class:folded transition:slide={{ axis: 'x', duration: FOLD_MS, easing: cubicOut }}>
   <div class="sb-head">
     {#if !folded}Workspaces{/if}
-    {#if store.caps.host}
-      <button class="add" title="Open a workspace  ⌘N" aria-label="Open a workspace" onclick={onnew}>
-        <Icon name="plus" size={15} />
-      </button>
-    {/if}
+    <button
+      class="fold"
+      title="Workspaces  ⌘B"
+      aria-label={folded ? 'Show workspaces' : 'Hide workspaces'}
+      onclick={ontoggle}
+    >
+      <Icon name="sidebar" size={15} />
+    </button>
   </div>
 
   <div class="ws-list">
@@ -170,6 +177,15 @@
       </div>
     {/each}
   </div>
+
+  <!-- At the foot, where a list grows towards: the next workspace goes below
+       the last one. -->
+  {#if store.caps.host}
+    <button class="add" title="Open a workspace  ⌘N" aria-label="Open a workspace" onclick={onnew}>
+      <Icon name="plus" size={14} />
+      {#if !folded}<span>Open workspace</span>{/if}
+    </button>
+  {/if}
 </aside>
 {/key}
 
@@ -196,7 +212,7 @@
     display: flex;
     align-items: center;
   }
-  .add {
+  .fold {
     margin-left: auto;
     color: var(--faint);
     display: inline-flex;
@@ -204,7 +220,21 @@
     justify-content: center;
     line-height: 1;
   }
+  .fold:hover {
+    color: var(--fg);
+  }
+  .add {
+    margin: 6px;
+    padding: 7px 9px;
+    border-radius: 7px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    color: var(--faint);
+    font-size: 12px;
+  }
   .add:hover {
+    background: var(--panel-2);
     color: var(--fg);
   }
   .ws-list {
@@ -306,8 +336,13 @@
     justify-content: center;
     padding-inline: 0;
   }
-  .folded .add {
+  .folded .fold {
     margin-left: 0;
+  }
+  .folded .add {
+    margin: 6px 4px;
+    padding: 7px 0;
+    justify-content: center;
   }
   .folded .ws-list {
     padding: 0 4px;
