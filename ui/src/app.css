@@ -97,11 +97,6 @@ button {
   cursor: pointer;
 }
 
-/* Dragging the window. The attribute is what Tauri looks for; `app-region`
-   is what makes it work for touch and pen input too. */
-/* Anything clickable inside the drag region has to opt out, or it would be
-   swallowed by the drag. */
-
 /* Status dots, driven by agent hooks — the one thing added on top of a
    plain terminal. The six-phase styles live in StatusIcon.svelte; the shared
    keyframes stay here. */

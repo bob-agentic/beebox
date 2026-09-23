@@ -1,7 +1,6 @@
 <script lang="ts">
-  // Opening a workspace works without the native folder chooser: Tauri v2
-  // hides that plugin unless its capability is declared, and in a browser tab
-  // it does not exist at all. So ⌘N always lands here, and the native picker
+  // Opening a workspace works without the native folder chooser: in a browser
+  // tab or on a phone it does not exist at all. So ⌘N always lands here, and the native picker
   // is offered as a shortcut when it happens to be available.
   import { store } from '../state.svelte';
 
