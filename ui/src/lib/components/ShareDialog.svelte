@@ -79,11 +79,11 @@
   // The Copy button must answer, or the user assumes it did nothing.
   let copied = $state<string | null>(null);
   let copiedTimer: ReturnType<typeof setTimeout> | null = null;
-  async function copy(url: string) {
+  async function copy(text: string) {
     // A share link is most often copied on the very device that cannot reach
     // navigator.clipboard — a viewer on plain http. Hence the helper.
-    if (!(await writeClipboard(url))) return;
-    copied = url;
+    if (!(await writeClipboard(text))) return;
+    copied = text;
     if (copiedTimer) clearTimeout(copiedTimer);
     copiedTimer = setTimeout(() => (copied = null), 1600);
   }
@@ -137,12 +137,16 @@
 
 
     {#if store.share?.pair_code}
+      {@const code = store.share.pair_code}
       <div class="paircode">
-        <div class="code">{store.share.pair_code}</div>
+        <div class="code">{code}</div>
         <div class="pc-note">
           Single use — spent once they pair<br />
           <span class="dim">Send it by another channel, not with the link</span>
         </div>
+        <button class:did={copied === code} onclick={() => copy(code)}>
+          {copied === code ? 'Copied ✓' : 'Copy'}
+        </button>
       </div>
     {/if}
 
@@ -435,6 +439,16 @@
   }
   .pc-note .dim {
     color: var(--faint);
+  }
+  .paircode button {
+    color: var(--dim);
+    font-size: 11px;
+    padding: 2px 7px;
+    background: var(--panel-2);
+    border-radius: 4px;
+  }
+  .paircode button.did {
+    color: var(--accent);
   }
 
   .acts {
