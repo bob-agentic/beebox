@@ -175,22 +175,18 @@ impl Store {
         Ok(())
     }
 
-    /// Reserves `n` ids, so the in-memory tree and the database agree on what
-    /// has ever been handed out.
-    pub fn reserve_ids(&self, n: u64) -> Result<u64> {
-        let tx = self.db.unchecked_transaction()?;
-        let from = from_db(tx.query_row("SELECT next FROM id_seq", [], |r| r.get::<_, i64>(0))?);
-        tx.execute("UPDATE id_seq SET next = ?1", params![to_db(from + n)])?;
-        tx.commit()?;
-        Ok(from)
-    }
-
     /// Replaces the persisted layout with the current tree. Whole-tree rewrite
     /// is the right call at this scale: a few dozen rows, and no chance of the
     /// two drifting.
     pub fn save_tree(&self, tree: &SessionTree) -> Result<()> {
         let tx = self.db.unchecked_transaction()?;
         tx.execute("DELETE FROM workspaces", [])?;
+        // Keeps the high-water mark with the rows, so ids handed out and then
+        // closed are still never handed out again.
+        tx.execute(
+            "UPDATE id_seq SET next = MAX(next, ?1)",
+            params![to_db(tree.last_id())],
+        )?;
 
         for (wi, ws) in tree.workspaces.iter().enumerate() {
             tx.execute(
@@ -310,12 +306,20 @@ impl Store {
             tree.workspaces.push(Workspace::restored(ws_id, name, path, tabs));
         }
 
-        // Resume id allocation above everything ever handed out.
-        let next = from_db(
-            self.db
-                .query_row("SELECT next FROM id_seq", [], |r| r.get::<_, i64>(0))?,
-        );
-        tree.set_next_id(next);
+        // Resume id allocation above everything ever handed out. The rows are
+        // consulted as well as the counter: a database written while the
+        // counter was never advanced holds ids far above it.
+        let last = from_db(self.db.query_row(
+            "SELECT MAX(
+                 (SELECT next FROM id_seq),
+                 IFNULL((SELECT MAX(id) FROM workspaces), 0),
+                 IFNULL((SELECT MAX(id) FROM tabs), 0),
+                 IFNULL((SELECT MAX(id) FROM panes), 0),
+                 IFNULL((SELECT MAX(scope_id) FROM grants), 0))",
+            [],
+            |r| r.get::<_, i64>(0),
+        )?);
+        tree.set_next_id(last);
         tree.active_ws = tree.workspaces.first().map(|w| w.id);
         tree.active_tab = tree
             .workspaces
@@ -566,26 +570,36 @@ mod tests {
     #[test]
     fn ids_are_not_reused_across_restarts() {
         let s = Store::in_memory().unwrap();
-        let before = tree_with_split();
-        let highest = before
-            .workspaces
-            .iter()
-            .flat_map(|w| &w.tabs)
-            .flat_map(|t| &t.panes)
-            .map(|p| p.id)
-            .max()
-            .unwrap();
-        s.reserve_ids(highest + 1).unwrap();
+        let mut before = tree_with_split();
+        // Handed out, then closed: gone from the rows, never to come back.
+        let gone = before.open_workspace("/repo/gone".into(), "gone".into());
+        before.close_workspace(gone);
         s.save_tree(&before).unwrap();
 
         let mut after = s.load_tree().unwrap();
-        let tab = after.workspaces[0].tabs[0].id;
-        let pane = after.first_pane(tab).unwrap();
-        let fresh = after.split(pane, Dir::Vertical);
-        // Depth may refuse the split; what matters is the id, when granted.
-        if let Ok(id) = fresh {
-            assert!(id > highest, "id {id} collides with pre-restart ids");
-        }
+        let fresh = after.open_workspace("/repo/new".into(), "new".into());
+        assert!(fresh > gone, "id {fresh} reissued after a restart");
+    }
+
+    #[test]
+    fn a_database_whose_counter_never_moved_still_allocates_above_its_rows() {
+        let s = Store::in_memory().unwrap();
+        s.save_tree(&tree_with_split()).unwrap();
+        // What every database written before the counter was kept looks like.
+        s.db.execute("UPDATE id_seq SET next = 1", []).unwrap();
+
+        let mut after = s.load_tree().unwrap();
+        let fresh = after.open_workspace("/repo/new".into(), "new".into());
+        let highest = after
+            .workspaces
+            .iter()
+            .flat_map(|w| std::iter::once(w.id).chain(w.tabs.iter().flat_map(|t| {
+                std::iter::once(t.id).chain(t.panes.iter().map(|p| p.id))
+            })))
+            .filter(|&id| id != fresh)
+            .max()
+            .unwrap();
+        assert!(fresh > highest, "id {fresh} collides with a restored id");
     }
 
     #[test]

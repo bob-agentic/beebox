@@ -180,6 +180,11 @@ impl SessionTree {
         self.next_id = self.next_id.max(next);
     }
 
+    /// The highest id handed out so far.
+    pub fn last_id(&self) -> u64 {
+        self.next_id
+    }
+
     pub fn open_workspace(&mut self, path: String, name: String) -> WsId {
         let id = self.alloc();
         self.workspaces.push(Workspace {
