@@ -74,8 +74,7 @@ enum WebHost {
             config.preferences.setValue(true, forKey: "developerExtrasEnabled")
         }
 
-        let web = ShellWebView(frame: .zero, configuration: config)
-        return web
+        return ShellWebView(frame: .zero, configuration: config)
     }
 
     /// The shell's entire JavaScript surface.

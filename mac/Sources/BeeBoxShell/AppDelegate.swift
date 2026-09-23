@@ -31,7 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
                 home: Self.home(isSelfTest: isIsolatedRun),
                 // Automated runs must coexist with the real app. Always give
                 // them an isolated port instead of probing the app's default.
-                port: try isIsolatedRun ? Self.ephemeralPort() : Self.choosePort(preferred: 17788),
+                port: isIsolatedRun ? Self.ephemeralPort() : Self.choosePort(preferred: 17788),
                 bindHost: bindHost
             )
         } catch {
@@ -63,13 +63,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         let url = URL(string: "http://localhost:\(daemon.port)/?key=\(daemon.ownerKey)")!
         web.load(URLRequest(url: url))
 
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
         if isSelfTest {
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
             selfTest = SelfTest(web: web, bridge: bridge) { [weak self] in self?.daemon?.stop() }
-        } else {
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
         }
     }
 
@@ -190,9 +187,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     /// An already-running BeeBox is not reused: its owner key was printed to
     /// its own stdout, which this process cannot read, so its port would be
     /// reachable but unusable.
-    private static func choosePort(preferred: UInt16) throws -> UInt16 {
+    private static func choosePort(preferred: UInt16) -> UInt16 {
         if isFree(preferred) { return preferred }
-        return try ephemeralPort()
+        return ephemeralPort()
     }
 
     private static func isFree(_ port: UInt16) -> Bool {
@@ -213,7 +210,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         return bound == 0
     }
 
-    private static func ephemeralPort() throws -> UInt16 {
+    private static func ephemeralPort() -> UInt16 {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         defer { Darwin.close(fd) }
         var addr = sockaddr_in()

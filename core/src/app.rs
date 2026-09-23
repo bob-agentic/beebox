@@ -590,8 +590,9 @@ impl App {
                     }
                 }
                 Ok(_) => {}
-                // Lagged only drops output frames; exits are rare enough that
-                // missing one would be a surprise, but carrying on is right.
+                // Lag can drop an exit as well as output. Unlikely — this loop
+                // skips output without work — and the pane would only stay
+                // open, so carrying on is right.
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                 Err(_) => break,
             }

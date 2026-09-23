@@ -1,6 +1,6 @@
 //! `beebox` — the daemon.
 //!
-//! The Tauri shell spawns this in-process; `beebox daemon` runs it headless for
+//! The desktop shell spawns this as a child process; run on its own it serves
 //! machines you only reach over SSH. Same core either way.
 
 use std::net::SocketAddr;
@@ -91,7 +91,10 @@ async fn main() -> Result<()> {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 // SAFETY: getppid takes no arguments and cannot fail.
                 if unsafe { libc::getppid() } == 1 {
-                    tracing::info!("parent exited; shutting down");
+                    // No log line: the parent held our stdout and stderr, so
+                    // both are broken pipes now. tracing's fallback report to
+                    // stderr panics, the panic kills this task, and the daemon
+                    // lived on as an orphan holding its port and terminals.
                     std::process::exit(0);
                 }
             }

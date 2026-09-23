@@ -49,20 +49,6 @@ final class SelfTest {
         await check("bridge is visible to the page", "window.__BEEBOX__ !== undefined", is: true)
         await check("page knows it is in a shell", "document.body.classList.contains('web')", is: false)
 
-        // xterm's WebGL renderer silently produces an empty canvas in some
-        // webviews: the pane has the right size, the text is in the buffer, and
-        // nothing is drawn. Check the context exists before trusting the eye.
-        await check(
-            "the webview can create a WebGL context",
-            """
-            (() => {
-              const c = document.createElement('canvas');
-              return !!(c.getContext('webgl2') || c.getContext('webgl'));
-            })()
-            """,
-            is: true
-        )
-
         await expectNewTerminal(
             commandID: "new_tab",
             counting: ".tab",
@@ -184,7 +170,7 @@ final class SelfTest {
 
     /// The visible terminal must contain the output of a command.
     private func checkTerminalIsLive() async {
-        // WebGL renders to a canvas, so there is nothing in the DOM to read;
+        // The terminal renders to a canvas, so there is nothing in the DOM to read;
         // the page exposes xterm's own serializer for exactly this.
         let text = "document.querySelector('.sheet.on .pane .term')?.__serialize?.() ?? ''"
 

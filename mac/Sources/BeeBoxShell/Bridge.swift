@@ -16,13 +16,11 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
     /// Set by the self-test to answer the folder chooser without showing it.
     var stubbedDirectory: (() -> String?)?
 
-    nonisolated func userContentController(
+    func userContentController(
         _ controller: WKUserContentController,
         didReceive message: WKScriptMessage,
         replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void
     ) {
-        // The body is read here because a WKScriptMessage cannot cross actors;
-        // everything after that touches AppKit and so runs on the main actor.
         let body = message.body as? [String: Any]
         // A Task rather than `assumeIsolated`: the folder chooser replies from
         // a sheet callback long after this call has returned, and a reply sent

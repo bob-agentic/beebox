@@ -36,14 +36,11 @@ enum MainMenu {
                 keyEquivalent: ""
             ),
             .separator(),
-            {
-                let item = NSMenuItem(
-                    title: "Hide BeeBox",
-                    action: #selector(NSApplication.hide(_:)),
-                    keyEquivalent: "h"
-                )
-                return item
-            }(),
+            NSMenuItem(
+                title: "Hide BeeBox",
+                action: #selector(NSApplication.hide(_:)),
+                keyEquivalent: "h"
+            ),
             {
                 let item = NSMenuItem(
                     title: "Hide Others",

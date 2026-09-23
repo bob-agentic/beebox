@@ -191,9 +191,8 @@ impl Registry {
                 .wait()
                 .map(|s| s.exit_code() as i32)
                 .unwrap_or(-1);
-            // Re-use the same channel for the exit signal: an empty vec.
-            let _ = raw_tx.blocking_send(Vec::new());
             let _ = code_tx.send(code);
+            // Returning drops `raw_tx`, which is what ends the loop below.
         });
 
         // Coalescing loop.
@@ -207,14 +206,13 @@ impl Registry {
             loop {
                 tokio::select! {
                     chunk = raw_rx.recv() => match chunk {
-                        Some(c) if c.is_empty() => break,   // process exited
                         Some(c) => {
                             pending.extend_from_slice(&c);
                             if pending.len() >= FLUSH_BYTES {
                                 reg.flush(id, pane, &mut pending);
                             }
                         }
-                        None => break,
+                        None => break, // process exited
                     },
                     _ = ticker.tick() => {
                         if !pending.is_empty() {
@@ -372,7 +370,7 @@ mod tests {
     }
 
     /// Collects output frames for one pane until the process exits.
-    async fn drain(reg: &Arc<Registry>, id: PtyId, mut rx: broadcast::Receiver<PtyEvent>) -> String {
+    async fn drain(mut rx: broadcast::Receiver<PtyEvent>) -> String {
         let mut out = Vec::new();
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         loop {
@@ -384,7 +382,6 @@ mod tests {
                 Ok(Err(_)) | Err(_) => break,
             }
         }
-        let _ = reg;
         String::from_utf8_lossy(&out).into_owned()
     }
 
@@ -398,10 +395,10 @@ mod tests {
         // four under a loaded `cargo test`. Real panes run `zsh -l -i`, which
         // never exits, so the race is the test's alone. `modes_are_sniffed`
         // already handled it this way; the rest hadn't caught up.
-        let id = reg
+        reg
             .spawn(spec(1, &["sh", "-c", "echo hello beebox; sleep 0.2"]))
             .unwrap();
-        assert!(drain(&reg, id, rx).await.contains("hello beebox"));
+        assert!(drain(rx).await.contains("hello beebox"));
     }
 
     #[tokio::test]
@@ -410,12 +407,12 @@ mod tests {
         std::env::set_var("CLAUDE_CODE_CHILD_SESSION", "1");
         let reg = Registry::new();
         let rx = reg.subscribe();
-        let id = reg
+        reg
             .spawn(spec(1, &["sh", "-c", "echo CC=${CLAUDECODE:-unset} CS=${CLAUDE_CODE_CHILD_SESSION:-unset}; sleep 0.2"]))
             .unwrap();
         std::env::remove_var("CLAUDECODE");
         std::env::remove_var("CLAUDE_CODE_CHILD_SESSION");
-        let out = drain(&reg, id, rx).await;
+        let out = drain(rx).await;
         assert!(out.contains("CC=unset CS=unset"), "Claude markers leaked into the pane: {out}");
     }
 
@@ -426,11 +423,11 @@ mod tests {
         std::env::set_var("NO_COLOR", "1");
         let reg = Registry::new();
         let rx = reg.subscribe();
-        let id = reg
+        reg
             .spawn(spec(1, &["sh", "-c", "echo NC=${NO_COLOR:-unset} CT=$COLORTERM; sleep 0.2"]))
             .unwrap();
         std::env::remove_var("NO_COLOR");
-        let out = drain(&reg, id, rx).await;
+        let out = drain(rx).await;
         assert!(out.contains("NC=unset"), "NO_COLOR leaked into the pane: {out}");
         assert!(out.contains("CT=truecolor"), "COLORTERM missing: {out}");
     }
@@ -440,10 +437,10 @@ mod tests {
         // Bytes-through is the core promise; CJK and emoji must survive.
         let reg = Registry::new();
         let rx = reg.subscribe();
-        let id = reg
+        reg
             .spawn(spec(1, &["sh", "-c", "echo '中文测试 ✓ 你好'; sleep 0.2"]))
             .unwrap();
-        let out = drain(&reg, id, rx).await;
+        let out = drain(rx).await;
         assert!(out.contains("中文测试 ✓ 你好"), "got {out:?}");
     }
 
@@ -458,7 +455,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(200)).await;
         reg.kill(id);
 
-        assert!(drain(&reg, id, rx).await.contains("round trip"));
+        assert!(drain(rx).await.contains("round trip"));
     }
 
     #[tokio::test]
@@ -509,7 +506,7 @@ mod tests {
         assert!(count(Some(10)) < count(Some(150)), "a larger ask gets more");
         // Absurd asks are clamped rather than refused.
         assert!(count(Some(usize::MAX)) > 0);
-        let _ = drain(&reg, id, rx).await;
+        let _ = drain(rx).await;
     }
 
     #[tokio::test]
@@ -530,7 +527,7 @@ mod tests {
         // In alt screen the replay starts at the switch, so it holds the
         // in-alt text and not what came before.
         assert!(String::from_utf8_lossy(&data).contains("in-alt"));
-        let _ = drain(&reg, id, rx).await;
+        let _ = drain(rx).await;
     }
 
     #[tokio::test]
@@ -545,7 +542,7 @@ mod tests {
         // A repeat must not fire another SIGWINCH.
         reg.resize(id, 96, 38).unwrap();
         assert_eq!(reg.size(id), Some((96, 38)));
-        let _ = drain(&reg, id, rx).await;
+        let _ = drain(rx).await;
     }
 
     #[tokio::test]
