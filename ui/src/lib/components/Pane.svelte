@@ -26,6 +26,16 @@
   let host: HTMLDivElement;
   let reportSize: (() => void) | null = null;
 
+  /** On the tab in front. Every tab stays mounted, so a window resize or a
+      sidebar fold reached every terminal on the machine at once — each one
+      re-laying out its scrollback and making its shell repaint. A pane out
+      of sight only notes that it owes a fit, and settles it when shown. */
+  const shown = $derived(store.visiblePanes().some((p) => p.id === pane.id));
+  let owesFit = false;
+  $effect(() => {
+    if (shown && owesFit) reportSize?.();
+  });
+
   // The PTY's width, as the server last said. Someone else resizing it has to
   // reach a client that draws at that width.
   $effect(() => {
@@ -198,6 +208,12 @@
     // server holds a size some other client set, and then silence is wrong.
     // Asking explicitly has to mean asking.
     const report = (force = false) => {
+      // Always the first time: the replay needs a real width to land in.
+      if (!shown && !force && lastCols !== 0) {
+        owesFit = true;
+        return;
+      }
+      owesFit = false;
       let dims;
       try {
         dims = fit.proposeDimensions();
