@@ -7,6 +7,7 @@ import type { Terminal } from '@xterm/xterm';
 import { markRead, pruneRead } from './agent-status';
 import { Conn } from './conn';
 import { settings } from './settings.svelte';
+import { stripPartialLineMarkers } from './partial-line';
 import type {
   AgentSettings,
   AgentStatusView,
@@ -125,9 +126,18 @@ class Store {
     this.sizing =
       native || new URLSearchParams(location.search).get('phone') === '1';
     const sizing = this.sizing;
+    // A resizing client says its size up front, so the replay arrives laid
+    // out for the width it will actually use. Saying it only after mounting
+    // meant history wrapped for the owner's terminal and re-wrapped here —
+    // which is where zsh's reverse-video `%` came from on a phone: the marker
+    // is erased by padding to an exact column count, and that count was the
+    // other terminal's. An estimate from the window is enough; the precise
+    // figure follows from the first fit.
+    const guess = sizing ? this.guessSize() : null;
     this.wsBase =
       `${proto}://${host}/ws${q}${q ? '&' : '?'}replay=${replay}` +
-      (sizing ? '&sizing=true' : '');
+      (sizing ? '&sizing=true' : '') +
+      (guess ? `&cols=${guess.cols}&rows=${guess.rows}` : '');
 
     if (this.shareToken) {
       // A paired grant refuses the socket until the code is presented, and a
@@ -143,6 +153,19 @@ class Store {
     } else {
       this.connect();
     }
+  }
+
+  /** Roughly how large a terminal fills this window, before one exists to
+   *  measure. Deliberately approximate: it only has to be closer than the
+   *  owner's width, and the real size arrives moments later from the fit. */
+  private guessSize(): { cols: number; rows: number } | null {
+    const cell = { w: 8.4, h: 17 };
+    // The chrome around a pane: title bar, tab strip, pane head and foot.
+    const chrome = { w: 24, h: 150 };
+    const cols = Math.floor((window.innerWidth - chrome.w) / cell.w);
+    const rows = Math.floor((window.innerHeight - chrome.h) / cell.h);
+    if (cols < 20 || rows < 5) return null;
+    return { cols: Math.min(cols, 400), rows: Math.min(rows, 200) };
   }
 
   private connect(pair?: string) {
@@ -211,7 +234,7 @@ class Store {
         // pastes — see ARCHITECTURE.md §5a.
         this.terms.get(pane)?.term.reset();
         this.write(pane, msg.modes);
-        this.write(pane, msg.data);
+        this.write(pane, stripPartialLineMarkers(msg.data));
         break;
       }
       case 'size': {
@@ -416,8 +439,27 @@ class Store {
   jump(pane: PaneId, where: 'top' | 'bottom') {
     const t = this.terms.get(pane);
     if (!t) return;
-    if (where === 'top') t.term.scrollToTop();
-    else t.term.scrollToBottom();
+    // Not scrollToTop/scrollToBottom: measured on a device, those move the
+    // viewport not at all while a wheel event moves it all the way. xterm
+    // honours the wheel and nothing else — the same finding that made touch
+    // scrolling work. A delta past any possible height lands on the end.
+    const el = (t.term as unknown as { element?: HTMLElement }).element;
+    const vp = el?.querySelector('.xterm-viewport');
+    vp?.dispatchEvent(
+      new WheelEvent('wheel', {
+        deltaY: where === 'top' ? -1e7 : 1e7,
+        deltaMode: 0,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  }
+
+  /** The same jump, aimed at whichever pane is on screen. The title bar has
+   *  no pane of its own, and a phone shows one at a time. */
+  jumpVisible(where: 'top' | 'bottom') {
+    const pane = this.targetPane();
+    if (pane !== null) this.jump(pane, where);
   }
 
   /** Asks every mounted pane to re-measure and say so, even if the numbers

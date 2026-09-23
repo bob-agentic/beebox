@@ -272,6 +272,27 @@
       Share
     </button>
   {/if}
+  <!-- Scrollback runs to tens of thousands of lines, which is more flicks
+       than anyone will make on a phone. On a desktop Home and End already do
+       this, so these appear only where neither exists. -->
+  {#if store.sizing}
+    <button
+      class="tb-btn command"
+      aria-label="Jump to the oldest line"
+      title="Oldest"
+      onclick={() => store.jumpVisible('top')}
+    >
+      <Icon name="top" size={15} />
+    </button>
+    <button
+      class="tb-btn command"
+      aria-label="Jump to the newest line"
+      title="Newest"
+      onclick={() => store.jumpVisible('bottom')}
+    >
+      <Icon name="bottom" size={15} />
+    </button>
+  {/if}
   <!-- Leaving a session, for the app: there is no address bar to navigate
        away with, so without this the only way out is killing the app from
        recents. The shell owns the connect screen, so it does the work. -->

@@ -176,23 +176,21 @@ class MainActivity : AppCompatActivity() {
         }
         web.isVerticalScrollBarEnabled = false
         web.isHorizontalScrollBarEnabled = false
-        // Long-press is how you select text on a phone, and selecting output
-        // is most of why it is on screen. The terminal draws to a canvas, so
-        // there is no DOM text for the system to select — xterm implements
-        // selection itself, from pointer events. WebView's own long-press
-        // handler fires first and opens a menu about the app, which both
-        // swallows the gesture and is useless here. Returning true says it is
-        // handled; the pointer events still reach the page, which is the part
-        // that matters.
-        web.setOnLongClickListener { true }
         // Leaving a session is the shell's to do: the page cannot show the
         // connect screen, because the connect screen is not part of the page.
         // Without this the only way out was killing the app from the
         // recents list.
         web.addJavascriptInterface(Bridge(), "__beeboxShell")
-        // Keeps the browser from also starting its own text selection on top
-        // of the terminal's — two selection models fighting over one gesture.
-        web.isHapticFeedbackEnabled = false
+
+        // The page's console, in logcat. A WebView keeps it to itself
+        // otherwise, which leaves `adb logcat` blind to anything the frontend
+        // has to say about itself.
+        web.webChromeClient = object : android.webkit.WebChromeClient() {
+            override fun onConsoleMessage(m: android.webkit.ConsoleMessage): Boolean {
+                android.util.Log.i("BeeBoxWeb", "${m.message()} (${m.sourceId()}:${m.lineNumber()})")
+                return true
+            }
+        }
 
         web.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(

@@ -181,6 +181,14 @@ struct WsQuery {
     /// overlaps itself, so the choice is between resizing the terminal and
     /// not being able to read it.
     sizing: Option<bool>,
+    /// The size this client will render at, if it already knows. A resizing
+    /// client that only says so after mounting gets the replay at the old
+    /// width and re-wraps it at the new one — which is where zsh's
+    /// reverse-video `%` came from on a phone: the marker is erased by
+    /// padding to an exact column count, and the padding was counted for a
+    /// different terminal.
+    cols: Option<u16>,
+    rows: Option<u16>,
 }
 
 /// The pairing code travels the second channel (spoken, messaged); the wire
@@ -285,7 +293,10 @@ async fn ws_upgrade(
     }
     let replay = q.replay;
     let sizing = q.sizing.unwrap_or(false);
-    ws.on_upgrade(move |socket| serve(socket, app, grant, addr, device, replay, sizing))
+    let first_size = q.cols.zip(q.rows);
+    ws.on_upgrade(move |socket| {
+        serve(socket, app, grant, addr, device, replay, sizing, first_size)
+    })
 }
 
 /// A readable device label for the connection manager. Coarse on purpose: it
@@ -332,6 +343,8 @@ async fn serve(
     replay: Option<usize>,
     // Whether this connection may resize the terminal.
     sizing: bool,
+    // The size it will render at, when it knew before connecting.
+    first_size: Option<(u16, u16)>,
 ) {
     let (mut sink, mut stream) = {
         use futures_util::StreamExt;
@@ -396,6 +409,17 @@ async fn serve(
     // with resume_all — a no-op when it is already running).
     const JUST_SPAWNED: u64 = 4096;
     let owner = grant.may_mutate();
+
+    // Before the replay, not after: a client that will resize should be sent
+    // history already laid out for the width it is about to use.
+    if sizing {
+        if let Some((c, r)) = first_size {
+            for pane in app.visible(&grant).await {
+                let _ = app.set_viewport(&grant, true, pane, c, r).await;
+            }
+        }
+    }
+
     for pane in app.visible(&grant).await {
         if !owner {
             let _ = app.ensure_running(pane).await;
