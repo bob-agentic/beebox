@@ -187,17 +187,29 @@ class Store {
   private handle(msg: Out) {
     switch (msg.t) {
       case 'tree': {
+        const shown = { ws: this.activeWs?.id ?? null, tab: this.activeTab?.id ?? null };
         this.tree = msg.tree;
         // Anything clicked before the first frame arrived was handled as a
         // viewer would handle it, because `host` starts false — and the local
         // override that leaves behind outranks the server's own active ids
         // forever after, so a new workspace would open behind the old one.
-        if (msg.caps.host && !this.caps.host) {
+        //
+        // A follower keeps its own place until the owner moves: a changed
+        // active id is the owner going somewhere, and the follower goes too.
+        // Null means the owner is outside this share, so it stays put.
+        const owner = `${msg.tree.active_ws}:${msg.tree.active_tab}`;
+        const moved = msg.tree.active_tab !== null && owner !== this.ownerAt;
+        this.ownerAt = owner;
+        if (msg.caps.may_open_tab || moved) {
           this.localWs = null;
           this.localTab = null;
+        } else if (msg.tree.active_tab === null && this.localTab === null) {
+          // Following an owner who just left the share: pin what is on screen,
+          // or the fallback would drop the follower onto the first tab.
+          this.localWs = shown.ws;
+          this.localTab = shown.tab;
         }
         this.caps = msg.caps;
-        this.followOpenedTab();
         this.reconcile();
         break;
       }
@@ -507,38 +519,18 @@ class Store {
     return live[0] ?? ws.tabs[0];
   }
 
-  /** Viewer-local navigation. `Activate` is owner-only on the server — the
-      server's active ids are the owner's view, and a shared client changing
-      them would flip the owner's screen. So the owner sends Activate; a
-      viewer just remembers its own selection here. */
+  /** Where a follower has wandered to on its own. The server's active ids are
+      one shared view: the owner and any share that may open tabs move it
+      with `Activate` and all see the same thing. Every other share follows
+      it, but may look elsewhere for a while — here — until the owner next
+      moves. */
   private localWs = $state<WsId | null>(null);
   private localTab = $state<TabId | null>(null);
-
-  /** Tabs that existed when this viewer asked for a new one. The server makes
-      the new tab active, but that is the owner's view; a viewer navigates
-      locally, so it has to find the new tab itself when the tree comes back. */
-  private tabsBeforeOpen: { ws: WsId; ids: Set<TabId> } | null = null;
-
-  openTab(ws: WsId) {
-    if (!this.caps.host) {
-      const w = this.tree.workspaces.find((x) => x.id === ws);
-      this.tabsBeforeOpen = { ws, ids: new Set(w?.tabs.map((t) => t.id)) };
-    }
-    this.send({ t: 'open_tab', ws });
-  }
-
-  private followOpenedTab() {
-    const before = this.tabsBeforeOpen;
-    if (!before) return;
-    const w = this.tree.workspaces.find((x) => x.id === before.ws);
-    const fresh = w?.tabs.find((t) => !before.ids.has(t.id));
-    if (!fresh) return;
-    this.tabsBeforeOpen = null;
-    this.activate(before.ws, fresh.id);
-  }
+  /** The owner's position as last seen, to tell a move from a title change. */
+  private ownerAt = '';
 
   activate(ws: WsId, tab: TabId | null) {
-    if (this.caps.host) {
+    if (this.caps.may_open_tab) {
       this.send({ t: 'activate', ws, tab });
       return;
     }

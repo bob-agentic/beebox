@@ -171,7 +171,16 @@ impl App {
     pub async fn view_for(&self, grant: &Grant) -> (TreeView, Caps) {
         let tree = self.tree.lock().await;
         let visible = visible_panes(&grant.scope, &tree);
-        let view = tree.to_view(&visible);
+        let mut view = tree.to_view(&visible);
+        // Where the owner is, but only if the share can see it. Outside its
+        // scope the share stays where it was and learns nothing of where the
+        // owner went.
+        if !view.workspaces.iter().any(|w| Some(w.id) == view.active_ws) {
+            view.active_ws = None;
+        }
+        if !view.workspaces.iter().flat_map(|w| &w.tabs).any(|t| Some(t.id) == view.active_tab) {
+            view.active_tab = None;
+        }
         let caps = Caps {
             writable: grant.writable,
             host: grant.host,
@@ -367,7 +376,8 @@ impl App {
         // scope that will hold one — see `Grant::may_open_tab`. Nothing else:
         // a link lets someone type into terminals someone else owns.
         let allowed = grant.host
-            || (matches!(msg, In::OpenTab { .. }) && grant.may_open_tab());
+            || (matches!(msg, In::OpenTab { .. }) && grant.may_open_tab())
+            || (matches!(msg, In::Activate { .. }) && grant.may_navigate());
         if !allowed {
             // Not an error worth telling the client about in detail — a
             // well-behaved client never sends these without `caps.host`.
@@ -388,18 +398,9 @@ impl App {
                 self.commit().await;
             }
             In::OpenTab { ws } => {
-                let tab = {
-                    let mut t = self.tree.lock().await;
-                    let owner_view = (t.active_ws, t.active_tab);
-                    let tab = t.open_tab(ws)?;
-                    // The active ids are the owner's screen. A share's new tab
-                    // must not pull the owner off what they are typing into;
-                    // the share follows it locally instead.
-                    if !grant.host {
-                        (t.active_ws, t.active_tab) = owner_view;
-                    }
-                    tab
-                };
+                // Becomes the active tab for everyone following along, the
+                // owner included — see `Grant::may_navigate`.
+                let tab = self.tree.lock().await.open_tab(ws)?;
                 let pane = self
                     .tree
                     .lock()
@@ -1413,11 +1414,14 @@ mod tests {
             tabs + 1,
             "the one thing a link may do",
         );
-        assert_eq!(
+        assert_ne!(
             a.tree.lock().await.active_tab,
             Some(tab),
-            "a share's new tab leaves the owner where they were",
+            "the new tab is the shared view's, the owner's included",
         );
+        // And it moves that view like the owner does.
+        a.handle_host(&guest, In::Activate { ws, tab: Some(tab) }).await.unwrap();
+        assert_eq!(a.tree.lock().await.active_tab, Some(tab));
 
         a.handle_host(&guest, In::ShelveTab { tab, shelf: Some(Shelf::Archive) })
             .await
@@ -1461,6 +1465,31 @@ mod tests {
         let tabs = a.tree.lock().await.workspaces[0].tabs.len();
         a.handle_host(&guest, In::OpenTab { ws }).await.unwrap();
         assert_eq!(a.tree.lock().await.workspaces[0].tabs.len(), tabs);
+    }
+
+    #[tokio::test]
+    async fn a_follower_neither_moves_the_owner_nor_sees_where_they_went() {
+        let a = app().await;
+        let owner = a.owner_grant().await;
+        let (ws1, tab1) = {
+            let t = a.tree.lock().await;
+            (t.workspaces[0].id, t.workspaces[0].tabs[0].id)
+        };
+        let tab2 = a.tree.lock().await.open_tab(ws1).unwrap();
+        let follower = shared(Scope::Workspace(ws1), true);
+
+        // Navigating is local for anyone who may not open tabs.
+        a.handle_host(&follower, In::Activate { ws: ws1, tab: Some(tab1) }).await.unwrap();
+        assert_eq!(a.tree.lock().await.active_tab, Some(tab2));
+
+        // Inside the share, the follower is told where the owner is.
+        let (view, _) = a.view_for(&follower).await;
+        assert_eq!(view.active_tab, Some(tab2));
+
+        // Outside it, only that the owner is not here.
+        a.handle_host(&owner, In::OpenWorkspace { path: "/tmp".into() }).await.unwrap();
+        let (view, _) = a.view_for(&follower).await;
+        assert_eq!((view.active_ws, view.active_tab), (None, None));
     }
 
     #[tokio::test]

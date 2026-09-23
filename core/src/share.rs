@@ -79,6 +79,16 @@ impl Grant {
         self.writable && self.scope == Scope::All
     }
 
+    /// Moving the shared view — which workspace and tab are active.
+    ///
+    /// Whoever may open a tab may also switch between them, and both move the
+    /// owner's screen too: a share that can add tabs is working on the machine
+    /// alongside the owner, and one view kept in step is what they asked for.
+    /// Every other share follows the owner and navigates only locally.
+    pub fn may_navigate(&self) -> bool {
+        self.host || self.may_open_tab()
+    }
+
     /// Structural changes — spawning panes, opening and closing tabs, resizing
     /// splits, issuing grants, kicking sessions.
     ///
