@@ -26,6 +26,7 @@
     | 'archive'
     | 'later'
     | 'bottom'
+    | 'sidebar'
     | 'claude'
     | 'codex';
 
@@ -71,6 +72,8 @@
     // wall, which reads as "as far as it goes" rather than "one step".
     top: '<path d="M5 3h14"/><path d="m18 13-6-6-6 6"/><path d="M12 7v14"/>',
     bottom: '<path d="M12 17V3"/><path d="m6 11 6 6 6-6"/><path d="M19 21H5"/>',
+    // Lucide's panel-left: a window with its left strip marked off.
+    sidebar: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/>',
     // Lucide's unplug: a plug pulled clear of its socket, which says "leave
     // this session" without implying the daemon is being stopped.
     unplug:

@@ -7,7 +7,7 @@
   import Icon from './Icon.svelte';
   import ContextMenu, { type MenuItem } from './ContextMenu.svelte';
 
-  let { onnew }: { onnew: () => void } = $props();
+  let { onnew, folded }: { onnew: () => void; folded: boolean } = $props();
 
   /** A workspace shows the most urgent state among its panes; an unread
       completion keeps the aggregate dot solid. */
@@ -61,7 +61,8 @@
       x: e.clientX,
       y: e.clientY,
       items: [
-        { label: 'Rename', onselect: () => beginRename(ws) },
+        // Folded, there is no name on screen to edit in place.
+        ...(folded ? [] : [{ label: 'Rename', onselect: () => beginRename(ws) }]),
         { label: 'Close', danger: true, onselect: () => close(ws) },
       ],
     };
@@ -73,9 +74,9 @@
   }
 </script>
 
-<aside class="sidebar">
+<aside class="sidebar" class:folded>
   <div class="sb-head">
-    Workspaces
+    {#if !folded}Workspaces{/if}
     {#if store.caps.host}
       <button class="add" title="Open a workspace  ⌘N" aria-label="Open a workspace" onclick={onnew}>
         <Icon name="plus" size={15} />
@@ -97,52 +98,65 @@
           commit: (order) => store.send({ t: 'reorder_workspaces', order }),
         }}
         class:active={ws.id === store.activeWs?.id}
+        title={folded ? ws.name : undefined}
         onclick={() => store.activate(ws.id, null)}
         oncontextmenu={(e) => openMenu(e, ws)}
       >
-        <div class="row1">
-          <StatusIcon phase={wsDot(ws).phase} unread={wsDot(ws).unread} />
+        {#if folded}
+          <!-- The initial stands in for the name, the badge for the count,
+               and the dot keeps its corner so a running agent still shows. -->
+          <span class="tile">
+            {ws.name.slice(0, 1).toUpperCase()}
+            <span class="badge">{ws.tabs.length}</span>
+            <span class="tile-dot">
+              <StatusIcon phase={wsDot(ws).phase} unread={wsDot(ws).unread} />
+            </span>
+          </span>
+        {:else}
+          <div class="row1">
+            <StatusIcon phase={wsDot(ws).phase} unread={wsDot(ws).unread} />
 
-          {#if editing === ws.id}
-            <input
-              class="rename"
-              bind:value={draft}
-              use:focusInput
-              onclick={(e) => e.stopPropagation()}
-              onblur={() => commitRename(ws)}
-              onkeydown={(e) => {
-                if (e.key === 'Enter') commitRename(ws);
-                if (e.key === 'Escape') editing = null;
-              }}
-            />
-          {:else}
-            <span
-              class="name"
-              title={ws.path}
-              ondblclick={(e) => {
-                if (!store.caps.host) return;
-                e.stopPropagation();
-                beginRename(ws);
-              }}>{ws.name}</span
-            >
-            <span class="count">{ws.tabs.length}</span>
-            {#if store.caps.host}
-              <!-- svelte-ignore a11y_click_events_have_key_events -->
+            {#if editing === ws.id}
+              <input
+                class="rename"
+                bind:value={draft}
+                use:focusInput
+                onclick={(e) => e.stopPropagation()}
+                onblur={() => commitRename(ws)}
+                onkeydown={(e) => {
+                  if (e.key === 'Enter') commitRename(ws);
+                  if (e.key === 'Escape') editing = null;
+                }}
+              />
+            {:else}
               <span
-                class="x"
-                title="Close workspace"
-                aria-label="Close workspace"
-                onclick={(e) => {
+                class="name"
+                title={ws.path}
+                ondblclick={(e) => {
+                  if (!store.caps.host) return;
                   e.stopPropagation();
-                  close(ws);
-                }}><Icon name="x" size={13} /></span
+                  beginRename(ws);
+                }}>{ws.name}</span
               >
+              <span class="count">{ws.tabs.length}</span>
+              {#if store.caps.host}
+                <!-- svelte-ignore a11y_click_events_have_key_events -->
+                <span
+                  class="x"
+                  title="Close workspace"
+                  aria-label="Close workspace"
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    close(ws);
+                  }}><Icon name="x" size={13} /></span
+                >
+              {/if}
             {/if}
-          {/if}
-        </div>
-        <div class="row2">
-          <span class="branch">⎇ {ws.branch || 'main'}</span>
-        </div>
+          </div>
+          <div class="row2">
+            <span class="branch">⎇ {ws.branch || 'main'}</span>
+          </div>
+        {/if}
       </div>
     {/each}
   </div>
@@ -270,5 +284,88 @@
   }
   .x:hover {
     color: var(--err);
+  }
+
+  /* Folded: a rail of initials, 162px handed back to the terminal. */
+  .sidebar.folded {
+    width: 44px;
+    flex-basis: 44px;
+  }
+  .folded .sb-head {
+    justify-content: center;
+    padding-inline: 0;
+  }
+  .folded .add {
+    margin-left: 0;
+  }
+  .folded .ws-list {
+    padding: 0 4px;
+  }
+  .folded .ws {
+    align-items: center;
+    padding: 5px 0;
+  }
+  .folded .ws.active {
+    box-shadow: none;
+    background: none;
+  }
+  .tile {
+    position: relative;
+    width: 26px;
+    height: 26px;
+    border-radius: 7px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 600;
+    background: var(--panel-2);
+    color: var(--dim);
+  }
+  .ws:hover .tile {
+    color: var(--fg);
+  }
+  .ws.active .tile {
+    background: var(--accent);
+    color: var(--bg);
+  }
+  .badge {
+    position: absolute;
+    top: -4px;
+    right: -5px;
+    min-width: 13px;
+    height: 13px;
+    padding: 0 3px;
+    border-radius: 7px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--dim);
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 11px;
+    text-align: center;
+  }
+  .tile-dot {
+    position: absolute;
+    bottom: -2px;
+    left: -2px;
+    display: flex;
+  }
+
+  /* A phone held upright. 44px is a tenth of the screen, and nobody picks a
+     workspace while reading a terminal on one — so here folded means gone,
+     and open means laid over the top, dismissed by tapping beside it. Same
+     state, one rule; the width decides what folding costs. */
+  @container body (max-width: 560px) {
+    .sidebar.folded {
+      display: none;
+    }
+    .sidebar:not(.folded) {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      z-index: 20;
+    }
   }
 </style>

@@ -85,6 +85,26 @@
     void windowAction('zoom');
   }
 
+  /** The sidebar folds to a rail of initials — or, on a phone, to nothing.
+      Which of those it means is left to CSS; this only remembers the choice.
+      Until someone makes one, a narrow screen starts folded and a wide one
+      open, decided afresh on each load. */
+  const FOLD_KEY = 'beebox.sidebar-folded';
+  let folded = $state(
+    localStorage.getItem(FOLD_KEY) === null
+      ? matchMedia('(max-width: 560px)').matches
+      : localStorage.getItem(FOLD_KEY) === '1',
+  );
+
+  function setFolded(on: boolean) {
+    folded = on;
+    try {
+      localStorage.setItem(FOLD_KEY, on ? '1' : '0');
+    } catch {
+      // Private browsing. It still folds for this session.
+    }
+  }
+
   const tab = $derived(store.activeTab);
   const paneCount = $derived(
     store.tree.workspaces.reduce(
@@ -160,6 +180,12 @@
     if (e.key === ',' || e.key.toLowerCase() === 'k') {
       e.preventDefault();
       dialog = 'settings';
+      return;
+    }
+    // Local too: folding moves nothing but this screen's furniture.
+    if (e.key.toLowerCase() === 'b' && store.caps.show_sidebar) {
+      e.preventDefault();
+      setFolded(!folded);
       return;
     }
     if (!store.caps.host && !store.caps.may_open_tab) return;
@@ -263,6 +289,19 @@
     </div>
   {/if}
 
+  <!-- Up here, not in the sidebar: on a phone the sidebar folds to nothing,
+       and a button inside it would fold away with it. -->
+  {#if store.caps.show_sidebar}
+    <button
+      class="tb-btn command"
+      aria-label={folded ? 'Show workspaces' : 'Hide workspaces'}
+      title="Workspaces  ⌘B"
+      onclick={() => setFolded(!folded)}
+    >
+      <Icon name="sidebar" size={15} />
+    </button>
+  {/if}
+
   <div class="slot-hint">+ plugins</div>
 
   <div class="spacer"></div>
@@ -336,7 +375,14 @@
 
 <div class="body">
   {#if store.caps.show_sidebar}
-    <Sidebar onnew={openWorkspace} />
+    <Sidebar onnew={openWorkspace} {folded} />
+    {#if !folded}
+      <!-- Only drawn where the open sidebar lies over the terminal; tapping
+           beside it puts it away. -->
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div class="scrim" onclick={() => setFolded(true)}></div>
+    {/if}
   {/if}
 
   <main class="main">
@@ -604,6 +650,22 @@
     flex: 1;
     display: flex;
     min-height: 0;
+    position: relative;
+    /* Measured by the sidebar: what folding means depends on the room this
+       box has, not on what kind of device it is. */
+    container: body / inline-size;
+  }
+  .scrim {
+    display: none;
+  }
+  @container body (max-width: 560px) {
+    .scrim {
+      display: block;
+      position: absolute;
+      inset: 0;
+      z-index: 19;
+      background: rgba(0, 0, 0, 0.45);
+    }
   }
   .main {
     flex: 1;
@@ -716,7 +778,6 @@
     .slot-hint, .plugin-slot { display: none; }
     .titlebar { gap: 6px; padding-inline: 8px; }
     .tb-btn { padding-inline: 7px; }
-    .body :global(.sidebar) { display: none; }
     .statusbar .stats, .statusbar .scope-sep { display: none; }
     .statusbar { padding-inline: 8px; gap: 5px; }
   }
