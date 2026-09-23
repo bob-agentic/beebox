@@ -23,6 +23,9 @@
 
   let { pane }: { pane: PaneView } = $props();
 
+  /** The Mac shell's WKWebView, which needs its own renderer and fixes. */
+  const macShell = '__BEEBOX__' in window;
+
   let host: HTMLDivElement;
   let reportSize: (() => void) | null = null;
 
@@ -34,6 +37,19 @@
   let owesFit = false;
   $effect(() => {
     if (shown && owesFit) reportSize?.();
+  });
+
+  /** WebGL only while on screen. A browser keeps a handful of GL contexts —
+      eight or so on Android — and drops the oldest past that, so with every
+      tab mounted the pane you were reading fell back to xterm's DOM renderer,
+      which rebuilds its rows on every frame of a scroll. */
+  let gl: { dispose(): void } | null = null;
+  let showGl: ((on: boolean) => void) | null = null;
+  $effect(() => {
+    // Read before the call: `showGl?.(shown)` skips its argument while the
+    // addon is still loading, and then the effect never tracks `shown`.
+    const on = shown;
+    showGl?.(on);
   });
 
   // The PTY's width, as the server last said. Someone else resizing it has to
@@ -103,7 +119,7 @@
     term.loadAddon(fit);
 
     // Lets the end-to-end tests read what the terminal is actually showing.
-    // WebGL draws to a canvas, so there is nothing in the DOM to assert on.
+    // The renderers draw to a canvas, so there is nothing in the DOM to assert on.
     void import('@xterm/addon-serialize').then(({ SerializeAddon }) => {
       const ser = new SerializeAddon();
       term.loadAddon(ser);
@@ -131,7 +147,7 @@
     // character through its normal path. Nothing extra is sent, and the
     // duplicate-suppression xterm already does is untouched — so this cannot
     // double up. Composition is left strictly alone.
-    if ('__BEEBOX__' in window) {
+    if (macShell) {
       host.addEventListener(
         'beforeinput',
         (ev: Event) => {
@@ -149,9 +165,11 @@
     // WKWebView can parse output into the buffer without invalidating xterm's
     // compositing layer. Coalesce an explicit refresh to the next frame so a
     // busy agent still causes at most one extra paint per display frame.
+    // Only there: elsewhere a full repaint per frame of output is pure cost,
+    // and on a phone it fights scrolling for the same frames.
     let refreshFrame = 0;
     const refresh = () => {
-      if (refreshFrame) return;
+      if (!macShell || refreshFrame) return;
       refreshFrame = requestAnimationFrame(() => {
         refreshFrame = 0;
         if (term.rows > 0) term.refresh(0, term.rows - 1);
@@ -162,7 +180,7 @@
     // WebKit currently accepts the WebGL context but composites it as a blank
     // layer. Browsers keep the accelerated renderer; the native shell uses
     // xterm's Canvas2D addon, which WebKit snapshots and composites reliably.
-    if ('__BEEBOX__' in window) {
+    if (macShell) {
       void import('@xterm/addon-canvas').then(({ CanvasAddon }) => {
         try {
           term.loadAddon(new CanvasAddon());
@@ -173,14 +191,26 @@
       });
     } else {
       void import('@xterm/addon-webgl').then(({ WebglAddon }) => {
-        try {
-          const gl = new WebglAddon();
-          gl.onContextLoss(() => gl.dispose());
-          term.loadAddon(gl);
-          refresh();
-        } catch {
-          // The built-in renderer remains active.
-        }
+        showGl = (on) => {
+          if (!on) {
+            gl?.dispose();
+            gl = null;
+            return;
+          }
+          if (gl) return;
+          try {
+            const addon = new WebglAddon();
+            addon.onContextLoss(() => {
+              addon.dispose();
+              if (gl === addon) gl = null;
+            });
+            term.loadAddon(addon);
+            gl = addon;
+          } catch {
+            // The built-in renderer remains active.
+          }
+        };
+        showGl(shown);
       });
     }
 
