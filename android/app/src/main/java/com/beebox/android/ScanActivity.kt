@@ -4,7 +4,6 @@ import android.Manifest
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Bundle
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -91,18 +90,9 @@ class ScanActivity : AppCompatActivity() {
             .addOnCompleteListener { proxy.close() }
     }
 
-    /** A code is ours if it addresses a BeeBox: our own scheme, or plain http
-     *  to something that has a share path on it. */
-    private fun urlOf(code: Barcode): String? {
-        val raw = code.rawValue ?: return null
-        val uri = runCatching { Uri.parse(raw) }.getOrNull() ?: return null
-        return when {
-            uri.scheme == "beebox" -> uri.buildUpon().scheme("http").build().toString()
-            uri.scheme == "http" && uri.path?.startsWith("/t/") == true -> raw
-            else -> null
-        }
-    }
+    private fun urlOf(code: Barcode): String? = code.rawValue?.let(Links::fromCode)
 
+    /** Called on the main thread by ML Kit, so `done` needs no locking. */
     private fun succeed(url: String) {
         if (done) return
         done = true

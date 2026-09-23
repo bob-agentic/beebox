@@ -8,4 +8,8 @@
     <string name="paste">Paste a link instead</string>
     <string name="connect">Connect</string>
     <string name="link_hint">beebox://192.168.1.10:17788/t/…</string>
+    <string name="bad_link">That doesn\'t look like a BeeBox link</string>
+    <string name="link_gone">This link isn\'t available</string>
+    <string name="unreachable">Couldn\'t reach BeeBox: %1$s</string>
+    <string name="no_handler">No app can open that link</string>
 </resources>

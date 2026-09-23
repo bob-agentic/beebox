@@ -12,7 +12,7 @@ object LinkDialog {
     fun show(activity: Activity, onLink: (String) -> Unit) {
         val field = EditText(activity).apply {
             hint = activity.getString(R.string.link_hint)
-            inputType = InputType.TYPE_TEXT_VARIATION_URI
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
             setSingleLine()
         }
         // AlertDialog gives an EditText no margins of its own.

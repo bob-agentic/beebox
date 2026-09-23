@@ -1,15 +1,21 @@
 package com.beebox.android
 
 import android.annotation.SuppressLint
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.view.View
+import android.view.ViewGroup
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import androidx.activity.addCallback
+import android.widget.TextView
+import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.webkit.WebViewCompat
@@ -29,6 +35,12 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var web: WebView
     private lateinit var connect: View
+    private lateinit var status: TextView
+
+    /** Set when the next page to finish should become the start of history,
+     *  so Back cannot walk into `about:blank` or into the previous session —
+     *  which would load without the marker, and so without the sizing. */
+    private var freshHistory = false
 
     /** Where we last connected. A fold, a rotation, or the app being evicted
      *  should all come back to the same terminal rather than the scanner. */
@@ -64,22 +76,33 @@ class MainActivity : AppCompatActivity() {
 
         web = findViewById(R.id.web)
         connect = findViewById(R.id.connect)
+        status = findViewById(R.id.status)
         configure(web)
 
         // Back goes back in the page's own history before it leaves the app.
-        onBackPressedDispatcher.addCallback(this) {
-            if (web.visibility == View.VISIBLE && web.canGoBack()) web.goBack()
-            else {
-                isEnabled = false
-                onBackPressedDispatcher.onBackPressed()
+        // Stepping aside for the system is for one press only: left disabled,
+        // Back skipped the page's history for good once the app returned from
+        // the background (Android 12+ keeps a root activity alive on Back).
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (web.visibility == View.VISIBLE && web.canGoBack()) web.goBack()
+                else {
+                    isEnabled = false
+                    onBackPressedDispatcher.onBackPressed()
+                    isEnabled = true
+                }
             }
-        }
+        })
 
         findViewById<View>(R.id.scan).setOnClickListener { scan.launch(Unit) }
         findViewById<View>(R.id.paste).setOnClickListener { promptForLink() }
 
-        val saved_url = saved?.getString(KEY_URL) ?: fromIntent(intent)
-        if (saved_url != null) open(saved_url) else showConnect()
+        // A restored activity goes by what it saved, even when that is
+        // nothing: falling back to the launching intent brought a session the
+        // user had disconnected from back to life after the process was
+        // evicted, because the intent still carried the original link.
+        val start = if (saved != null) saved.getString(KEY_URL) else fromIntent(intent)
+        if (start != null) open(start) else showConnect()
     }
 
     /** A code scanned by the system camera arrives here, not through onCreate:
@@ -93,28 +116,18 @@ class MainActivity : AppCompatActivity() {
     override fun onSaveInstanceState(out: Bundle) {
         super.onSaveInstanceState(out)
         current?.let { out.putString(KEY_URL, it) }
-        web.saveState(out)
     }
-
 
     // ---- connecting ----------------------------------------------------
 
-    /** `beebox://host:port/t/token` is what a share code carries. The scheme
-     *  exists only to be claimable; the daemon speaks http, so swap it back. */
-    private fun fromIntent(intent: Intent?): String? {
-        val data = intent?.data ?: return null
-        return if (data.scheme == "beebox") httpFrom(data) else null
-    }
-
-    /** The scheme exists only to be claimable by the camera; the daemon
-     *  speaks http. Nothing else about the link is rewritten — what this
-     *  client is gets said once, in the injected marker, not smuggled through
-     *  every URL. */
-    private fun httpFrom(uri: Uri): String =
-        uri.buildUpon().scheme("http").build().toString()
+    /** The system camera hands over the code it read, so it gets the same
+     *  rule as the in-app scanner. */
+    private fun fromIntent(intent: Intent?): String? =
+        intent?.dataString?.let(Links::fromCode)
 
     private fun open(url: String) {
         current = url
+        freshHistory = true
         announceSelf(url)
         connect.visibility = View.GONE
         web.visibility = View.VISIBLE
@@ -134,8 +147,7 @@ class MainActivity : AppCompatActivity() {
      *  without clearing would stack a copy per session. */
     private fun announceSelf(url: String) {
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
-        val uri = Uri.parse(url)
-        val origin = "${uri.scheme}://${uri.host}:${uri.port.takeIf { it != -1 } ?: 80}"
+        val origin = Links.origin(Uri.parse(url))
         marker?.remove()
         marker = WebViewCompat.addDocumentStartJavaScript(
             web,
@@ -144,18 +156,46 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    private fun showConnect() {
+    /** Back to the connect screen, saying why when there is a reason. A
+     *  failure that only blanked the page left the user nowhere: the page's
+     *  own way out is part of the page. */
+    private fun showConnect(why: String? = null) {
         web.visibility = View.GONE
         connect.visibility = View.VISIBLE
+        status.text = why
+        status.visibility = if (why == null) View.GONE else View.VISIBLE
     }
 
     private fun promptForLink() {
         LinkDialog.show(this) { typed ->
-            // A typed link deserves the same sizing as a scanned one, so it
-            // goes through httpFrom either way — which also normalises the
-            // scheme when someone pastes the http form.
-            open(httpFrom(Uri.parse(typed.trim())))
+            val url = Links.fromTyped(typed)
+            if (url != null) open(url) else showConnect(getString(R.string.bad_link))
         }
+    }
+
+    /** Leaves the session. The page is unloaded rather than hidden, so its
+     *  socket closes and the owner's connection list drops this device. */
+    private fun leave(why: String? = null) {
+        current = null
+        freshHistory = true
+        web.loadUrl("about:blank")
+        showConnect(why)
+    }
+
+    /** The renderer died — reclaimed while backgrounded, or crashed. The
+     *  WebView is unusable from here and must be replaced; without this the
+     *  whole app went down with it. */
+    private fun replaceWeb() {
+        val parent = web.parent as ViewGroup
+        val at = parent.indexOfChild(web)
+        val params = web.layoutParams
+        parent.removeView(web)
+        web.destroy()
+        marker = null // it belonged to the dead view
+        web = TerminalWebView(this).also { it.id = R.id.web }
+        parent.addView(web, at, params)
+        configure(web)
+        current?.let(::open) ?: showConnect()
     }
 
     // ---- the webview ---------------------------------------------------
@@ -173,6 +213,9 @@ class MainActivity : AppCompatActivity() {
             displayZoomControls = false
             textZoom = 100
             mediaPlaybackRequiresUserGesture = false
+            // Only the daemon is ever loaded. API 29 still defaults these on.
+            allowFileAccess = false
+            allowContentAccess = false
         }
         web.isVerticalScrollBarEnabled = false
         web.isHorizontalScrollBarEnabled = false
@@ -184,10 +227,13 @@ class MainActivity : AppCompatActivity() {
 
         // The page's console, in logcat. A WebView keeps it to itself
         // otherwise, which leaves `adb logcat` blind to anything the frontend
-        // has to say about itself.
+        // has to say about itself. Debug builds only: the source of every
+        // message is the page URL, and that URL is the share token.
         web.webChromeClient = object : android.webkit.WebChromeClient() {
             override fun onConsoleMessage(m: android.webkit.ConsoleMessage): Boolean {
-                android.util.Log.i("BeeBoxWeb", "${m.message()} (${m.sourceId()}:${m.lineNumber()})")
+                if (BuildConfig.DEBUG) {
+                    android.util.Log.i("BeeBoxWeb", "${m.message()} (${m.sourceId()}:${m.lineNumber()})")
+                }
                 return true
             }
         }
@@ -202,13 +248,26 @@ class MainActivity : AppCompatActivity() {
                 // hand anything else to the system, so a link in a terminal
                 // does not replace the session with a web page.
                 if (u.scheme == "beebox") {
-                    open(httpFrom(u))
+                    Links.fromCode(u.toString())?.let(::open)
                     return true
                 }
                 val here = current?.let { Uri.parse(it) }
-                if (here != null && u.host == here.host && u.port == here.port) return false
-                startActivity(Intent(Intent.ACTION_VIEW, u))
+                if (here != null && Links.origin(u) == Links.origin(here)) return false
+                // Nothing may be installed to take it — a `mailto:` on a phone
+                // with no mail app — and that must not crash the app.
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, u))
+                } catch (_: ActivityNotFoundException) {
+                    Toast.makeText(this@MainActivity, R.string.no_handler, Toast.LENGTH_SHORT).show()
+                }
                 return true
+            }
+
+            override fun onPageFinished(view: WebView, url: String?) {
+                if (freshHistory && url != "about:blank") {
+                    view.clearHistory()
+                    freshHistory = false
+                }
             }
 
             override fun onReceivedError(
@@ -218,7 +277,33 @@ class MainActivity : AppCompatActivity() {
             ) {
                 // Only the page itself failing is worth surfacing; a missing
                 // favicon should not throw the user back to the scanner.
-                if (request.isForMainFrame) showConnect()
+                if (request.isForMainFrame && current != null) {
+                    leave(getString(R.string.unreachable, error.description))
+                }
+            }
+
+            /** The daemon answering with an error is not a network error
+             *  and never reached the handler above. Its body is a page meant
+             *  for browsers, so only the status is read: 404 is how it
+             *  answers any link it does not know, revoked or never made. */
+            override fun onReceivedHttpError(
+                view: WebView,
+                request: WebResourceRequest,
+                response: WebResourceResponse,
+            ) {
+                if (!request.isForMainFrame || current == null) return
+                leave(
+                    if (response.statusCode == 404) getString(R.string.link_gone)
+                    else "HTTP ${response.statusCode}"
+                )
+            }
+
+            override fun onRenderProcessGone(
+                view: WebView,
+                detail: RenderProcessGoneDetail,
+            ): Boolean {
+                if (view === web) replaceWeb()
+                return true
             }
         }
     }
@@ -228,11 +313,14 @@ class MainActivity : AppCompatActivity() {
     inner class Bridge {
         @android.webkit.JavascriptInterface
         fun disconnect() {
-            runOnUiThread {
-                current = null
-                web.loadUrl("about:blank")
-                showConnect()
-            }
+            runOnUiThread { leave() }
+        }
+
+        /** The link was disconnected while open. Back to the connect screen
+         *  rather than a dead page with nothing to tap. */
+        @android.webkit.JavascriptInterface
+        fun linkGone() {
+            runOnUiThread { leave(getString(R.string.link_gone)) }
         }
     }
 

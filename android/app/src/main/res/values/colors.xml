@@ -7,4 +7,5 @@
     <color name="fg">#e6edf3</color>
     <color name="dim">#8b949e</color>
     <color name="accent">#3fb950</color>
+    <color name="warn">#d29922</color>
 </resources>

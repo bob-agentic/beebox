@@ -13,11 +13,18 @@ android {
         targetSdk = 36       // Android 16
         versionCode = 1
         versionName = "0.1.4"
+        // Phones only. The x86 builds of ML Kit's scanner were 12 MB of a
+        // 32 MB APK, for emulators nobody runs this on.
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // The default rules keep @JavascriptInterface methods, which is the
+            // only reflection this app relies on; ML Kit ships its own.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
             // Debug-signed so `gradlew assembleRelease` produces something
             // installable without a keystore. A store build will need its own.
             signingConfig = signingConfigs.getByName("debug")
@@ -34,6 +41,7 @@ android {
 
     buildFeatures {
         viewBinding = false
+        buildConfig = true
     }
 }
 

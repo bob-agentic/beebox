@@ -6,7 +6,7 @@
     android:background="@color/bg">
 
     <!-- The session. Hidden until there is one. -->
-    <WebView
+    <com.beebox.android.TerminalWebView
         android:id="@+id/web"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
@@ -44,6 +44,17 @@
             android:textColor="@color/dim"
             android:textSize="13sp"
             android:gravity="center" />
+
+        <!-- Why we are back here, when it was not by choice. -->
+        <TextView
+            android:id="@+id/status"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:textColor="@color/warn"
+            android:textSize="13sp"
+            android:gravity="center"
+            android:visibility="gone" />
 
         <Button
             android:id="@+id/scan"
