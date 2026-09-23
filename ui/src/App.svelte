@@ -248,8 +248,10 @@
   <!-- The same page the server gives any unknown address, so a link that
        has been disconnected says nothing about what used to be behind it. -->
   <div class="gone">
-    <h1>404 Not Found</h1>
-    <p>The page you requested is not available.</p>
+    <div>
+      <b>404</b>
+      <p>This page isn’t available.</p>
+    </div>
   </div>
 {/if}
 
@@ -461,21 +463,30 @@
 {/if}
 
 <style>
+  /* Matches the daemon's own 404 page. */
   .gone {
     position: fixed;
     inset: 0;
     z-index: 100;
-    background: #fff;
-    color: #555;
-    font-family: system-ui, sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     text-align: center;
-    padding-top: 18vh;
+    background: #0f0f13;
+    color: #8b8b95;
+    font-family: system-ui, -apple-system, sans-serif;
   }
-  .gone h1 {
-    font-size: 2em;
-    font-weight: 500;
-    margin-bottom: 0.67em;
+  .gone b {
+    display: block;
+    font: 600 56px ui-monospace, Menlo, monospace;
+    color: #3a3a44;
+    letter-spacing: 4px;
   }
+  .gone p {
+    margin-top: 10px;
+    font-size: 14px;
+  }
+
   .titlebar {
     height: 38px;
     flex: 0 0 38px;

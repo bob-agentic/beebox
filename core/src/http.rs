@@ -125,12 +125,18 @@ pub fn router(app: Arc<App>, ui: Option<std::path::PathBuf>) -> Router {
 /// What anything unknown, revoked or not let in gets: a page that could have
 /// come from any web server. Nothing in it says what is running here, so
 /// probing the port teaches nobody that a terminal sits behind it.
-const NOT_FOUND_HTML: &str = "<!doctype html>\n<html><head><meta charset=\"utf-8\">\
-<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
-<title>404 Not Found</title></head>\
-<body style=\"font-family:system-ui,sans-serif;text-align:center;padding-top:18vh;color:#555\">\
-<h1 style=\"font-weight:500\">404 Not Found</h1>\
-<p>The page you requested is not available.</p></body></html>\n";
+const NOT_FOUND_HTML: &str = r#"<!doctype html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>404 Not Found</title>
+<style>
+html,body{margin:0;height:100%;background:#0f0f13;color:#8b8b95;font-family:system-ui,-apple-system,sans-serif}
+body{display:flex;align-items:center;justify-content:center;text-align:center}
+b{display:block;font:600 56px ui-monospace,Menlo,monospace;color:#3a3a44;letter-spacing:4px}
+p{margin:10px 0 0;font-size:14px}
+</style></head>
+<body><div><b>404</b><p>This page isn’t available.</p></div></body></html>
+"#;
 
 pub fn not_found() -> Response {
     (StatusCode::NOT_FOUND, Html(NOT_FOUND_HTML)).into_response()
