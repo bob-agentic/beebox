@@ -90,11 +90,17 @@
       Until someone makes one, a narrow screen starts folded and a wide one
       open, decided afresh on each load. */
   const FOLD_KEY = 'beebox.sidebar-folded';
-  let folded = $state(
-    localStorage.getItem(FOLD_KEY) === null
-      ? matchMedia('(max-width: 560px)').matches
-      : localStorage.getItem(FOLD_KEY) === '1',
-  );
+  let folded = $state(loadFolded());
+
+  function loadFolded(): boolean {
+    try {
+      const saved = localStorage.getItem(FOLD_KEY);
+      if (saved !== null) return saved === '1';
+    } catch {
+      // Private browsing; fall through to the width.
+    }
+    return matchMedia('(max-width: 560px)').matches;
+  }
 
   function setFolded(on: boolean) {
     folded = on;

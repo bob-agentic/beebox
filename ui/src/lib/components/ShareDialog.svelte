@@ -12,10 +12,24 @@
   let writable = $state(false);
   /** Which URL's code is being shown, if any. */
   let showing = $state<string | null>(null);
+  /** What the link on show was made for, frozen at Create so the result
+      cannot drift from the choices above it. */
+  let made = $state<{ kind: ScopeKind; what: string; writable: boolean } | null>(null);
+
+  // A link from an earlier opening must never greet the next one: whoever
+  // copies it would be sending out a scope they did not just choose.
+  store.share = null;
 
   const ws = $derived(store.activeWs);
   const tab = $derived(store.activeTab);
   const pane = $derived(store.focused !== null ? store.pane(store.focused) : undefined);
+
+  const SCOPE_NAME: Record<ScopeKind, string> = {
+    all: 'All workspaces',
+    workspace: 'This workspace',
+    tab: 'This tab',
+    pane: 'One pane',
+  };
 
   const WHAT_THEY_SEE: Record<ScopeKind, string> = {
     all: 'They see: full sidebar and every tab',
@@ -37,16 +51,29 @@
     }
   }
 
+  /** Sent and not yet answered. Create stays shut meanwhile, so a second
+      request cannot land its link under the first one's label. */
+  const creating = $derived(made !== null && store.share === null);
+
   function create() {
     const scope = scopeValue();
-    if (scope) store.send({ t: 'create_grant', scope, writable });
+    if (!scope || creating) return;
+    const what = { all: '', workspace: ws?.name, tab: tab?.title, pane: pane?.title || pane?.agent }[kind];
+    made = { kind, what: what ?? '', writable };
+    store.send({ t: 'create_grant', scope, writable });
+  }
+
+  /** Back to the choices. The link stays valid; it just leaves the screen. */
+  function again() {
+    store.share = null;
+    made = null;
   }
 
   // Every reachable base URL, dev-server style: what the daemon enumerated
   // from its interfaces, with this page's own origin first when it is not
   // loopback (that one is known to work — the page came over it).
   const urls = $derived.by(() => {
-    if (!store.share) return [] as string[];
+    if (!store.share) return [];
     const path = store.share.url;
     const list = store.share.hosts.map((h) => `${h}${path}`);
     if (!/^https?:\/\/(localhost|127\.)/.test(location.origin)) {
@@ -96,63 +123,32 @@
     <h3>Share</h3>
     <div class="sub">Anyone with the link sees a live terminal — nothing to install</div>
 
-    <div class="scope-label">Scope</div>
-    <div class="scope">
-      <button class:on={kind === 'all'} onclick={() => (kind = 'all')}>
-        <b>All workspaces <span class="tag warn">whole machine</span></b>
-        <small>
-          {store.tree.workspaces.length} workspaces ·
-          {store.tree.workspaces.reduce((n, w) => n + w.tabs.length, 0)} tabs ·
-          they get the same view you have
-        </small>
-      </button>
-
-      <button class:on={kind === 'workspace'} onclick={() => (kind = 'workspace')}>
-        <b>This workspace</b>
-        <small>{ws?.name ?? '—'} · all {ws?.tabs.length ?? 0} tabs, switchable</small>
-      </button>
-
-      <button class:on={kind === 'tab'} onclick={() => (kind = 'tab')}>
-        <b>This tab</b>
-        <small>{tab?.title || 'current tab'} · {tab?.panes.length ?? 0} panes</small>
-      </button>
-
-      <button class:on={kind === 'pane'} onclick={() => (kind = 'pane')}>
-        <b>One pane <span class="tag ok">smallest surface</span></b>
-        <small>{pane?.title || pane?.agent || '—'} · this terminal only, nothing else</small>
-      </button>
-    </div>
-
-    <div class="sees">{WHAT_THEY_SEE[kind]}</div>
-
-    <div class="perm">
-      <button class:on={!writable} onclick={() => (writable = false)}>
-        Read-only<small>They watch, they cannot type</small>
-      </button>
-      <button class:on={writable} onclick={() => (writable = true)}>
-        Can type<small>They can take the keyboard</small>
-      </button>
-    </div>
-
-
-
-    {#if store.share?.pair_code}
-      {@const code = store.share.pair_code}
-      <div class="paircode">
-        <div class="code">{code}</div>
-        <div class="pc-note">
-          Single use — spent once they pair<br />
-          <span class="dim">Send it by another channel, not with the link</span>
-        </div>
-        <button class:did={copied === code} onclick={() => copy(code)}>
-          {copied === code ? 'Copied ✓' : 'Copy'}
-        </button>
+    {#if store.share && made}
+      <div class="made">
+        <b>
+          {SCOPE_NAME[made.kind]}{#if made.what}<span class="what"> · {made.what}</span>{/if}
+        </b>
+        <span class="tag {made.writable ? 'warn' : 'ok'}">
+          {made.writable ? 'can type' : 'read-only'}
+        </span>
       </div>
-    {/if}
+      <div class="sees">{WHAT_THEY_SEE[made.kind]}</div>
 
-    {#if store.share}
-      <!-- The result lives at the bottom, where it lands after Create link:
-           one URL per reachable address, like a dev server's banner. -->
+      {#if store.share.pair_code}
+        {@const code = store.share.pair_code}
+        <div class="paircode">
+          <div class="code">{code}</div>
+          <div class="pc-note">
+            Single use — spent once they pair<br />
+            <span class="dim">Send it by another channel, not with the link</span>
+          </div>
+          <button class:did={copied === code} onclick={() => copy(code)}>
+            {copied === code ? 'Copied ✓' : 'Copy'}
+          </button>
+        </div>
+      {/if}
+
+      <!-- One URL per reachable address, like a dev server's banner. -->
       <div class="urls">
         {#each urls as u (u.http)}
           <div class="field">
@@ -171,14 +167,57 @@
           </div>
         {/each}
       </div>
-    {/if}
 
-    <div class="acts">
-      <button class="g" onclick={onclose}>Close</button>
-      <button class="p" onclick={create}>
-        {store.share ? 'New link' : 'Create link'}
-      </button>
-    </div>
+      <div class="acts">
+        <button class="g" onclick={again}>Share something else</button>
+        <button class="p" onclick={onclose}>Done</button>
+      </div>
+    {:else}
+      <div class="scope-label">Scope</div>
+      <div class="scope">
+        <button class:on={kind === 'all'} onclick={() => (kind = 'all')}>
+          <b>All workspaces <span class="tag warn">whole machine</span></b>
+          <small>
+            {store.tree.workspaces.length} workspaces ·
+            {store.tree.workspaces.reduce((n, w) => n + w.tabs.length, 0)} tabs ·
+            they get the same view you have
+          </small>
+        </button>
+
+        <button class:on={kind === 'workspace'} onclick={() => (kind = 'workspace')}>
+          <b>This workspace</b>
+          <small>{ws?.name ?? '—'} · all {ws?.tabs.length ?? 0} tabs, switchable</small>
+        </button>
+
+        <button class:on={kind === 'tab'} onclick={() => (kind = 'tab')}>
+          <b>This tab</b>
+          <small>{tab?.title || 'current tab'} · {tab?.panes.length ?? 0} panes</small>
+        </button>
+
+        <button class:on={kind === 'pane'} onclick={() => (kind = 'pane')}>
+          <b>One pane <span class="tag ok">smallest surface</span></b>
+          <small>{pane?.title || pane?.agent || '—'} · this terminal only, nothing else</small>
+        </button>
+      </div>
+
+      <div class="sees">{WHAT_THEY_SEE[kind]}</div>
+
+      <div class="perm">
+        <button class:on={!writable} onclick={() => (writable = false)}>
+          Read-only<small>They watch, they cannot type</small>
+        </button>
+        <button class:on={writable} onclick={() => (writable = true)}>
+          Can type<small>They can take the keyboard</small>
+        </button>
+      </div>
+
+      <div class="acts">
+        <button class="g" onclick={onclose}>Close</button>
+        <button class="p" disabled={creating} onclick={create}>
+          {creating ? 'Creating…' : 'Create link'}
+        </button>
+      </div>
+    {/if}
   </div>
 </div>
 
@@ -370,7 +409,6 @@
     margin-top: 2px;
   }
 
-
   .urls {
     display: flex;
     flex-direction: column;
@@ -408,6 +446,26 @@
     padding: 2px 7px;
     background: var(--panel-2);
     border-radius: 4px;
+  }
+  /* The result names what it was made for, so a link is never copied
+     without its scope in view. */
+  .made {
+    display: flex;
+    align-items: center;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+    border: 1px solid var(--accent);
+    border-radius: 7px;
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    font-size: 12.5px;
+  }
+  .made b {
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .made .what {
+    font-weight: 400;
+    color: var(--dim);
   }
   .sees {
     font-size: 10px;
@@ -470,6 +528,9 @@
     /* The theme background always contrasts with its own accent. */
     color: var(--bg);
     font-weight: 600;
+  }
+  .acts .p:disabled {
+    opacity: 0.6;
   }
 
   @media (max-width: 480px) {
