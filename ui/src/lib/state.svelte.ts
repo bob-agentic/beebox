@@ -34,6 +34,19 @@ interface Attached {
 
 const EMPTY_TREE: TreeView = { workspaces: [], active_ws: null, active_tab: null };
 
+/** This browser's lasting identity for share links, made on first use. Lose
+    it (cleared site data) and the links it held have to be shared again. */
+function deviceSecret(): string {
+  const KEY = 'beebox.device';
+  let secret = localStorage.getItem(KEY);
+  if (!secret) {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    secret = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+    localStorage.setItem(KEY, secret);
+  }
+  return secret;
+}
+
 class Store {
   tree = $state<TreeView>(EMPTY_TREE);
   caps = $state<Caps>({
@@ -55,18 +68,13 @@ class Store {
    *  such a client has any use for a re-fit control: everyone else's size is
    *  the owner's, and asking for it again would change nothing. */
   sizing = $state(false);
-  share = $state<{ url: string; pair_code: string | null; hosts: string[] } | null>(null);
+  share = $state<{ url: string; hosts: string[] } | null>(null);
   /** Daemon-owned Agents toggles. Owner-only; null until the server sends
       the snapshot. */
   agentSettings = $state<AgentSettings | null>(null);
   codexHooks = $state<string>('missing');
   /** Whether the daemon serves non-loopback clients. Owner-only knob. */
   webExposed = $state(false);
-  /** Set when this share link demands a pairing code before connecting.
-      The App renders the code prompt instead of the terminal. */
-  needsPairing = $state(false);
-  pairError = $state(false);
-  private shareToken: string | null = null;
   private wsBase = '';
   /** Bumped whenever this browser marks a completion read. localStorage is
       not reactive, so aggregate dots (tab, workspace) depend on this to
@@ -107,9 +115,10 @@ class Store {
     // daemon listens on every interface by default.
     const m = location.pathname.match(/^\/[awtp]\/(.+)$/);
     const key = (window as any).__BEEBOX_KEY__ as string | undefined;
-    this.shareToken = m ? m[1] : null;
-    const q = this.shareToken
-      ? `?token=${encodeURIComponent(this.shareToken)}`
+    // A share link belongs to the first device that opens it; this browser
+    // proves it is that device with a secret it keeps for good.
+    const q = m
+      ? `?token=${encodeURIComponent(m[1])}&device=${deviceSecret()}`
       : key
         ? `?key=${encodeURIComponent(key)}`
         : '';
@@ -146,20 +155,7 @@ class Store {
       (sizing ? '&sizing=true' : '') +
       (guess ? `&cols=${guess.cols}&rows=${guess.rows}` : '');
 
-    if (this.shareToken) {
-      // A paired grant refuses the socket until the code is presented, and a
-      // WebSocket carries no HTTP status back — so ask first, over plain
-      // HTTP, and show the prompt instead of a silent dead reconnect loop.
-      void fetch(`/pair/${encodeURIComponent(this.shareToken)}`)
-        .then((r) => (r.ok ? r.json() : { pairing: false }))
-        .then((s: { pairing: boolean }) => {
-          if (s.pairing) this.needsPairing = true;
-          else this.connect();
-        })
-        .catch(() => this.connect());
-    } else {
-      this.connect();
-    }
+    this.connect();
   }
 
   /** Roughly how large a terminal fills this window, before one exists to
@@ -175,37 +171,13 @@ class Store {
     return { cols: Math.min(cols, 400), rows: Math.min(rows, 200) };
   }
 
-  private connect(pair?: string) {
+  private connect() {
     this.conn?.dispose();
-    const url = pair ? `${this.wsBase}&pair=${encodeURIComponent(pair)}` : this.wsBase;
     this.conn = new Conn(
-      url,
+      this.wsBase,
       (msg) => this.handle(msg),
       (up) => (this.connected = up),
     );
-  }
-
-  /** Called by the pairing prompt. The code is single-use: on success the
-      server clears it and the plain link works from then on. */
-  submitPairCode(code: string) {
-    this.pairError = false;
-    const clean = code.trim().toUpperCase();
-    if (!clean) return;
-    // Probe with a plain fetch first so a wrong code shows an error instead
-    // of an opaque socket failure.
-    void fetch(`/pair/${encodeURIComponent(this.shareToken!)}`)
-      .then(() => {
-        this.needsPairing = false;
-        this.connect(clean);
-        // If the code was wrong the socket dies instantly and pairing is
-        // still pending server-side; surface the prompt again with an error.
-        setTimeout(() => {
-          if (!this.connected) {
-            this.needsPairing = true;
-            this.pairError = true;
-          }
-        }, 1500);
-      });
   }
 
   send(msg: In) {
@@ -293,7 +265,7 @@ class Store {
         this.peers = msg.peers;
         break;
       case 'grant':
-        this.share = { url: msg.url, pair_code: msg.pair_code, hosts: msg.hosts };
+        this.share = { url: msg.url, hosts: msg.hosts };
         break;
       case 'closed':
         this.connected = false;

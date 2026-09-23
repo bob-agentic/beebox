@@ -14,12 +14,13 @@ export class Conn {
   private ping: ReturnType<typeof setInterval> | null = null;
   private backoff = RECONNECT_MIN;
   private closed = false;
-  /** Set when the server kicks us. Reconnecting then would defeat the kick. */
-  private kicked = false;
+  /** Set when the server turns us away. Reconnecting then would only be
+      turned away again. */
+  private refused = false;
   /** True once any connection succeeded. A socket that has *never* opened is
-      usually being refused at the door (bad pairing code, revoked token) —
-      retry a few times for the daemon-still-starting case, then stop instead
-      of hammering the server with the same wrong credentials forever. */
+      either a daemon still starting or credentials refused before the
+      upgrade — retry a few times for the first, then stop instead of
+      hammering the server with the same wrong credentials forever. */
   private everOpened = false;
   private coldTries = 0;
 
@@ -46,7 +47,7 @@ export class Conn {
     ws.onmessage = (ev) => {
       if (!(ev.data instanceof ArrayBuffer)) return;
       const msg = decode(new Uint8Array(ev.data)) as Out;
-      if (msg.t === 'closed') this.kicked = true;
+      if (msg.t === 'closed') this.refused = true;
       this.onFrame(msg);
     };
 
@@ -54,7 +55,7 @@ export class Conn {
       if (this.ping) clearInterval(this.ping);
       this.ping = null;
       this.onStatus(false);
-      if (this.closed || this.kicked) return;
+      if (this.closed || this.refused) return;
       if (!this.everOpened && ++this.coldTries > 3) return;
       // Backoff, because a daemon that is down stays down for a while.
       setTimeout(() => this.open(), this.backoff);

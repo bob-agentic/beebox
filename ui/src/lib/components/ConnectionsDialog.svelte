@@ -1,26 +1,17 @@
 <script lang="ts">
-  // Replaces link expiry: see who is connected and cut them off. Visible
-  // present state beats a guessed future one.
+  // Replaces link expiry: every device a link was opened on stays listed,
+  // connected or not, until it is disconnected here. Only then does it lose
+  // its way back in.
   import { store } from '../state.svelte';
 
   let { onclose }: { onclose: () => void } = $props();
 
-  function duration(secs: number): string {
-    if (secs < 60) return `${secs}s`;
-    if (secs < 3600) return `${Math.floor(secs / 60)} min`;
-    return `${Math.floor(secs / 3600)} h`;
-  }
-
-  const COLOURS = ['#7dd3fc', '#fbbf24', '#86efac', '#c4a5e8', '#f87171'];
-
-  const others = $derived(store.peers.filter((p) => !p.is_you).length);
-
-  function initials(label: string): string {
-    return label
-      .split(/\s+/)
-      .slice(0, 2)
-      .map((w) => w[0]?.toUpperCase() ?? '')
-      .join('') || '?';
+  function ago(at: number): string {
+    const secs = Math.max(0, Math.floor(Date.now() / 1000) - at);
+    if (secs < 60) return 'just now';
+    if (secs < 3600) return `${Math.floor(secs / 60)} min ago`;
+    if (secs < 86400) return `${Math.floor(secs / 3600)} h ago`;
+    return `${Math.floor(secs / 86400)} d ago`;
   }
 </script>
 
@@ -28,41 +19,34 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="mask" onclick={(e) => e.target === e.currentTarget && onclose()}>
   <div class="modal">
-    <h3>Connected clients</h3>
-    <div class="sub">No expiry — disconnect anyone at any time</div>
+    <h3>Shared devices</h3>
+    <div class="sub">No expiry — a device keeps its link until you disconnect it</div>
 
     <div class="conn-list">
-      {#each store.peers as peer, i (peer.session)}
+      {#each store.peers as peer (peer.token)}
         <div class="conn">
-          <span class="av" style="background:{COLOURS[i % COLOURS.length]}">
-            {initials(peer.label)}
-          </span>
+          <span class="dot" class:on={peer.addr !== null}></span>
           <div class="who">
-            <b>{peer.label} · {peer.device}</b>
-            <small>{peer.addr} · {peer.scope} · {duration(peer.since_secs)}</small>
+            <b>{peer.device}</b>
+            <small>{peer.addr ?? 'offline'} · {peer.scope} · paired {ago(peer.paired_at)}</small>
           </div>
           <span class="badge" class:rw={peer.writable} class:ro={!peer.writable}>
             {peer.writable ? 'can type' : 'read-only'}
           </span>
-          {#if peer.is_you}
-            <!-- Disconnecting yourself would just close this window. -->
-            <span class="badge you">this window</span>
-          {:else}
-            <button class="kick" onclick={() => store.send({ t: 'kick', session: peer.session })}>
-              Disconnect
-            </button>
-          {/if}
+          <button class="disconnect" onclick={() => store.send({ t: 'revoke', token: peer.token })}>
+            Disconnect
+          </button>
         </div>
       {:else}
-        <div class="empty">Nothing connected</div>
+        <div class="empty">No shared devices</div>
       {/each}
     </div>
 
     <div class="acts">
       <button class="g" onclick={onclose}>Close</button>
-      {#if others > 0}
-        <button class="danger" onclick={() => store.send({ t: 'kick_all' })}>
-          Disconnect {others} other{others === 1 ? '' : 's'}
+      {#if store.peers.length > 1}
+        <button class="danger" onclick={() => store.send({ t: 'revoke_all' })}>
+          Disconnect all {store.peers.length}
         </button>
       {/if}
     </div>
@@ -110,17 +94,15 @@
     border: 1px solid var(--border);
     border-radius: 8px;
   }
-  .av {
-    width: 19px;
-    height: 19px;
+  .dot {
+    width: 7px;
+    height: 7px;
     border-radius: 50%;
-    font-size: 9px;
-    font-weight: 700;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: #0f0f13;
+    background: var(--faint);
     flex: 0 0 auto;
+  }
+  .dot.on {
+    background: #86efac;
   }
   .who {
     flex: 1;
@@ -153,11 +135,7 @@
     background: #3d2416;
     color: #fbbf24;
   }
-  .badge.you {
-    background: var(--panel-2);
-    color: var(--faint);
-  }
-  .kick {
+  .disconnect {
     font-size: 10.5px;
     padding: 4px 11px;
     border-radius: 6px;
@@ -165,7 +143,7 @@
     color: #f87171;
     flex: 0 0 auto;
   }
-  .kick:hover {
+  .disconnect:hover {
     background: #5c2020;
     color: #fff;
   }

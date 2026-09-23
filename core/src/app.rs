@@ -13,7 +13,7 @@ use tokio::sync::{broadcast, Mutex};
 
 use crate::proto::{
     AgentEvent, AgentKind, AgentSetting, AgentSettings, AgentStatusView, Caps, In, Out, PaneId,
-    Peer, PtyId, SessionId, TabId, TreeView, WsId,
+    CloseReason, Peer, PtyId, SessionId, TabId, TreeView, WsId,
 };
 use crate::pty::{Registry, Spawn};
 use crate::session::SessionTree;
@@ -47,24 +47,18 @@ pub enum AgentDelta {
     Cwd { pane: PaneId, path: String, git: Option<crate::proto::GitInfo> },
 }
 
-/// One live WebSocket. This is what the connection manager lists, and what a
-/// kick has to be able to reach — revoking a grant row is not enough on its
-/// own, because the socket it authorised is already open.
+/// The token the owner's own grant carries. Never a row in `grants`.
+const OWNER_TOKEN: &str = "owner";
+
+/// One live WebSocket. What a revoke has to reach — deleting the grant row is
+/// not enough on its own, because the socket it authorised is already open.
 #[derive(Debug)]
 pub struct Conn {
-    pub session: SessionId,
-    pub label: String,
-    pub device: String,
-    pub addr: String,
-    pub scope: String,
-    pub writable: bool,
-    pub since: std::time::Instant,
-    /// Fires when this connection is kicked. Dropping the sender is the
-    /// signal, so a kick closes the socket immediately rather than waiting for
-    /// the next broadcast to come round.
-    kick: Option<tokio::sync::oneshot::Sender<()>>,
-    /// Identity across reconnects, so a kick can be made to stick.
-    key: String,
+    /// The grant it came in on; `owner` for the owner's own windows.
+    token: String,
+    addr: String,
+    /// Closes the socket, saying why if it should not come back.
+    close: Option<tokio::sync::oneshot::Sender<Option<CloseReason>>>,
 }
 
 pub struct App {
@@ -101,15 +95,9 @@ pub struct App {
     /// served — the terminal itself rides on this HTTP server.
     exposed: std::sync::atomic::AtomicBool,
     /// Live connections, keyed by session. Populated on connect, drained on
-    /// disconnect — so the manager shows what is actually attached rather than
-    /// what was ever granted.
+    /// disconnect — so a paired device can be shown as online or not.
     conns: Mutex<HashMap<SessionId, Conn>>,
     next_session: Mutex<SessionId>,
-    /// Clients that have been kicked. Without this a kick lasts milliseconds:
-    /// the client's reconnect loop simply comes straight back. Keyed by what
-    /// identifies a client when there are no accounts — its grant, address and
-    /// device.
-    banned: Mutex<std::collections::HashSet<String>>,
     pub scrollback_lines: usize,
     pub shell: String,
     /// Proves a connection is the owner. Generated per run and never written
@@ -161,7 +149,6 @@ impl App {
             exposed: std::sync::atomic::AtomicBool::new(false),
             conns: Mutex::new(HashMap::new()),
             next_session: Mutex::new(0),
-            banned: Mutex::new(std::collections::HashSet::new()),
             scrollback_lines,
             shell: std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into()),
             owner_key: random_key(),
@@ -535,9 +522,8 @@ impl App {
                 }
                 self.commit().await;
             }
-            // Handled by the socket layer, which knows its own session id and
-            // so can avoid kicking the connection that asked.
-            In::Kick { .. } | In::KickAll => {}
+            In::Revoke { token } => self.revoke(&token).await,
+            In::RevokeAll => self.revoke_all().await,
             In::SetAgentSetting { agent, setting, on } => {
                 self.set_agent_setting(agent, setting, on).await;
             }
@@ -691,10 +677,9 @@ impl App {
 
     pub async fn owner_grant(&self) -> Grant {
         Grant {
-            token: "owner".into(),
+            token: OWNER_TOKEN.into(),
             scope: Scope::All,
             writable: true,
-            pair_hash: None,
             host: true,
         }
     }
@@ -706,14 +691,6 @@ impl App {
             Scope::Tab(_) => "Tab".into(),
             Scope::Pane(_) => "Pane".into(),
         }
-    }
-
-    pub async fn is_revoked(&self, session: SessionId) -> bool {
-        self.store
-            .lock()
-            .await
-            .session_revoked(session)
-            .unwrap_or(true)
     }
 
     fn mint_secret() -> String {
@@ -766,36 +743,14 @@ impl App {
     ///
     /// Closing also disconnects every remote client already attached — the
     /// gate only filters *new* requests, and an open WebSocket would otherwise
-    /// live on as if nothing happened. Disconnect, not kick: these clients
+    /// live on as if nothing happened. Disconnect, not revoke: these clients
     /// did nothing wrong, and must be able to return when sharing reopens.
     pub async fn set_exposed(&self, on: bool) {
         self.exposed.store(on, std::sync::atomic::Ordering::Relaxed);
         if !on {
-            let remote: Vec<SessionId> = self
-                .conns
-                .lock()
-                .await
-                .values()
-                .filter(|c| {
-                    !c.addr
-                        .parse::<std::net::IpAddr>()
-                        .map(|ip| ip.is_loopback())
-                        .unwrap_or(false)
-                })
-                .map(|c| c.session)
-                .collect();
-            for s in remote {
-                self.disconnect(s).await;
-            }
-        }
-        let _ = self.changed.send(TreeChanged);
-    }
-
-    /// Closes one connection without banning it. A kick is punitive and
-    /// sticky; this is administrative — used when sharing is switched off.
-    pub async fn disconnect(&self, session: SessionId) {
-        if let Some(mut conn) = self.conns.lock().await.remove(&session) {
-            conn.kick.take();
+            // `None`: no reason given, so the client keeps trying.
+            self.close_conns(|c| !c.addr.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback()), None)
+                .await;
         }
         let _ = self.changed.send(TreeChanged);
     }
@@ -1009,88 +964,23 @@ impl App {
         let _ = self.agent_tx.send(AgentDelta::Cwd { pane, path: cwd, git });
     }
 
-    /// Registers a live socket and returns its session id. Called on connect;
-    /// the id is what a kick names.
-    /// Identity of a client across reconnects. Coarse by necessity — there is
-    /// no account system — but enough to make a kick stick.
-    fn client_key(grant: &Grant, addr: &str, device: &str) -> String {
-        format!("{}|{addr}|{device}", grant.token)
-    }
-
-    /// True if this client was kicked and must not be let back in.
-    pub async fn is_banned(&self, grant: &Grant, addr: &str, device: &str) -> bool {
-        // The owner's own window can always reconnect; locking yourself out of
-        // your own machine would be absurd.
-        if grant.host && addr.starts_with("127.") {
-            return false;
-        }
-        self.banned
-            .lock()
-            .await
-            .contains(&Self::client_key(grant, addr, device))
-    }
-
-    /// Lets a previously kicked client back in.
-    pub async fn unban_all(&self) {
-        self.banned.lock().await.clear();
-        let _ = self.changed.send(TreeChanged);
-    }
-
+    /// Registers a live socket and returns its session id, with the receiver
+    /// that fires when it is to be closed.
     pub async fn add_conn(
         &self,
         grant: &Grant,
         addr: String,
-        device: String,
-    ) -> (SessionId, tokio::sync::oneshot::Receiver<()>) {
+    ) -> (SessionId, tokio::sync::oneshot::Receiver<Option<CloseReason>>) {
         let session = {
             let mut n = self.next_session.lock().await;
             *n += 1;
             *n
         };
-        let (kick_tx, kick_rx) = tokio::sync::oneshot::channel();
-        let key = Self::client_key(grant, &addr, &device);
-        let conn = Conn {
-            session,
-            // Self-declared; there is no account system, and the UI says so.
-            label: if grant.host { "You".into() } else { "Guest".into() },
-            device,
-            addr,
-            scope: Self::session_scope_label(&grant.scope),
-            writable: grant.writable,
-            since: std::time::Instant::now(),
-            kick: Some(kick_tx),
-            key,
-        };
+        let (close, closed) = tokio::sync::oneshot::channel();
+        let conn = Conn { token: grant.token.clone(), addr, close: Some(close) };
         self.conns.lock().await.insert(session, conn);
         let _ = self.changed.send(TreeChanged);
-        (session, kick_rx)
-    }
-
-    /// Closes one connection and stops it coming back.
-    pub async fn kick(&self, session: SessionId) -> bool {
-        let Some(mut conn) = self.conns.lock().await.remove(&session) else {
-            return false;
-        };
-        self.banned.lock().await.insert(conn.key.clone());
-        // Dropping the sender wakes the socket's select arm.
-        conn.kick.take();
-        let _ = self.changed.send(TreeChanged);
-        true
-    }
-
-    /// Closes every connection except the one asking.
-    pub async fn kick_all_except(&self, keep: SessionId) {
-        let victims: Vec<SessionId> = self
-            .conns
-            .lock()
-            .await
-            .keys()
-            .copied()
-            .filter(|s| *s != keep)
-            .collect();
-        for s in victims {
-            self.kick(s).await;
-        }
+        (session, closed)
     }
 
     pub async fn remove_conn(&self, session: SessionId) {
@@ -1098,42 +988,51 @@ impl App {
         let _ = self.changed.send(TreeChanged);
     }
 
-    /// Everything currently attached over the network, for the connection
-    /// manager. `viewer` is the session asking. Loopback connections are the
-    /// owner's own windows — the desktop shell, a local browser tab — and
-    /// listing yourself as a "connected client" is noise, so they are
-    /// filtered out; only shared (remote) clients appear.
-    pub async fn peers(&self, viewer: SessionId) -> Vec<Peer> {
-        let mut out: Vec<Peer> = self
-            .conns
-            .lock()
-            .await
-            .values()
-            .filter(|c| {
-                !c.addr
-                    .parse::<std::net::IpAddr>()
-                    .map(|ip| ip.is_loopback())
-                    .unwrap_or(false)
-            })
-            .map(|c| Peer {
-                session: c.session,
-                is_you: c.session == viewer,
-                label: c.label.clone(),
-                device: c.device.clone(),
-                addr: c.addr.clone(),
-                scope: c.scope.clone(),
-                writable: c.writable,
-                since_secs: c.since.elapsed().as_secs(),
-            })
-            .collect();
-        out.sort_by_key(|p| p.session);
-        out
+    /// Deletes a link and closes whatever is attached through it. A link
+    /// belongs to the one device that paired on it, so this is how a device
+    /// is disconnected for good: its secret now matches nothing.
+    pub async fn revoke(&self, token: &str) {
+        self.store.lock().await.delete_grant(token).expect("write state.db");
+        self.close_conns(|c| c.token == token, Some(CloseReason::Revoked)).await;
     }
 
-    /// True while the socket should stay open. A kick revokes the session row
-    /// *and* drops it here, so the socket closes instead of lingering.
-    pub async fn conn_live(&self, session: SessionId) -> bool {
-        self.conns.lock().await.contains_key(&session)
+    /// Every link, and everyone on them. The owner's own windows stay.
+    pub async fn revoke_all(&self) {
+        self.store.lock().await.delete_all_grants().expect("write state.db");
+        self.close_conns(|c| c.token != OWNER_TOKEN, Some(CloseReason::Revoked)).await;
+    }
+
+    /// Closes the matching sockets. With a reason the client is told and
+    /// stops; without one it reconnects as after any dropped connection.
+    async fn close_conns(&self, which: impl Fn(&Conn) -> bool, why: Option<CloseReason>) {
+        let mut conns = self.conns.lock().await;
+        for conn in conns.values_mut().filter(|c| which(c)) {
+            if let Some(close) = conn.close.take() {
+                let _ = close.send(why);
+            }
+        }
+        conns.retain(|_, c| c.close.is_some());
+        drop(conns);
+        let _ = self.changed.send(TreeChanged);
+    }
+
+    /// Every device holding a link, for the connection manager — online or
+    /// not. A phone in the background still has access, and it is access the
+    /// owner needs to see, not who happens to be looking right now.
+    pub async fn peers(&self) -> Vec<Peer> {
+        let devices = self.store.lock().await.paired_devices().expect("read state.db");
+        let conns = self.conns.lock().await;
+        devices
+            .into_iter()
+            .map(|d| Peer {
+                addr: conns.values().find(|c| c.token == d.token).map(|c| c.addr.clone()),
+                scope: Self::session_scope_label(&d.scope),
+                writable: d.writable,
+                device: d.device,
+                paired_at: d.paired_at,
+                token: d.token,
+            })
+            .collect()
     }
 
     pub async fn workspace_of_tab(&self, tab: TabId) -> Option<WsId> {
@@ -1164,7 +1063,7 @@ mod tests {
     }
 
     fn shared(scope: Scope, writable: bool) -> Grant {
-        Grant { token: "t".into(), scope, writable, pair_hash: None, host: false }
+        Grant { token: "t".into(), scope, writable, host: false }
     }
 
     #[tokio::test]
@@ -1479,7 +1378,6 @@ mod tests {
             token: "guest".into(),
             scope: Scope::All,
             writable: true,
-            pair_hash: None,
             host: false,
         };
 
@@ -1527,7 +1425,6 @@ mod tests {
             token: "guest".into(),
             scope: Scope::Workspace(ws),
             writable: true,
-            pair_hash: None,
             host: false,
         };
 

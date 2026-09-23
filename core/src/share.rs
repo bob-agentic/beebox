@@ -38,12 +38,6 @@ impl From<GrantScope> for Scope {
 }
 
 impl Scope {
-    /// Workspace level and up needs a pairing code, below never: those scopes
-    /// reveal which projects and tabs exist, and the names alone are information.
-    pub fn needs_pairing(&self) -> bool {
-        matches!(self, Scope::All | Scope::Workspace(_))
-    }
-
     pub fn url_prefix(&self) -> &'static str {
         match self {
             Scope::All => "a",
@@ -59,8 +53,6 @@ pub struct Grant {
     pub token: String,
     pub scope: Scope,
     pub writable: bool,
-    /// Argon2 hash of the pairing code, cleared once spent.
-    pub pair_hash: Option<String>,
     /// Holds the owner key, and so may change anything: splitting, opening
     /// and closing tabs and workspaces, renaming, reordering, filing on
     /// shelves, minting links, configuring the daemon, kicking sessions.
@@ -205,7 +197,6 @@ mod tests {
             token: "x".into(),
             scope,
             writable,
-            pair_hash: None,
             host: false,
         };
         let scopes = [Scope::All, Scope::Workspace(1), Scope::Tab(1), Scope::Pane(1)];
@@ -241,7 +232,6 @@ mod tests {
             token: "x".into(),
             scope: Scope::Pane(mine),
             writable: true,
-            pair_hash: None,
             host: false,
         };
         assert!(g.may_type(mine, &t));
@@ -249,13 +239,5 @@ mod tests {
 
         let ro = Grant { writable: false, ..g.clone() };
         assert!(!ro.may_type(mine, &t), "read-only cannot type");
-    }
-
-    #[test]
-    fn only_workspace_level_and_up_pairs() {
-        assert!(Scope::All.needs_pairing());
-        assert!(Scope::Workspace(1).needs_pairing());
-        assert!(!Scope::Tab(1).needs_pairing());
-        assert!(!Scope::Pane(1).needs_pairing());
     }
 }

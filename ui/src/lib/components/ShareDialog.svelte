@@ -121,7 +121,7 @@
 <div class="mask" onclick={(e) => e.target === e.currentTarget && onclose()}>
   <div class="modal">
     <h3>Share</h3>
-    <div class="sub">Anyone with the link sees a live terminal — nothing to install</div>
+    <div class="sub">The first device to open the link keeps it — nothing to install</div>
 
     {#if store.share && made}
       <div class="made">
@@ -133,20 +133,6 @@
         </span>
       </div>
       <div class="sees">{WHAT_THEY_SEE[made.kind]}</div>
-
-      {#if store.share.pair_code}
-        {@const code = store.share.pair_code}
-        <div class="paircode">
-          <div class="code">{code}</div>
-          <div class="pc-note">
-            Single use — spent once they pair<br />
-            <span class="dim">Send it by another channel, not with the link</span>
-          </div>
-          <button class:did={copied === code} onclick={() => copy(code)}>
-            {copied === code ? 'Copied ✓' : 'Copy'}
-          </button>
-        </div>
-      {/if}
 
       <!-- One URL per reachable address, like a dev server's banner. -->
       <div class="urls">
@@ -471,42 +457,6 @@
     font-size: 10px;
     color: var(--faint);
     margin: -6px 0 12px 2px;
-  }
-
-  .paircode {
-    display: flex;
-    align-items: center;
-    gap: 11px;
-    margin-bottom: 13px;
-    padding: 11px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 7px;
-  }
-  .code {
-    font: 700 21px ui-monospace, monospace;
-    letter-spacing: 0.16em;
-    color: var(--accent);
-    flex: 0 0 auto;
-  }
-  .pc-note {
-    flex: 1;
-    font-size: 9.5px;
-    color: var(--dim);
-    line-height: 1.5;
-  }
-  .pc-note .dim {
-    color: var(--faint);
-  }
-  .paircode button {
-    color: var(--dim);
-    font-size: 11px;
-    padding: 2px 7px;
-    background: var(--panel-2);
-    border-radius: 4px;
-  }
-  .paircode button.did {
-    color: var(--accent);
   }
 
   .acts {

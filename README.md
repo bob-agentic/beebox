@@ -88,8 +88,8 @@ it's dead. To give someone access, send a **share link**, not this URL.
 > ### On actually letting someone connect — the last mile is yours
 >
 > **BeeBox only does the "sharing" part itself**: it mints token-bearing share
-> links, enforces four scopes (All / Workspace / Tab / Pane), issues pairing
-> codes, and lets you see and kick live connections. **How you actually get that
+> links, enforces four scopes (All / Workspace / Tab / Pane), binds each link to
+> the first device that opens it, and lets you see and disconnect those devices. **How you actually get that
 > port in front of another person — a tunnel, frp,
 > [Tailscale](https://tailscale.com),
 > [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/),
@@ -181,8 +181,10 @@ The window chrome color is derived from each theme's background, so none of the
 - **Matrix structure**: workspace × tab × split tree (iTerm2-style, capped at 2 levels).
 - **Layout persistence**: SQLite, restored on restart.
 - **Mode sniffing**: alt screen / bracketed paste / cursor-key mode restored on replay.
-- **Four-scope sharing**: All / Workspace / Tab / Pane, with a two-tier pairing-code strategy.
-- **Connection management**: visible, and kickable (in place of expiry timers).
+- **Four-scope sharing**: All / Workspace / Tab / Pane. A link belongs to the first
+  device that opens it; reloading is fine, any other device is turned away.
+- **Device management**: every paired device is listed, online or not, until you
+  disconnect it (in place of expiry timers).
 - **Desktop client**: thin Swift `WKWebView` shell, daemon as a child process,
   frontend embedded, honeycomb `.icns` icon.
 - **Background terminal survival**: terminals in tabs/workspaces you switch away
@@ -204,7 +206,6 @@ The window chrome color is derived from each theme's background, so none of the
 
 ### Sharing pipeline
 - [ ] **Land grants on real connections**: wire a generated share link through to an actual WebSocket session.
-- [ ] **Pairing-code exchange**: the full flow for the two-tier strategy.
 - [ ] **Peer reporting**: live sync of the connection list.
 
 ### Agent collaboration

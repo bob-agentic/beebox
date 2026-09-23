@@ -274,34 +274,26 @@ pub struct Caps {
     pub show_tabs: bool,
 }
 
+/// A device paired on a share link. One link, one device.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Peer {
-    pub session: SessionId,
-    /// True for the connection receiving this frame. The UI must not offer to
-    /// disconnect you from yourself.
-    pub is_you: bool,
-    /// Self-declared at pairing time; there is no account system, so the UI
-    /// must present it as unverified.
-    pub label: String,
+    /// The link's token — what a revoke names.
+    pub token: String,
+    /// Coarse, from the user agent at pairing: "Chrome / Android".
     pub device: String,
-    pub addr: String,
+    /// Where it is connected from; `None` while it is offline.
+    pub addr: Option<String>,
     pub scope: String,
     pub writable: bool,
-    pub since_secs: u64,
+    /// Unix seconds.
+    pub paired_at: i64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CloseReason {
-    /// Grant deleted.
+    /// The link was revoked; it will not work again.
     Revoked,
-    /// This session was kicked from the connection manager.
-    Kicked,
-    /// The shared pane or tab no longer exists.
-    ScopeGone,
-    /// The grant demands a pairing code and none (or a wrong one) was given.
-    /// The client shows the code prompt and reconnects with `?pair=`.
-    PairingRequired,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -393,7 +385,6 @@ pub enum Out {
     /// startup banner — the client renders one full URL per host.
     Grant {
         url: String,
-        pair_code: Option<String>,
         hosts: Vec<String>,
     },
     Pong,
@@ -501,12 +492,12 @@ pub enum In {
     SetWebServer {
         exposed: bool,
     },
-    /// Revokes the session, not just its socket — otherwise a reload restores
-    /// access.
-    Kick {
-        session: SessionId,
+    /// Deletes a link, disconnecting the device paired on it for good.
+    Revoke {
+        token: String,
     },
-    KickAll,
+    /// Every link at once.
+    RevokeAll,
 }
 
 /// Wire form of a share scope. Mirrors `share::Scope` but stays in the protocol

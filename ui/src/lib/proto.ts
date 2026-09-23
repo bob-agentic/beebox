@@ -5,7 +5,6 @@ export type PaneId = number;
 export type PtyId = number;
 export type WsId = number;
 export type TabId = number;
-export type SessionId = number;
 
 export type AgentKind = 'claude' | 'opencode' | 'codex';
 
@@ -114,20 +113,19 @@ export interface Caps {
   show_tabs: boolean;
 }
 
+/** A device a share link belongs to. It stays listed until the owner
+    disconnects it, whether or not it is connected right now. */
 export interface Peer {
-  session: SessionId;
-  /** This very connection; it is not offered a way to kick itself. */
-  is_you: boolean;
-  /** Self-declared at pairing; there is no account system. */
-  label: string;
+  token: string;
   device: string;
-  addr: string;
+  /** Where it is connected from; null while it is away. */
+  addr: string | null;
   scope: string;
   writable: boolean;
-  since_secs: number;
+  paired_at: number;
 }
 
-export type CloseReason = 'revoked' | 'kicked' | 'scope_gone';
+export type CloseReason = 'revoked';
 
 export type Out =
   | { t: 'tree'; tree: TreeView; caps: Caps }
@@ -142,7 +140,7 @@ export type Out =
   | { t: 'size'; pane: PaneId; cols: number; rows: number }
   | { t: 'exited'; pane: PaneId; code: number }
   | { t: 'peers'; peers: Peer[] }
-  | { t: 'grant'; url: string; pair_code: string | null; hosts: string[] }
+  | { t: 'grant'; url: string; hosts: string[] }
   | { t: 'pong' }
   | { t: 'closed'; reason: CloseReason };
 
@@ -174,8 +172,8 @@ export type In =
   | { t: 'set_agent_setting'; agent: AgentKind; setting: AgentSetting; on: boolean }
   | { t: 'reset_agent_settings' }
   | { t: 'set_web_server'; exposed: boolean }
-  | { t: 'kick'; session: SessionId }
-  | { t: 'kick_all' };
+  | { t: 'revoke'; token: string }
+  | { t: 'revoke_all' };
 
 /** Leaves of a layout tree, in visual order. */
 export function leaves(node: Node): PaneId[] {

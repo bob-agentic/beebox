@@ -66,10 +66,6 @@ pub fn router(app: Arc<App>, ui: Option<std::path::PathBuf>) -> Router {
 
     let mut r = Router::new()
         .route("/ws", get(ws_upgrade))
-        // Lets the share page ask "does this token still need pairing?"
-        // before opening the socket, so the code prompt appears deliberately
-        // rather than being inferred from a failed WebSocket.
-        .route("/pair/{token}", get(pair_state))
         .route(
             "/hooks/{pane}/{secret}",
             post(hook).layer(axum::extract::DefaultBodyLimit::max(
@@ -168,9 +164,9 @@ struct WsQuery {
     /// Owner key. Required for full access — the default bind is every
     /// interface, so "no token" must mean *no access*, not *all access*.
     key: Option<String>,
-    /// One-time pairing code, prompted for by the client when the grant
-    /// demands one.
-    pair: Option<String>,
+    /// A secret the client made up once and keeps. The first device to
+    /// open a link binds it with this; any other device is turned away.
+    device: Option<String>,
     /// How many lines of scrollback this client can hold. Sending more than
     /// it has room for means parsing work thrown away on arrival; sending
     /// less leaves its buffer half empty. Clamped, since it arrives from the
@@ -191,23 +187,15 @@ struct WsQuery {
     rows: Option<u16>,
 }
 
-/// The pairing code travels the second channel (spoken, messaged); the wire
-/// carries only a salted hash of it. Constant-time compare, same as the keys.
-pub fn hash_pair_code(code: &str, token: &str) -> String {
+/// Only a hash of a device's secret is stored, so the database alone does
+/// not let anyone pose as the device.
+fn hash_secret(secret: &str) -> String {
     use sha2::{Digest, Sha256};
-    // The token doubles as a per-grant salt: two grants with the same code do
-    // not share a hash.
-    let digest = Sha256::digest(format!("{token}:{code}").as_bytes());
     use std::fmt::Write as _;
-    digest.iter().fold(String::new(), |mut s, b| {
+    Sha256::digest(secret.as_bytes()).iter().fold(String::new(), |mut s, b| {
         let _ = write!(s, "{b:02x}");
         s
     })
-}
-
-fn constant_time_eq(a: &str, b: &str) -> bool {
-    a.len() == b.len()
-        && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 /// Every base URL the daemon can be reached on — the dev-server banner
@@ -229,20 +217,6 @@ fn share_hosts(port: u16) -> Vec<String> {
     v4
 }
 
-/// `{"pairing": true|false}` for a share token. Reveals only whether the code
-/// prompt is needed — nothing about the grant's scope or validity beyond what
-/// loading the share URL already implies.
-async fn pair_state(
-    State(app): State<Arc<App>>,
-    Path(token): Path<String>,
-) -> Response {
-    match app.store.lock().await.grant(&token) {
-        Ok(Some(g)) => axum::Json(serde_json::json!({ "pairing": g.pair_hash.is_some() }))
-            .into_response(),
-        _ => StatusCode::NOT_FOUND.into_response(),
-    }
-}
-
 async fn ws_upgrade(
     ws: WebSocketUpgrade,
     State(app): State<Arc<App>>,
@@ -250,11 +224,25 @@ async fn ws_upgrade(
     Query(q): Query<WsQuery>,
     headers: axum::http::HeaderMap,
 ) -> Response {
+    let device = device_name(headers.get(axum::http::header::USER_AGENT));
     let grant = match (&q.token, &q.key) {
-        (Some(t), _) => match app.store.lock().await.grant(t) {
-            Ok(Some(g)) => g,
-            _ => return (StatusCode::FORBIDDEN, "unknown share token").into_response(),
-        },
+        (Some(t), _) => {
+            let store = app.store.lock().await;
+            let grant = store.grant(t).expect("read state.db");
+            let mine = match (&grant, &q.device) {
+                (Some(_), Some(secret)) => {
+                    store.claim(t, &hash_secret(secret), &device).expect("write state.db")
+                }
+                _ => false,
+            };
+            match grant.filter(|_| mine) {
+                Some(g) => g,
+                // Revoked, never existed, or another device's. Said over the
+                // socket rather than as an HTTP status, which a browser's
+                // WebSocket never shows the page.
+                None => return ws.on_upgrade(refuse),
+            }
+        }
         (None, Some(k)) if app.is_owner_key(k) => app.owner_grant().await,
         _ => {
             return (
@@ -265,38 +253,19 @@ async fn ws_upgrade(
         }
     };
 
-    // The pairing gate. A grant that still carries a hash has not been paired:
-    // the client must present the code, once. On the first success the hash is
-    // cleared — the code is single-use, and from then on the link alone works.
-    if let Some(want) = &grant.pair_hash {
-        let given = q
-            .pair
-            .as_deref()
-            .map(|p| hash_pair_code(&p.trim().to_uppercase(), &grant.token));
-        match given {
-            Some(h) if constant_time_eq(&h, want) => {
-                app.store.lock().await.clear_pairing(&grant.token).expect("write state.db");
-            }
-            _ => {
-                // 428: the client knows to prompt for the code and retry.
-                return (StatusCode::PRECONDITION_REQUIRED, "pairing code required")
-                    .into_response();
-            }
-        }
-    }
-
-    let device = device_name(headers.get(axum::http::header::USER_AGENT));
-    // A kicked client must not simply reconnect, or the kick lasts
-    // milliseconds.
-    if app.is_banned(&grant, &addr.ip().to_string(), &device).await {
-        return (StatusCode::FORBIDDEN, "disconnected by the owner").into_response();
-    }
     let replay = q.replay;
     let sizing = q.sizing.unwrap_or(false);
     let first_size = q.cols.zip(q.rows);
-    ws.on_upgrade(move |socket| {
-        serve(socket, app, grant, addr, device, replay, sizing, first_size)
-    })
+    ws.on_upgrade(move |socket| serve(socket, app, grant, addr, replay, sizing, first_size))
+}
+
+/// Tells a client its link is no good, and closes.
+async fn refuse(mut socket: WebSocket) {
+    let frame = Out::Closed { reason: crate::proto::CloseReason::Revoked };
+    if let Ok(bytes) = rmp_serde::to_vec_named(&frame) {
+        let _ = socket.send(Message::Binary(bytes.into())).await;
+    }
+    let _ = socket.send(Message::Close(None)).await;
 }
 
 /// A readable device label for the connection manager. Coarse on purpose: it
@@ -338,7 +307,6 @@ async fn serve(
     app: Arc<App>,
     grant: Grant,
     addr: SocketAddr,
-    device: String,
     // How much scrollback this client can hold, if it said.
     replay: Option<usize>,
     // Whether this connection may resize the terminal.
@@ -373,7 +341,7 @@ async fn serve(
         let _ = sink.close().await;
     });
 
-    let (session, mut kicked) = app.add_conn(&grant, addr.ip().to_string(), device).await;
+    let (session, mut closed) = app.add_conn(&grant, addr.ip().to_string()).await;
 
     // First frame: the scope-filtered tree.
     let (tree, caps) = app.view_for(&grant).await;
@@ -382,7 +350,7 @@ async fn serve(
         return;
     }
     if grant.host {
-        let _ = tx.send(Out::Peers { peers: app.peers(session).await }).await;
+        let _ = tx.send(Out::Peers { peers: app.peers().await }).await;
         // Agents toggles are the owner's; a share never sees or sets them.
         let _ = tx
             .send(Out::AgentSettings {
@@ -443,10 +411,12 @@ async fn serve(
 
     loop {
         tokio::select! {
-            // Kicked. Its own arm, so it takes effect at once rather than
-            // waiting for the next broadcast to come round.
-            _ = &mut kicked => {
-                let _ = tx.send(Out::Closed { reason: crate::proto::CloseReason::Kicked }).await;
+            // Closed by the owner. Its own arm, so it takes effect at once
+            // rather than waiting for the next broadcast to come round.
+            why = &mut closed => {
+                if let Ok(Some(reason)) = why {
+                    let _ = tx.send(Out::Closed { reason }).await;
+                }
                 break;
             }
 
@@ -526,7 +496,7 @@ async fn serve(
                         break;
                     }
                     if grant.host {
-                        let _ = tx.send(Out::Peers { peers: app.peers(session).await }).await;
+                        let _ = tx.send(Out::Peers { peers: app.peers().await }).await;
                         let _ = tx.send(Out::WebServer { exposed: app.is_exposed() }).await;
                     }
                 }
@@ -542,7 +512,7 @@ async fn serve(
                 let Message::Binary(bytes) = msg else { continue };
                 let Ok(inbound) = rmp_serde::from_slice::<In>(&bytes) else { continue };
 
-                if handle(&app, &grant, sizing, inbound, &tx, session).await.is_break() {
+                if handle(&app, &grant, sizing, inbound, &tx).await.is_break() {
                     break;
                 }
             }
@@ -561,7 +531,6 @@ async fn handle(
     sizing: bool,
     msg: In,
     tx: &mpsc::Sender<Out>,
-    me: crate::proto::SessionId,
 ) -> std::ops::ControlFlow<()> {
     use std::ops::ControlFlow::{Break, Continue};
 
@@ -599,15 +568,10 @@ async fn handle(
             }
             let scope: Scope = scope.into();
             let token = random_token();
-            let code = scope.needs_pairing().then(random_pair_code);
-
             let g = Grant {
                 token: token.clone(),
                 scope,
                 writable,
-                // Only the hash is stored; the code itself goes back to the
-                // owner once, to be spoken over a second channel.
-                pair_hash: code.as_deref().map(|c| hash_pair_code(c, &token)),
                 // A link, never the machine.
                 host: false,
             };
@@ -621,24 +585,9 @@ async fn handle(
             let _ = tx
                 .send(Out::Grant {
                     url: format!("/{}/{}", scope.url_prefix(), token),
-                    pair_code: code,
                     hosts: share_hosts(app.hook_port_now()),
                 })
                 .await;
-        }
-
-        In::Kick { session: target } => {
-            if grant.host {
-                app.kick(target).await;
-            }
-        }
-
-        In::KickAll => {
-            if grant.host {
-                // Never the connection that asked, or "disconnect all" would
-                // close the window you clicked it in.
-                app.kick_all_except(me).await;
-            }
         }
 
         other => {
@@ -710,16 +659,6 @@ fn random_token() -> String {
         .join("-")
 }
 
-/// Six characters, no vowels and no look-alikes: it gets read aloud.
-fn random_pair_code() -> String {
-    use rand::Rng;
-    const ALPHABET: &[u8] = b"23456789BCDFGHJKLMNPQRSTVWXZ";
-    let mut rng = rand::rng();
-    (0..6)
-        .map(|_| ALPHABET[rng.random_range(0..ALPHABET.len())] as char)
-        .collect()
-}
-
 pub fn asset_headers() -> [(header::HeaderName, &'static str); 1] {
     [(header::CACHE_CONTROL, "no-cache")]
 }
@@ -727,20 +666,6 @@ pub fn asset_headers() -> [(header::HeaderName, &'static str); 1] {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn pair_codes_avoid_ambiguous_characters() {
-        // The code is spoken over a second channel, so O/0 and I/1 would cost
-        // more than the entropy they add.
-        for _ in 0..200 {
-            let c = random_pair_code();
-            assert_eq!(c.len(), 6);
-            assert!(
-                !c.contains(['O', '0', 'I', '1', 'A', 'E', 'U']),
-                "ambiguous or word-forming: {c}"
-            );
-        }
-    }
 
     #[test]
     fn tokens_are_long_enough_to_not_be_guessed() {

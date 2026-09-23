@@ -244,39 +244,6 @@
 
 <svelte:window {onkeydown} {oncontextmenu} />
 
-{#if store.needsPairing}
-  <!-- A paired share link: nothing renders until the code is given. The code
-       travelled a second channel; this is where it lands. -->
-  <div class="pair-gate">
-    <div class="pair-card">
-      <h3>Pairing code required</h3>
-      <p>Ask the person who shared this link for the 6-character code.</p>
-      <form
-        onsubmit={(e) => {
-          e.preventDefault();
-          const input = e.currentTarget.querySelector('input');
-          if (input) store.submitPairCode(input.value);
-        }}
-      >
-        <!-- svelte-ignore a11y_autofocus -->
-        <input
-          class="pair-input"
-          class:err={store.pairError}
-          maxlength="6"
-          autofocus
-          spellcheck="false"
-          autocomplete="off"
-          placeholder="······"
-        />
-        <button class="pair-go" type="submit">Connect</button>
-      </form>
-      {#if store.pairError}
-        <div class="pair-err">That code didn't match — check it and try again.</div>
-      {/if}
-    </div>
-  </div>
-{/if}
-
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="titlebar" onpointerdown={startDrag} ondblclick={titleDoubleClick}>
   <!-- In the desktop shell macOS draws the real traffic lights on top, so we
@@ -438,10 +405,8 @@
   <span class="item" class:off={!store.connected}>
     {#if store.connected}
       daemon connected · :{location.port || 17788}
-    {:else if store.closedReason === 'kicked'}
-      disconnected by the owner
     {:else if store.closedReason === 'revoked'}
-      this share link was revoked
+      this link belongs to another device, or was disconnected
     {:else}
       reconnecting…
     {/if}
@@ -489,72 +454,6 @@
 {/if}
 
 <style>
-  .pair-gate {
-    position: fixed;
-    inset: 0;
-    z-index: 100;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: var(--bg);
-  }
-  .pair-card {
-    width: 320px;
-    padding: 24px;
-    border: 1px solid var(--border);
-    border-radius: 13px;
-    background: var(--panel);
-    text-align: center;
-  }
-  .pair-card h3 {
-    font-size: 15px;
-    margin-bottom: 6px;
-  }
-  .pair-card p {
-    font-size: 11.5px;
-    color: var(--faint);
-    margin-bottom: 16px;
-  }
-  .pair-card form {
-    display: flex;
-    gap: 8px;
-  }
-  .pair-input {
-    flex: 1;
-    min-width: 0;
-    background: var(--bg);
-    color: var(--fg);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 9px 12px;
-    font-family: ui-monospace, monospace;
-    font-size: 17px;
-    letter-spacing: 6px;
-    text-align: center;
-    text-transform: uppercase;
-  }
-  .pair-input:focus {
-    outline: none;
-    border-color: var(--accent);
-  }
-  .pair-input.err {
-    border-color: var(--err);
-  }
-  .pair-go {
-    padding: 9px 16px;
-    border-radius: 8px;
-    background: var(--accent);
-    /* The theme background always contrasts with its own accent. */
-    color: var(--bg);
-    font-weight: 600;
-    font-size: 12px;
-  }
-  .pair-err {
-    margin-top: 10px;
-    font-size: 11px;
-    color: var(--err);
-  }
-
   .titlebar {
     height: 38px;
     flex: 0 0 38px;

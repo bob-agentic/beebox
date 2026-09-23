@@ -38,6 +38,16 @@ pub struct Store {
     db: Connection,
 }
 
+/// A link some device has paired on — one row of the connection manager.
+pub struct PairedDevice {
+    pub token: String,
+    pub scope: Scope,
+    pub writable: bool,
+    pub device: String,
+    /// Unix seconds.
+    pub paired_at: i64,
+}
+
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(dir) = path.parent() {
@@ -55,6 +65,15 @@ impl Store {
     }
 
     fn init(db: &Connection) -> Result<()> {
+        // Links made before they were bound to a device carried a pairing
+        // code instead; none of them can be opened any more, so the table
+        // starts over in the new shape.
+        let old_grants = db
+            .prepare("SELECT 1 FROM pragma_table_info('grants') WHERE name = 'pair_hash'")?
+            .exists([])?;
+        if old_grants {
+            db.execute("DROP TABLE grants", [])?;
+        }
         db.execute_batch(
             r#"
             PRAGMA journal_mode = WAL;
@@ -92,27 +111,19 @@ impl Store {
             -- cols/rows are added by the migration below rather than here, so
             -- that new and upgraded databases end up with one shape.
 
+            -- A link belongs to the first device that opens it: device_hash
+            -- is set then, and from then on only that device gets in.
             CREATE TABLE IF NOT EXISTS grants (
-                token      TEXT PRIMARY KEY,
-                scope_kind TEXT NOT NULL,
-                scope_id   INTEGER,
-                writable   INTEGER NOT NULL,
-                pair_hash  TEXT,
-                created    INTEGER NOT NULL
+                token       TEXT PRIMARY KEY,
+                scope_kind  TEXT NOT NULL,
+                scope_id    INTEGER,
+                writable    INTEGER NOT NULL,
+                created     INTEGER NOT NULL,
+                device_hash TEXT,
+                device      TEXT,
+                paired_at   INTEGER
             );
-
-            -- Kick revokes the session row, not just the socket: closing only
-            -- the socket would let a reload restore access.
-            CREATE TABLE IF NOT EXISTS sessions (
-                id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                token     TEXT NOT NULL REFERENCES grants(token) ON DELETE CASCADE,
-                label     TEXT NOT NULL,
-                device    TEXT NOT NULL,
-                addr      TEXT NOT NULL,
-                created   INTEGER NOT NULL,
-                last_seen INTEGER NOT NULL,
-                revoked   INTEGER NOT NULL DEFAULT 0
-            );
+            DROP TABLE IF EXISTS sessions;
 
             -- Monotonic id source, shared by panes/tabs/workspaces so an id is
             -- never reused: a recycled id would let a stale grant re-authorise
@@ -333,18 +344,16 @@ impl Store {
     pub fn put_grant(&self, g: &Grant) -> Result<()> {
         let (kind, id) = scope_parts(&g.scope);
         self.db.execute(
-            "INSERT OR REPLACE INTO grants
-             (token, scope_kind, scope_id, writable, pair_hash, created)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![g.token, kind, id.map(to_db), g.writable as i64, g.pair_hash, now()],
+            "INSERT INTO grants (token, scope_kind, scope_id, writable, created)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![g.token, kind, id.map(to_db), g.writable as i64, now()],
         )?;
         Ok(())
     }
 
     pub fn grant(&self, token: &str) -> Result<Option<Grant>> {
         let mut stmt = self.db.prepare(
-            "SELECT token, scope_kind, scope_id, writable, pair_hash
-             FROM grants WHERE token = ?1",
+            "SELECT token, scope_kind, scope_id, writable FROM grants WHERE token = ?1",
         )?;
         let mut rows = stmt.query(params![token])?;
         let Some(r) = rows.next()? else { return Ok(None) };
@@ -356,7 +365,6 @@ impl Store {
             token: r.get(0)?,
             scope: scope_from(&kind, id),
             writable: r.get::<_, i64>(3)? != 0,
-            pair_hash: r.get(4)?,
             // Everything in this table is a share link. The owner never has a
             // row here — its grant is made fresh from the key.
             host: false,
@@ -369,60 +377,45 @@ impl Store {
         Ok(())
     }
 
-    /// Clears the pairing requirement once a code has been spent.
-    pub fn clear_pairing(&self, token: &str) -> Result<()> {
+    /// Every link at once — the "disconnect everyone" button.
+    pub fn delete_all_grants(&self) -> Result<()> {
+        self.db.execute("DELETE FROM grants", [])?;
+        Ok(())
+    }
+
+    /// Binds the link to the device opening it, if no device has it yet.
+    /// True if this device now holds it — first time, or coming back. One
+    /// statement, so two devices racing for a fresh link cannot both win.
+    pub fn claim(&self, token: &str, device_hash: &str, device: &str) -> Result<bool> {
         self.db.execute(
-            "UPDATE grants SET pair_hash = NULL WHERE token = ?1",
-            params![token],
+            "UPDATE grants SET device_hash = ?2, device = ?3, paired_at = ?4
+             WHERE token = ?1 AND device_hash IS NULL",
+            params![token, device_hash, device, now()],
         )?;
-        Ok(())
-    }
-
-    pub fn open_session(
-        &self,
-        token: &str,
-        label: &str,
-        device: &str,
-        addr: &str,
-    ) -> Result<u64> {
-        let t = now();
-        self.db.execute(
-            "INSERT INTO sessions (token, label, device, addr, created, last_seen)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
-            params![token, label, device, addr, t],
-        )?;
-        Ok(from_db(self.db.last_insert_rowid()))
-    }
-
-    pub fn revoke_session(&self, id: u64) -> Result<()> {
-        self.db
-            .execute("UPDATE sessions SET revoked = 1 WHERE id = ?1", params![to_db(id)])?;
-        Ok(())
-    }
-
-    pub fn revoke_all_sessions(&self) -> Result<()> {
-        self.db.execute("UPDATE sessions SET revoked = 1", [])?;
-        Ok(())
-    }
-
-    pub fn session_revoked(&self, id: u64) -> Result<bool> {
         Ok(self
             .db
-            .query_row(
-                "SELECT revoked FROM sessions WHERE id = ?1",
-                params![to_db(id)],
-                |r| r.get::<_, i64>(0),
-            )
-            .map(|v| v != 0)
-            .unwrap_or(true))
+            .prepare("SELECT 1 FROM grants WHERE token = ?1 AND device_hash = ?2")?
+            .exists(params![token, device_hash])?)
     }
 
-    pub fn touch_session(&self, id: u64) -> Result<()> {
-        self.db.execute(
-            "UPDATE sessions SET last_seen = ?2 WHERE id = ?1",
-            params![to_db(id), now()],
+    /// Every link a device has been paired on, oldest first.
+    pub fn paired_devices(&self) -> Result<Vec<PairedDevice>> {
+        let mut stmt = self.db.prepare(
+            "SELECT token, scope_kind, scope_id, writable, device, paired_at
+             FROM grants WHERE device_hash IS NOT NULL ORDER BY paired_at",
         )?;
-        Ok(())
+        let rows = stmt.query_map([], |r| {
+            let kind: String = r.get(1)?;
+            let id: Option<i64> = r.get(2)?;
+            Ok(PairedDevice {
+                token: r.get(0)?,
+                scope: scope_from(&kind, id.map(from_db)),
+                writable: r.get::<_, i64>(3)? != 0,
+                device: r.get(4)?,
+                paired_at: r.get(5)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     // ---- agent settings -----------------------------------------------
@@ -628,7 +621,6 @@ mod tests {
                 token: format!("tok{:?}", scope),
                 scope,
                 writable: true,
-                pair_hash: Some("hash".into()),
                 host: false,
             };
             s.put_grant(&g).unwrap();
@@ -639,60 +631,26 @@ mod tests {
     }
 
     #[test]
-    fn spent_pairing_is_cleared() {
+    fn a_link_belongs_to_the_first_device_to_open_it() {
         let s = Store::in_memory().unwrap();
-        let g = Grant {
+        s.put_grant(&Grant {
             token: "t".into(),
             scope: Scope::Pane(1),
             writable: false,
-            pair_hash: Some("hash".into()),
-            host: false,
-        };
-        s.put_grant(&g).unwrap();
-        s.clear_pairing("t").unwrap();
-        assert!(s.grant("t").unwrap().unwrap().pair_hash.is_none());
-    }
-
-    #[test]
-    fn kick_revokes_the_session_not_just_the_socket() {
-        let s = Store::in_memory().unwrap();
-        s.put_grant(&Grant {
-            token: "t".into(),
-            scope: Scope::All,
-            writable: true,
-            pair_hash: None,
             host: false,
         })
         .unwrap();
+        assert!(s.claim("t", "phone", "Android").unwrap());
+        // Coming back — a refresh, a reconnect — is still the same device.
+        assert!(s.claim("t", "phone", "Android").unwrap());
+        assert!(!s.claim("t", "laptop", "macOS").unwrap());
 
-        let id = s.open_session("t", "Zhang", "Chrome/macOS", "100.64.0.87").unwrap();
-        assert!(!s.session_revoked(id).unwrap());
+        let devices = s.paired_devices().unwrap();
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].device, "Android");
 
-        s.revoke_session(id).unwrap();
-        // Reloading the page must not restore access.
-        assert!(s.session_revoked(id).unwrap());
-    }
-
-    #[test]
-    fn unknown_session_counts_as_revoked() {
-        let s = Store::in_memory().unwrap();
-        assert!(s.session_revoked(999).unwrap(), "fail closed");
-    }
-
-    #[test]
-    fn deleting_a_grant_drops_its_sessions() {
-        let s = Store::in_memory().unwrap();
-        s.put_grant(&Grant {
-            token: "t".into(),
-            scope: Scope::All,
-            writable: true,
-            pair_hash: None,
-            host: false,
-        })
-        .unwrap();
-        let id = s.open_session("t", "a", "b", "c").unwrap();
         s.delete_grant("t").unwrap();
-        assert!(s.session_revoked(id).unwrap(), "cascade must revoke access");
+        assert!(!s.claim("t", "phone", "Android").unwrap());
     }
 
     #[test]
