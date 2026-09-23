@@ -9,6 +9,7 @@ import WebKit
 @MainActor
 final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
     weak var window: NSWindow?
+    weak var web: ShellWebView?
     /// The most recent mouse-down, kept because `performDrag(with:)` needs a
     /// real one and `NSApp.currentEvent` has usually moved on by the time a
     /// message has been round-tripped through JavaScript.
@@ -64,6 +65,9 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
             if let path = body["path"] as? String {
                 FileLinks.open(path, line: body["line"] as? Int, col: body["col"] as? Int)
             }
+            reply(nil, nil)
+        case "hoverFile":
+            web?.hoveredFile = body["path"] as? String
             reply(nil, nil)
         default:
             reply(nil, "unknown bridge op: \(op)")

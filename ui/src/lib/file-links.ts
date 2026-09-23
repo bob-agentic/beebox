@@ -48,6 +48,8 @@ export function findPaths(text: string): PathMatch[] {
 interface Opener {
   resolvePaths(o: { paths: string[]; cwd: string }): Promise<(string | null)[]>;
   openFile(o: { path: string; line?: number; col?: number }): Promise<void>;
+  /** The file under the mouse, for the right-click menu to offer. */
+  hoverFile(o: { path: string | null }): Promise<void>;
 }
 
 /** Links over the file paths in a row, for `registerLinkProvider`. A path
@@ -92,6 +94,8 @@ export function fileLinkProvider(
                     // A plain click belongs to selecting text.
                     if (e.metaKey) void opener.openFile({ path, line: m.line, col: m.col });
                   },
+                  hover: () => void opener.hoverFile({ path }),
+                  leave: () => void opener.hoverFile({ path: null }),
                 },
               ];
             }),

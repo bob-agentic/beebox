@@ -11,6 +11,26 @@ final class ShellWebView: WKWebView {
         if Commands.matches(event) { return false }
         return super.performKeyEquivalent(with: event)
     }
+
+    /// Set by the page while the mouse is over a file link.
+    var hoveredFile: String?
+
+    /// Right-click on a file link offers to show it in Finder, above WebKit's
+    /// own items.
+    override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
+        super.willOpenMenu(menu, with: event)
+        guard let path = hoveredFile else { return }
+        let item = NSMenuItem(title: "Reveal in Finder", action: #selector(revealFile), keyEquivalent: "")
+        item.target = self
+        item.representedObject = path
+        menu.insertItem(item, at: 0)
+        menu.insertItem(.separator(), at: 1)
+    }
+
+    @objc private func revealFile(_ sender: NSMenuItem) {
+        guard let path = sender.representedObject as? String else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+    }
 }
 
 /// WKWebView has no built-in `confirm()`/`alert()` UI: without a UI delegate
@@ -74,7 +94,9 @@ enum WebHost {
             config.preferences.setValue(true, forKey: "developerExtrasEnabled")
         }
 
-        return ShellWebView(frame: .zero, configuration: config)
+        let web = ShellWebView(frame: .zero, configuration: config)
+        bridge.web = web
+        return web
     }
 
     /// The shell's entire JavaScript surface.
@@ -104,6 +126,7 @@ enum WebHost {
             pickDirectory: (opts) => post('pickDirectory', opts),
             resolvePaths: (opts) => post('resolvePaths', opts),
             openFile: (opts) => post('openFile', opts),
+            hoverFile: (opts) => post('hoverFile', opts),
           };
         })();
         """
