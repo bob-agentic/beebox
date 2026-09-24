@@ -257,11 +257,14 @@
         return;
       }
       if (!dims || !(dims.cols > 0) || !(dims.rows > 0)) return;
-      // A client that cannot size the PTY draws at the width the PTY really
-      // has. Fitted to its own window instead, every line the shell laid out
-      // for the owner's width wrapped here — a prompt became three rows. A
-      // narrower window loses the right edge; nothing is mis-drawn.
-      const cols = store.caps.may_open_tab || store.sizing ? dims.cols : pane.cols;
+      // Every client draws at the width the PTY really has; its own is only a
+      // request, and another window's may win. Fitted to its own window
+      // instead, output laid out for the other width lands wrong — lines wrap,
+      // and a TUI that redraws by moving up N rows erases the wrong ones and
+      // leaves its old frame behind as a duplicate. A narrower window loses
+      // the right edge; nothing is mis-drawn. The server's answer arrives as
+      // `pane.cols`, which runs this again.
+      const cols = pane.cols || dims.cols;
       if (term.cols !== cols || term.rows !== dims.rows) term.resize(cols, dims.rows);
       refresh();
       if (!force && dims.cols === lastCols && dims.rows === lastRows) return;
