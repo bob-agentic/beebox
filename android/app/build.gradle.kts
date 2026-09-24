@@ -11,8 +11,8 @@ android {
         applicationId = "com.beebox.android"
         minSdk = 29          // Android 10: the oldest release still getting security patches
         targetSdk = 36       // Android 16
-        versionCode = 4
-        versionName = "0.2.3"
+        versionCode = 5
+        versionName = "0.2.4"
         // Phones only. The x86 builds of ML Kit's scanner were 12 MB of a
         // 32 MB APK, for emulators nobody runs this on.
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
