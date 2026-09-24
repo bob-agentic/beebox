@@ -33,6 +33,20 @@ describe('findPaths', () => {
     expect(text.slice(m.start, m.end)).toBe('a/b.ts:12');
   });
 
+  it('opens a range at its first line', () => {
+    const text = 'app/core/event_bus.py:87-94 直接拿';
+    const [m] = findPaths(text);
+    expect([m.path, m.line, text.slice(m.start, m.end)]).toEqual([
+      'app/core/event_bus.py',
+      87,
+      'app/core/event_bus.py:87',
+    ]);
+    expect(paths('a/build-2.js b/v1-2')).toEqual([
+      ['a/build-2.js', undefined, undefined],
+      ['b/v1-2', undefined, undefined],
+    ]);
+  });
+
   it('leaves out words, numbers and URLs', () => {
     expect(paths('done in 0.2.0 — 93% of https://x.dev/a.js')).toEqual([]);
   });

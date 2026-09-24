@@ -16,8 +16,9 @@ export interface PathMatch {
  *  with no space: `dist/app.js。`. Han characters themselves stay, since a
  *  file may be named with them. */
 const TOKEN = /[^\s'"`()[\]{}<>,;|│\u3000-\u303f\uff00-\uffef]+/g;
-/** `path`, `path:12`, `path:12:3`, with sentence punctuation left behind. */
-const PARTS = /^((.+?)(?::(\d+)(?::(\d+))?)?)[.:]*$/;
+/** `path`, `path:12`, `path:12:3`, with sentence punctuation left behind —
+ *  and the end of a range, `path:87-94`, since an editor opens at its start. */
+const PARTS = /^((.+?)(?::(\d+)(?::(\d+))?)?)(?:(?<=:\d+)-\d+)?[.:]*$/;
 /** A bare name only counts with an extension, or as a dotfile: `Pane.svelte`
  *  and `.env`, not `done`. */
 const BARE = /^(?:[\w@+-][\w.@+-]*\.[A-Za-z]\w*|\.[A-Za-z][\w.-]*)$/;
