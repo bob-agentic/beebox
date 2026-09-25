@@ -28,6 +28,9 @@ pub struct Pane {
     pub id: PaneId,
     /// `None` after the process exits — the pane stays so it can be re-run.
     pub pty: Option<PtyId>,
+    /// Its process ran and ended, as against never having started. Only the
+    /// owner's Restart brings it back: its output is what is left to read.
+    pub exited: bool,
     pub title: String,
     /// Which agent CLI this pane runs, learned from its hooks. `None` for a
     /// plain shell.
@@ -233,6 +236,7 @@ impl SessionTree {
         let pane = Pane {
             id: pane_id,
             pty: None,
+            exited: false,
             title: String::new(),
             agent: None,
             status: AgentState::default(),
@@ -319,6 +323,7 @@ impl SessionTree {
         let new_pane = Pane {
             id: new_id,
             pty: None,
+            exited: false,
             title: String::new(),
             agent: None,
             status: AgentState::default(),

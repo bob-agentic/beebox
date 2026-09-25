@@ -4,7 +4,7 @@
 //! ring, the mode sniffer, and every subscriber — and never blocks on any of
 //! them. A slow phone must not stall the terminal or the other viewers.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -36,9 +36,18 @@ pub const MAX_ATTACH_LINES: usize = 200_000;
 /// What the read loop publishes. Subscribers translate this into `Out` frames.
 #[derive(Debug, Clone)]
 pub enum PtyEvent {
-    Output { pane: PaneId, pty: PtyId, data: Arc<Vec<u8>> },
+    /// `end` is the ring offset just past `data`. A snapshot's `through` is
+    /// one of these, so a subscriber can tell what it already has.
+    Output { pane: PaneId, pty: PtyId, data: Arc<Vec<u8>>, end: u64 },
     Title { pane: PaneId, text: String },
     Exited { pane: PaneId, code: i32 },
+}
+
+/// Our own OSC, `ESC ] 7788 ; cols BEL`: the width the output after it was
+/// written at. Only a replay carries it; the client resizes its terminal
+/// there, so every stretch is drawn at the width it was laid out for.
+fn width_marker(cols: u16) -> Vec<u8> {
+    format!("\x1b]7788;{cols}\x07").into_bytes()
 }
 
 /// Everything about one live process.
@@ -50,8 +59,55 @@ struct Pty {
     master: Box<dyn portable_pty::MasterPty + Send>,
     cols: u16,
     rows: u16,
+    /// The width the output from each ring offset on was written at, oldest
+    /// first. A replay needs it: a TUI redraws by moving up the rows it
+    /// counted at that width, and at another it erases the wrong ones.
+    widths: VecDeque<(u64, u16)>,
     /// The shell's pid, for cwd polling of its foreground process group.
     child_pid: Option<u32>,
+}
+
+impl Pty {
+    fn note_width(&mut self, cols: u16) {
+        let at = self.ring.written();
+        // Nothing written since the last change — a window being dragged —
+        // leaves nothing drawn at that width to remember.
+        if self.widths.back().is_some_and(|w| w.0 == at) {
+            self.widths.pop_back();
+        }
+        if self.widths.back().is_none_or(|w| w.1 != cols) {
+            self.widths.push_back((at, cols));
+        }
+        // What the ring has dropped needs no width, except the one it still
+        // starts in.
+        let oldest = self.ring.oldest();
+        while self.widths.get(1).is_some_and(|w| w.0 <= oldest) {
+            self.widths.pop_front();
+        }
+    }
+
+    /// The ring from `from` on, with a width marker wherever the width
+    /// changed, starting with the one it opens at.
+    fn replay(&self, from: u64) -> Vec<u8> {
+        let from = from.max(self.ring.oldest());
+        let data = self.ring.since(from);
+        let opening = self
+            .widths
+            .iter()
+            .rev()
+            .find(|w| w.0 <= from)
+            .map_or(self.cols, |w| w.1);
+        let mut out = width_marker(opening);
+        let mut at = 0;
+        for &(offset, cols) in self.widths.iter().filter(|w| w.0 > from) {
+            let cut = ((offset - from) as usize).min(data.len());
+            out.extend_from_slice(&data[at..cut]);
+            out.extend(width_marker(cols));
+            at = cut;
+        }
+        out.extend_from_slice(&data[at..]);
+        out
+    }
 }
 
 pub struct Spawn {
@@ -164,6 +220,7 @@ impl Registry {
                 master: pair.master,
                 cols: spec.cols,
                 rows: spec.rows,
+                widths: VecDeque::from([(0, spec.cols)]),
                 child_pid,
             },
         );
@@ -238,7 +295,9 @@ impl Registry {
 
     /// Records a chunk in the ring, updates sniffed state, and fans it out.
     fn flush(&self, id: PtyId, pane: PaneId, pending: &mut Vec<u8>) {
-        let title = {
+        // A chunk goes into the ring whole, under the lock a snapshot takes
+        // too, so every snapshot ends on a chunk boundary.
+        let (end, title) = {
             let mut ptys = self.ptys.lock().unwrap();
             let Some(p) = ptys.get_mut(&id) else {
                 pending.clear();
@@ -247,11 +306,11 @@ impl Registry {
             let base = p.ring.written();
             p.sniffer.feed(pending, base);
             p.ring.push(pending);
-            p.sniffer.take_title()
+            (p.ring.written(), p.sniffer.take_title())
         };
 
         let data = Arc::new(std::mem::take(pending));
-        let _ = self.tx.send(PtyEvent::Output { pane, pty: id, data });
+        let _ = self.tx.send(PtyEvent::Output { pane, pty: id, data, end });
         if let Some(text) = title {
             let _ = self.tx.send(PtyEvent::Title { pane, text });
         }
@@ -274,6 +333,9 @@ impl Registry {
             return Ok(()); // avoid a pointless SIGWINCH repaint
         }
         p.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })?;
+        if p.cols != cols {
+            p.note_width(cols);
+        }
         p.cols = cols;
         p.rows = rows;
         Ok(())
@@ -299,23 +361,11 @@ impl Registry {
         let p = ptys.get(&id)?;
         let modes = p.sniffer.modes().to_escapes();
 
-        let (data, _from) = match p.sniffer.replay_from() {
-            Some(alt) => (p.ring.since(alt), alt),
-            None => p.ring.tail_lines(lines),
+        let from = match p.sniffer.replay_from() {
+            Some(alt) => alt,
+            None => p.ring.tail_lines(lines).1,
         };
-        Some((modes, data, p.ring.written()))
-    }
-
-    /// Replay for a subscriber that fell behind, from its own offset.
-    pub fn resync_from(&self, id: PtyId, from: u64) -> Option<(Vec<u8>, Vec<u8>, u64)> {
-        let ptys = self.ptys.lock().unwrap();
-        let p = ptys.get(&id)?;
-        let start = from.max(p.ring.oldest());
-        Some((
-            p.sniffer.modes().to_escapes(),
-            p.ring.since(start),
-            p.ring.written(),
-        ))
+        Some((modes, p.replay(from), p.ring.written()))
     }
 
     pub fn modes(&self, id: PtyId) -> Option<Modes> {
@@ -531,6 +581,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn output_says_where_it_ends_in_the_ring() {
+        // What lets a subscriber drop the output a snapshot already holds:
+        // each chunk's end is an offset the snapshot's `through` can match.
+        let reg = Registry::new();
+        let mut rx = reg.subscribe();
+        let id = reg
+            .spawn(spec(1, &["sh", "-c", "printf one; sleep 0.2; printf two; sleep 0.4"]))
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let (_, _, through) = reg.attach_snapshot(id, None).unwrap();
+
+        let mut ends = Vec::new();
+        let mut total = 0;
+        while let Ok(PtyEvent::Output { data, end, .. }) = rx.try_recv() {
+            total += data.len() as u64;
+            assert_eq!(end, total, "each end is the running total");
+            ends.push(end);
+        }
+        assert_eq!(ends.last(), Some(&through), "the snapshot ends where the last chunk did");
+        let _ = drain(rx).await;
+    }
+
+    #[tokio::test]
     async fn resize_is_idempotent_and_reported() {
         let reg = Registry::new();
         let rx = reg.subscribe();
@@ -542,6 +615,28 @@ mod tests {
         // A repeat must not fire another SIGWINCH.
         reg.resize(id, 96, 38).unwrap();
         assert_eq!(reg.size(id), Some((96, 38)));
+        let _ = drain(rx).await;
+    }
+
+    #[tokio::test]
+    async fn a_replay_marks_the_width_each_stretch_was_written_at() {
+        let reg = Registry::new();
+        let rx = reg.subscribe();
+        let id = reg
+            .spawn(spec(1, &["sh", "-c", "printf wide; sleep 0.4; printf narrow; sleep 0.6"]))
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        // A drag: only where it came to rest was anything drawn.
+        for cols in [60, 30, 40] {
+            reg.resize(id, cols, 24).unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let (_, data, _) = reg.attach_snapshot(id, None).unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&data),
+            "\x1b]7788;80\x07wide\x1b]7788;40\x07narrow"
+        );
         let _ = drain(rx).await;
     }
 

@@ -4,6 +4,7 @@
 //! grant makes visible, and rejects anything the grant does not allow —
 //! regardless of what the client believes its capabilities are.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -17,14 +18,9 @@ use serde::Deserialize;
 use tokio::sync::mpsc;
 
 use crate::app::App;
-use crate::proto::{In, Out, PaneId};
+use crate::proto::{In, Out, PaneId, PtyId};
 use crate::pty::PtyEvent;
 use crate::share::{Grant, Scope};
-
-/// Per-subscriber send budget. Bounded by bytes, not frames: frames are
-/// variable-size and one coalesced flush can be large, so counting frames
-/// bounds nothing.
-const SEND_BUDGET_BYTES: usize = 4 * 1024 * 1024;
 
 /// The built UI, compiled into the binary. This is what makes the desktop app
 /// self-contained: no sidecar directory to ship, nothing to go missing.
@@ -354,29 +350,39 @@ async fn serve(
         socket.split()
     };
 
-    // One writer task owns the sink so every producer can be `!Send`-free and
-    // backpressure is measured in one place.
+    // One writer task owns the sink so every producer can be `!Send`-free.
+    // Backpressure is the bounded channel: a slow client stalls this
+    // connection's loop, its pty subscription lags, and it is resynced from
+    // the ring. No byte budget — a large resync is a single frame, and cutting
+    // the connection over it only brought the same resync back on reconnect.
     let (tx, mut rx) = mpsc::channel::<Out>(256);
     let writer = tokio::spawn(async move {
         use futures_util::SinkExt;
-        let mut queued = 0usize;
         while let Some(frame) = rx.recv().await {
             let Ok(bytes) = rmp_serde::to_vec_named(&frame) else { continue };
-            queued += bytes.len();
-            if queued > SEND_BUDGET_BYTES {
-                // The client is too far behind to catch up frame by frame; it
-                // will resync from the ring on reconnect.
-                break;
-            }
             if sink.send(Message::Binary(bytes.into())).await.is_err() {
                 break;
             }
-            queued = 0;
         }
         let _ = sink.close().await;
     });
 
     let (session, mut closed) = app.add_conn(&grant, addr.ip().to_string()).await;
+
+    // Subscribed before anything is read, so nothing can fall between a
+    // snapshot and the stream that carries on from it. What arrives twice is
+    // dropped against `floor` below.
+    let mut pty_rx = app.ptys.subscribe();
+    let mut tree_rx = app.subscribe_tree();
+    let mut agent_rx = app.subscribe_agent();
+
+    // Someone arriving on a link needs the panes it was shown to have a
+    // process — one whose restore failed, say. Before the first frame, so the
+    // tree it gets already names the new pty. Not a pane whose process ended:
+    // that one is being kept for its output, which a restart would wipe.
+    if !grant.host {
+        app.start_never_run(app.visible(&grant).await).await;
+    }
 
     // First frame: the scope-filtered tree.
     let (tree, caps) = app.view_for(&grant).await;
@@ -396,25 +402,9 @@ async fn serve(
         let _ = tx.send(Out::WebServer { exposed: app.is_exposed() }).await;
     }
 
-    // Replay each visible pane so a client joining mid-stream sees state
-    // rather than a blank terminal. `modes` restores alt screen / bracketed
-    // paste / application cursor keys, which a raw tail would have lost.
-    //
-    // The JUST_SPAWNED skip below only makes sense for the owner: the owner's
-    // browser is the one that just issued the spawn, so replaying the pane's
-    // first few bytes would print the prompt twice. A viewer never spawned
-    // anything — it is joining an existing session and must see whatever is on
-    // screen now, however little that is. A workspace/tab share exposes every
-    // tab, but the owner may only ever have opened one; the others sit with a
-    // resumed prompt well under the threshold, and skipping them is exactly
-    // why switching to them showed a blank sheet. So for a viewer we always
-    // replay, and first make sure the pane has a process at all (idempotent
-    // with resume_all — a no-op when it is already running).
-    const JUST_SPAWNED: u64 = 4096;
-    // The owner's own window, as against anyone arriving on a link. Theirs is
-    // the connection that already has the terminals in front of it; a visitor
-    // needs them started and replayed.
-    let host = grant.host;
+    // Where each pty's last snapshot to this client ended. Output up to it is
+    // already on the client's screen; the stream only adds what follows.
+    let mut floor: HashMap<PtyId, u64> = HashMap::new();
 
     // Before the replay, not after: a client that will resize should be sent
     // history already laid out for the width it is about to use.
@@ -426,23 +416,17 @@ async fn serve(
         }
     }
 
+    // Replay each visible pane so a client joining mid-stream sees state
+    // rather than a blank terminal. `modes` restores alt screen / bracketed
+    // paste / application cursor keys, which a raw tail would have lost.
     for pane in app.visible(&grant).await {
-        if !host {
-            let _ = app.ensure_running(pane).await;
-        }
         if let Some(pty) = app.pty_of(pane).await {
             if let Some((modes, data, through)) = app.ptys.attach_snapshot(pty, replay) {
-                if !host || through > JUST_SPAWNED {
-                    let _ = tx.send(Out::Resync { pty, modes, data, through }).await;
-                }
+                floor.insert(pty, through);
+                let _ = tx.send(Out::Resync { pty, modes, data, through }).await;
             }
         }
     }
-
-    let mut pty_rx = app.ptys.subscribe();
-    let mut tree_rx = app.subscribe_tree();
-    let mut agent_rx = app.subscribe_agent();
-    let _ = addr;
 
     loop {
         tokio::select! {
@@ -457,7 +441,10 @@ async fn serve(
 
             // Terminal output, filtered to this connection's scope.
             ev = pty_rx.recv() => match ev {
-                Ok(PtyEvent::Output { pane, pty, data }) => {
+                Ok(PtyEvent::Output { pane, pty, data, end }) => {
+                    if floor.get(&pty).is_some_and(|&f| end <= f) {
+                        continue;
+                    }
                     if app.visible(&grant).await.contains(&pane)
                         && tx.send(Out::Output { pty, data: data.to_vec() }).await.is_err()
                     {
@@ -477,10 +464,13 @@ async fn serve(
                     }
                 }
                 // Lagged: the ring, not the channel, is the source of truth.
+                // The receiver resumes at the oldest event still queued, which
+                // the snapshot already holds — hence the floor.
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                     for pane in app.visible(&grant).await {
                         if let Some(pty) = app.pty_of(pane).await {
                             if let Some((modes, data, through)) = app.ptys.attach_snapshot(pty, replay) {
+                                floor.insert(pty, through);
                                 let _ = tx.send(Out::Resync { pty, modes, data, through }).await;
                             }
                         }

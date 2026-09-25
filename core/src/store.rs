@@ -287,6 +287,7 @@ impl Store {
                         Ok(Pane {
                             id: from_db(r.get(0)?),
                             pty: None,
+                            exited: false,
                             title: String::new(),
                             // Legacy rows hold display strings ("SH"/"CC");
                             // parse_agent_kind maps those to None, which is

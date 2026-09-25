@@ -264,6 +264,7 @@ impl App {
         let pty = self.ptys.spawn(spec)?;
         let p = tree.pane_mut(pane).expect("just read");
         p.pty = Some(pty);
+        p.exited = false;
         p.cols = cols;
         p.rows = rows;
 
@@ -313,6 +314,29 @@ impl App {
     pub async fn mark_exited(&self, pane: PaneId) {
         if let Some(p) = self.tree.lock().await.pane_mut(pane) {
             p.pty = None;
+            p.exited = true;
+        }
+    }
+
+    /// Starts whichever of `panes` never had a process — a restore that
+    /// failed, say — and tells every client, so each can route the new pty's
+    /// output. A pane whose process ended is left alone: it stays for its
+    /// output to be read, and a restart would wipe it.
+    pub async fn start_never_run(&self, panes: impl IntoIterator<Item = PaneId>) {
+        let mut started = false;
+        for pane in panes {
+            let fresh = self
+                .tree
+                .lock()
+                .await
+                .pane(pane)
+                .is_some_and(|p| p.pty.is_none() && !p.exited);
+            if fresh && self.ensure_running(pane).await.is_ok() {
+                started = true;
+            }
+        }
+        if started {
+            self.commit().await;
         }
     }
 
@@ -570,26 +594,36 @@ impl App {
         Ok(Vec::new())
     }
 
-    /// Watches every pty for its exit, and acts on it.
+    /// Watches every pty for what the tree has to remember: its title and
+    /// its exit.
     ///
     /// One pump for the whole app, not one per connection: the registry's
     /// broadcast reaches every socket, and closing a pane from each of them
     /// would mean a database write and a tree broadcast per viewer.
     ///
+    /// A title is kept so the next tree frame carries it rather than wiping
+    /// the one each client was sent live. No broadcast for it: they already
+    /// have it, from `Out::Title`.
+    ///
     /// A clean exit closes the pane, as it does in any terminal — you typed
     /// `exit`, so the window goes. A failure leaves it, with its output and a
     /// Restart button, because that is the moment you most want to read it.
-    pub async fn watch_exits(self: Arc<Self>) {
+    pub async fn watch_ptys(self: Arc<Self>) {
         let mut rx = self.ptys.subscribe();
         loop {
             match rx.recv().await {
+                Ok(crate::pty::PtyEvent::Title { pane, text }) => {
+                    if let Some(p) = self.tree.lock().await.pane_mut(pane) {
+                        p.title = text;
+                    }
+                }
                 Ok(crate::pty::PtyEvent::Exited { pane, code }) => {
                     self.mark_exited(pane).await;
                     if code == 0 {
                         self.close_pane_inner(pane).await;
                     }
                 }
-                Ok(_) => {}
+                Ok(crate::pty::PtyEvent::Output { .. }) => {}
                 // Lag can drop an exit as well as output. Unlikely — this loop
                 // skips output without work — and the pane would only stay
                 // open, so carrying on is right.
@@ -1836,7 +1870,7 @@ mod tests {
             (tab.id, tab.panes[0].id)
         };
 
-        let watcher = tokio::spawn(a.clone().watch_exits());
+        let watcher = tokio::spawn(a.clone().watch_ptys());
         let pty = a
             .ptys
             .spawn(crate::pty::Spawn {
@@ -1875,7 +1909,7 @@ mod tests {
             t.workspaces[0].tabs[0].panes[0].id
         };
 
-        let watcher = tokio::spawn(a.clone().watch_exits());
+        let watcher = tokio::spawn(a.clone().watch_ptys());
         a.ptys
             .spawn(crate::pty::Spawn {
                 pane,
@@ -1915,5 +1949,61 @@ mod tests {
             .await
             .unwrap();
         assert!(a.tree.lock().await.pane(pane).unwrap().pty.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_title_is_kept_in_the_tree() {
+        // Otherwise every tree frame after it would wipe the title the
+        // clients were sent live.
+        let a = app().await;
+        let pane = a.tree.lock().await.workspaces[0].tabs[0].panes[0].id;
+        let watcher = tokio::spawn(a.clone().watch_ptys());
+        a.ptys
+            .spawn(crate::pty::Spawn {
+                pane,
+                cmd: vec!["sh".into(), "-c".into(), r"printf '\033]2;hello\007'; sleep 1".into()],
+                cwd: "/tmp".into(),
+                cols: 80,
+                rows: 24,
+                env: vec![],
+                scrollback_lines: 100,
+            })
+            .unwrap();
+        for _ in 0..40 {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            if a.tree.lock().await.pane(pane).unwrap().title == "hello" {
+                break;
+            }
+        }
+        watcher.abort();
+        assert_eq!(a.tree.lock().await.pane(pane).unwrap().title, "hello");
+    }
+
+    #[tokio::test]
+    async fn a_visitor_starts_a_pane_that_never_ran_but_not_one_that_failed() {
+        let a = app().await;
+        let ws = a.tree.lock().await.workspaces[0].id;
+        let owner = a.owner_grant().await;
+        a.handle_host(&owner, In::OpenTab { ws }).await.unwrap();
+        let (failed, never) = {
+            let t = a.tree.lock().await;
+            let tabs = &t.workspaces[0].tabs;
+            (tabs[0].panes[0].id, tabs[1].panes[0].id)
+        };
+        for pane in [failed, never] {
+            a.ptys.kill(a.pty_of(pane).await.unwrap());
+        }
+        a.mark_exited(failed).await;
+        // A restore whose spawn did not take: no process, and never had one.
+        a.tree.lock().await.pane_mut(never).unwrap().pty = None;
+
+        let mut changed = a.subscribe_tree();
+        a.start_never_run([failed, never]).await;
+
+        let t = a.tree.lock().await;
+        let kept = t.pane(failed).unwrap();
+        assert!(kept.pty.is_none(), "its output is still to be read");
+        assert!(t.pane(never).unwrap().pty.is_some());
+        assert!(changed.try_recv().is_ok(), "clients hear of the new pty");
     }
 }
