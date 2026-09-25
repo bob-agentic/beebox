@@ -1,13 +1,13 @@
 // Application state. Mirrors the server's TreeView and routes output to the
-// terminals, which the Pane components own — a Terminal is bound to the element
-// it was opened on, so tying its lifetime to that element is what keeps a split
-// from leaving one drawing off-screen.
+// terminals, which it keeps per pane for as long as the pane exists — a Pane
+// component is rebuilt whenever the layout around it changes, and its history
+// must outlive that (see pane-term.ts).
 
-import type { Terminal } from '@xterm/xterm';
 import { markRead, pruneRead } from './agent-status';
 import { Conn } from './conn';
 import { settings } from './settings.svelte';
 import { stripPartialLineMarkers } from './partial-line';
+import { PaneTerm } from './pane-term';
 import type {
   AgentSettings,
   AgentStatusView,
@@ -22,15 +22,6 @@ import type {
   TreeView,
   WsId,
 } from './proto';
-
-interface Attached {
-  term: Terminal;
-  /** Re-fits and reports the viewport. Owned by the component. `force` sends
-      the size even when it has not changed. */
-  report: (force?: boolean) => void;
-  /** Output that arrived before this pane mounted. */
-  pending: Uint8Array[];
-}
 
 const EMPTY_TREE: TreeView = { workspaces: [], active_ws: null, active_tab: null };
 
@@ -88,12 +79,17 @@ class Store {
     if (markRead(pane, view)) this.readRev++;
   }
 
-  /** Live terminals by pane id. Registered by the Pane components. */
-  private terms = new Map<PaneId, Attached>();
+  /** Terminals by pane id: made when a pane first mounts, disposed when it
+      leaves the tree. */
+  private terms = new Map<PaneId, PaneTerm>();
   /** Output for panes that have not mounted yet. */
   private buffered = new Map<PaneId, Uint8Array[]>();
   /** pty -> pane, so output frames can be routed without a tree lookup. */
   private ptyToPane = new Map<number, PaneId>();
+  /** Frames for a pty no tree has named yet. A new pane's first output can
+      beat the tree frame that says whose it is; held here, it is played in
+      once `reconcile` knows. */
+  private early = new Map<number, Out[]>();
   private conn: Conn | null = null;
 
   constructor() {
@@ -215,16 +211,22 @@ class Store {
       }
       case 'output': {
         const pane = this.ptyToPane.get(msg.pty);
-        if (pane !== undefined) this.write(pane, stripPartialLineMarkers(msg.data));
+        if (pane === undefined) this.holdEarly(msg);
+        else this.write(pane, stripPartialLineMarkers(msg.data));
         break;
       }
       case 'resync': {
         const pane = this.ptyToPane.get(msg.pty);
-        if (pane === undefined) break;
+        if (pane === undefined) {
+          this.holdEarly(msg);
+          break;
+        }
         // Reset, re-establish terminal modes, then replay. Without the mode
         // prefix the client would send the wrong bytes for arrow keys and
         // pastes — see ARCHITECTURE.md §5a.
-        this.terms.get(pane)?.term.reset();
+        const t = this.terms.get(pane);
+        if (t) t.term.reset();
+        else this.buffered.delete(pane);
         this.write(pane, msg.modes);
         this.write(pane, stripPartialLineMarkers(msg.data));
         break;
@@ -308,6 +310,18 @@ class Store {
     for (const id of this.buffered.keys()) {
       if (!live.has(id)) this.buffered.delete(id);
     }
+    // The pane is gone, not just moved: its component will not be back.
+    for (const [id, t] of this.terms) {
+      if (!live.has(id)) {
+        t.dispose();
+        this.terms.delete(id);
+      }
+    }
+    for (const [pty, held] of this.early) {
+      if (!this.ptyToPane.has(pty)) continue;
+      this.early.delete(pty);
+      for (const msg of held) this.handle(msg);
+    }
     // Read-state entries for deleted panes go with them.
     pruneRead(live);
 
@@ -324,12 +338,29 @@ class Store {
     if (this.focused !== before) this.applyFocus();
   }
 
-  /** Called by a Pane once its Terminal is open. */
-  register(pane: PaneId, term: Terminal, report: () => void) {
-    this.terms.set(pane, { term, report, pending: [] });
-    // Anything that arrived before the element existed.
-    for (const chunk of this.buffered.get(pane) ?? []) term.write(chunk);
+  /** The pane's terminal, made on first use. */
+  terminal(pane: PaneId): PaneTerm {
+    let t = this.terms.get(pane);
+    if (t) return t;
+    t = new PaneTerm({
+      data: (s) => {
+        this.noteTyping();
+        this.send({ t: 'input', pane, data: new TextEncoder().encode(this.withMods(s)) });
+      },
+      binary: (data) => this.send({ t: 'input', pane, data }),
+      cwd: () => this.pane(pane)?.cwd ?? '',
+      agent: () => this.isAgent(pane),
+    });
+    this.terms.set(pane, t);
+    // Anything that arrived before there was a terminal to hold it.
+    for (const chunk of this.buffered.get(pane) ?? []) t.term.write(chunk);
     this.buffered.delete(pane);
+    return t;
+  }
+
+  /** Called by a Pane as it mounts, to put the pane's terminal on screen. */
+  attach(pane: PaneId, host: HTMLElement, report: (force?: boolean) => void) {
+    this.terminal(pane).attach(host, report);
     // The tree frame that chose this pane may have arrived before the element
     // did, in which case applyFocus found nothing to focus. This is the other
     // half of that race — without it the first pane after a cold start still
@@ -337,8 +368,16 @@ class Store {
     if (this.focused === pane) this.applyFocus();
   }
 
-  unregister(pane: PaneId) {
-    this.terms.delete(pane);
+  /** Holds a frame for a pty not in the tree yet. Bounded both ways: a pty
+      that never appears — one whose pane closed as it spoke — must not
+      grow without end. A resync replaces whatever came before it. */
+  private holdEarly(msg: Out & { pty: number }) {
+    const held = msg.t === 'resync' ? [] : (this.early.get(msg.pty) ?? []);
+    if (held.length >= 256) return;
+    held.push(msg);
+    this.early.delete(msg.pty);
+    this.early.set(msg.pty, held);
+    if (this.early.size > 16) this.early.delete(this.early.keys().next().value!);
   }
 
   private write(pane: PaneId, data: Uint8Array) {
@@ -484,6 +523,18 @@ class Store {
   jumpVisible(where: 'top' | 'bottom') {
     const pane = this.targetPane();
     if (pane !== null) this.jump(pane, where);
+  }
+
+  /** Claude Code or Codex has run in this pane — what its hooks last said. */
+  isAgent(pane: PaneId | null): boolean {
+    const a = pane === null ? null : this.pane(pane)?.agent;
+    return a === 'claude' || a === 'codex';
+  }
+
+  /** ⌘↑/⌘↓ for the pane on screen, from the phone's key bar. */
+  stepSent(dir: -1 | 1) {
+    const pane = this.targetPane();
+    if (pane !== null) this.terms.get(pane)?.step(dir);
   }
 
   /** Asks every mounted pane to re-measure and say so, even if the numbers

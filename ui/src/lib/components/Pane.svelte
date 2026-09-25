@@ -1,22 +1,15 @@
 <script lang="ts">
-  // A pane owns its Terminal. Earlier this lived in the store, keyed by pane
-  // id, so that a re-render could reuse it — but an xterm Terminal is bound to
-  // the element it was opened on, and a split re-parents panes, which left a
-  // terminal drawing into a node that was no longer on screen. Ownership here
-  // makes that impossible: the element and the Terminal are created and
-  // destroyed together.
-  //
-  // Nothing is lost by it. Scrollback comes back from the server's ring via
-  // `Resync`, which exists for exactly this.
+  // A pane's view. The Terminal itself belongs to the store (see
+  // pane-term.ts): this component comes and goes whenever the layout around
+  // the pane changes, and the history must not go with it. What is kept here
+  // is only what belongs to this place on screen — measuring it, and watching
+  // it change size.
 
   import { onMount } from 'svelte';
-  import { Terminal } from '@xterm/xterm';
-  import { FitAddon } from '@xterm/addon-fit';
-  import { Unicode11Addon } from '@xterm/addon-unicode11';
   import { store } from '../state.svelte';
   import { settings } from '../settings.svelte';
-  import { fileLinkProvider } from '../file-links';
   import type { PaneView } from '../proto';
+  import type { PaneTerm } from '../pane-term';
   import { agentBadge, isUnread } from '../agent-status';
   import Crumbs from './Crumbs.svelte';
   import Icon from './Icon.svelte';
@@ -24,11 +17,9 @@
 
   let { pane }: { pane: PaneView } = $props();
 
-  /** The Mac shell's WKWebView, which needs its own renderer and fixes. */
-  const macShell = '__BEEBOX__' in window;
-
   let host: HTMLDivElement;
   let reportSize: (() => void) | null = null;
+  let pt: PaneTerm | null = null;
 
   /** On the tab in front. Every tab stays mounted, so a window resize or a
       sidebar fold reached every terminal on the machine at once — each one
@@ -40,19 +31,11 @@
     if (shown && owesFit) reportSize?.();
   });
 
-  /** A renderer only while on screen; hidden panes fall back to xterm's DOM
-      renderer, which costs next to nothing when not drawn. In a browser the
-      limit is GL contexts — eight or so on Android, the oldest dropped past
-      that — so with every tab mounted the pane you were reading lost its
-      WebGL. In the Mac shell it is memory: each Canvas2D pane holds four
-      full-size canvases at 2x, and ten mounted panes came to ~700 MB. */
-  let renderer: { dispose(): void } | null = null;
-  let showRenderer: ((on: boolean) => void) | null = null;
   $effect(() => {
-    // Read before the call: `showRenderer?.(shown)` skips its argument while
-    // the addon is still loading, and then the effect never tracks `shown`.
+    // Read before the call: `pt?.show(shown)` skips its argument while the
+    // terminal is not attached yet, and then the effect never tracks `shown`.
     const on = shown;
-    showRenderer?.(on);
+    pt?.show(on);
   });
 
   // The PTY's width, as the server last said. Someone else resizing it has to
@@ -102,140 +85,19 @@
   });
 
   onMount(() => {
-    const cfg = settings.current;
-    const term = new Terminal({
-      fontFamily: cfg.fontFamily,
-      fontSize: cfg.fontSize,
-      lineHeight: cfg.lineHeight,
-      cursorBlink: cfg.cursorBlink,
-      allowProposedApi: true,
-      // How much history this browser holds ready to scroll through. Costs
-      // about 2 MB per ten thousand lines, per pane, and every pane pays it
-      // whether or not its tab is in front — which is why it is a setting
-      // rather than the ring's full 200k. The daemon keeps everything either
-      // way; this is the client's share.
-      scrollback: cfg.scrollback,
-      theme: settings.xterm,
-    });
+    const t = store.terminal(pane.id);
+    const term = t.term;
+    pt = t;
 
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-
-    // Lets the end-to-end tests read what the terminal is actually showing.
-    // The renderers draw to a canvas, so there is nothing in the DOM to assert on.
-    void import('@xterm/addon-serialize').then(({ SerializeAddon }) => {
-      const ser = new SerializeAddon();
-      term.loadAddon(ser);
-      (host as any).__serialize = () => ser.serialize();
-    });
-    // Lets the shell's self-test drive this pane without depending on focus.
+    // Lets the end-to-end tests read what the terminal is actually showing,
+    // and the shell's self-test drive this pane without depending on focus.
+    (host as any).__serialize = () => t.serialize();
     (host as any).__type = (text: string) => term.input(text);
-    term.loadAddon(new Unicode11Addon());
-    // Correct widths for CJK and emoji — verified on a real device.
-    term.unicode.activeVersion = '11';
-
-    term.open(host);
-
-    // WebKit drops the first Chinese full-width punctuation mark: `？` needs
-    // two presses, while Han characters are fine.
-    //
-    // xterm only accepts an `insertText` when `_keyDownSeen` is false, assuming
-    // the `input` for a keystroke arrives after its `keydown`. WebKit reverses
-    // that pair for IME direct-commit, and these marks need Shift — whose own
-    // keydown set the flag and whose keyup has not run yet — so the character
-    // is discarded. Han characters go through compositionend instead, which
-    // never consults the flag. Upstream: xtermjs/xterm.js#6144, still open.
-    //
-    // Clearing the flag before xterm's own capture-phase listener runs lets the
-    // character through its normal path. Nothing extra is sent, and the
-    // duplicate-suppression xterm already does is untouched — so this cannot
-    // double up. Composition is left strictly alone.
-    if (macShell) {
-      host.addEventListener(
-        'beforeinput',
-        (ev: Event) => {
-          const e = ev as InputEvent;
-          if (e.inputType !== 'insertText' || !e.data) return;
-          const core = (term as any)._core;
-          if (core && !core._compositionHelper?.isComposing) {
-            core._keyDownSeen = false;
-          }
-        },
-        true,
-      );
-    }
-
-    // WKWebView can parse output into the buffer without invalidating xterm's
-    // compositing layer. Coalesce an explicit refresh to the next frame so a
-    // busy agent still causes at most one extra paint per display frame.
-    // Only there: elsewhere a full repaint per frame of output is pure cost,
-    // and on a phone it fights scrolling for the same frames.
-    let refreshFrame = 0;
-    const refresh = () => {
-      if (!macShell || refreshFrame) return;
-      refreshFrame = requestAnimationFrame(() => {
-        refreshFrame = 0;
-        if (term.rows > 0) term.refresh(0, term.rows - 1);
-      });
-    };
-    const writeParsed = term.onWriteParsed(refresh);
-
-    // ⌘-click a file path to open it in VS Code. Only in the Mac shell: it
-    // is the one client on the machine whose disk the paths are on, and it
-    // checks each one — a link appears only over a file that exists.
-    if (macShell) {
-      term.registerLinkProvider(fileLinkProvider(term, (window as any).__BEEBOX__, () => pane.cwd));
-    }
-
-    // WebKit currently accepts the WebGL context but composites it as a blank
-    // layer. Browsers keep the accelerated renderer; the native shell uses
-    // xterm's Canvas2D addon, which WebKit snapshots and composites reliably.
-    void (macShell
-      ? import('@xterm/addon-canvas').then(({ CanvasAddon }) => () => new CanvasAddon())
-      : import('@xterm/addon-webgl').then(({ WebglAddon }) => () => {
-          const addon = new WebglAddon();
-          addon.onContextLoss(() => {
-            addon.dispose();
-            if (renderer === addon) renderer = null;
-          });
-          return addon;
-        })
-    ).then((make) => {
-      showRenderer = (on) => {
-        if (!on) {
-          renderer?.dispose();
-          renderer = null;
-          return;
-        }
-        if (renderer) return;
-        try {
-          const addon = make();
-          term.loadAddon(addon);
-          renderer = addon;
-          refresh();
-        } catch {
-          // The built-in DOM renderer remains active.
-        }
-      };
-      showRenderer(shown);
-    });
-
-    const send = (data: Uint8Array) => store.send({ t: 'input', pane: pane.id, data });
-    // `onData` is the user's own input — what the process prints never reaches
-    // it — so it is the right place to say "this is the tab I am working in".
-    term.onData((s) => {
-      store.noteTyping();
-      send(new TextEncoder().encode(store.withMods(s)));
-    });
-    term.onBinary((s) => {
-      const bytes = new Uint8Array(s.length);
-      for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i) & 0xff;
-      send(bytes);
-    });
 
     // Only report when the grid actually changed. A ResizeObserver fires for
     // any pixel movement, and every redundant report makes the shell repaint
     // its prompt — which is what left rows of stray `%` markers on screen.
+    // Per mount, so a pane that moved reports its new place at least once.
     let lastCols = 0;
     let lastRows = 0;
     // `force` is for the re-fit button. The usual caller is a ResizeObserver
@@ -252,7 +114,7 @@
       owesFit = false;
       let dims;
       try {
-        dims = fit.proposeDimensions();
+        dims = t.fit.proposeDimensions();
       } catch {
         return;
       }
@@ -266,7 +128,7 @@
       // `pane.cols`, which runs this again.
       const cols = pane.cols || dims.cols;
       if (term.cols !== cols || term.rows !== dims.rows) term.resize(cols, dims.rows);
-      refresh();
+      t.refresh();
       if (!force && dims.cols === lastCols && dims.rows === lastRows) return;
       lastCols = dims.cols;
       lastRows = dims.rows;
@@ -275,7 +137,8 @@
     };
     reportSize = report;
 
-    store.register(pane.id, term, report);
+    store.attach(pane.id, host, report);
+    t.show(shown);
     report();
 
     // Not while the sidebar is moving: a terminal re-laid out on every frame
@@ -285,29 +148,12 @@
     });
     ro.observe(host);
 
-    // Appearance changes apply to terminals that already exist, so you can see
-    // a font or theme land without restarting anything.
-    const stopWatching = settings.onChange(() => {
-      const c = settings.current;
-      term.options.fontFamily = c.fontFamily;
-      term.options.fontSize = c.fontSize;
-      term.options.lineHeight = c.lineHeight;
-      term.options.cursorBlink = c.cursorBlink;
-      // Applies immediately, both ways: raising it lets the buffer grow from
-      // here on, lowering it trims what is already there.
-      term.options.scrollback = c.scrollback;
-      term.options.theme = settings.xterm;
-      // Glyph size changed, so the column count did too.
-      report();
-    });
-
+    // Only this mount's part. The terminal stays with the store until the
+    // pane leaves the tree.
     return () => {
-      stopWatching();
-      writeParsed.dispose();
-      if (refreshFrame) cancelAnimationFrame(refreshFrame);
       ro.disconnect();
-      store.unregister(pane.id);
-      term.dispose();
+      reportSize = null;
+      t.detach(host);
     };
   });
 </script>

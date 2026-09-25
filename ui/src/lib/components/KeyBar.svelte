@@ -4,7 +4,7 @@
   // terminal's own modes — application cursor keys in vim or less — apply.
   import { store } from '../state.svelte';
 
-  type Key = { label: string; seq?: string; app?: string; mod?: 'ctrl' | 'alt' };
+  type Key = { label: string; seq?: string; app?: string; mod?: 'ctrl' | 'alt'; step?: -1 | 1 };
 
   const ROWS: Key[][] = [
     [
@@ -27,8 +27,20 @@
     ],
   ];
 
+  // ⌘↑/⌘↓: the message you sent before or after. Only where Claude Code or
+  // Codex runs, the one place there are sent messages to find — and there
+  // they take the place of PGUP/PGDN, which the agents make no use of.
+  const STEPS: Key[] = [
+    { label: 'MSG↑', step: -1 },
+    { label: 'MSG↓', step: 1 },
+  ];
+  const rows = $derived(
+    store.isAgent(store.targetPane()) ? ROWS.map((row, i) => [...row.slice(0, -1), STEPS[i]]) : ROWS,
+  );
+
   function press(k: Key) {
-    if (k.mod) store.mods[k.mod] = !store.mods[k.mod];
+    if (k.step) store.stepSent(k.step);
+    else if (k.mod) store.mods[k.mod] = !store.mods[k.mod];
     else store.typeKey(k.seq!, k.app);
   }
 </script>
@@ -36,7 +48,7 @@
 <!-- pointerdown, not click, and default prevented: a tap must not move focus
      off the terminal, or the soft keyboard closes under the finger. -->
 <div class="keybar">
-  {#each ROWS as row}
+  {#each rows as row}
     <div class="row">
       {#each row as k}
         <button

@@ -120,3 +120,15 @@ button {
   background: var(--border);
   border-radius: 4px;
 }
+
+/* The sent message ⌘↑/⌘↓ just landed on. Over the text, so kept faint, and
+   gone before it gets in the way of reading. */
+.sent-flash {
+  background: var(--accent);
+  pointer-events: none;
+  animation: sent-flash 1.2s ease-out forwards;
+}
+@keyframes sent-flash {
+  from { opacity: 0.35; }
+  to { opacity: 0; }
+}
