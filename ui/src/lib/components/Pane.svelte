@@ -38,12 +38,6 @@
     pt?.show(on);
   });
 
-  // The PTY's width, as the server last said. Someone else resizing it has to
-  // reach a client that draws at that width.
-  $effect(() => {
-    void pane.cols;
-    reportSize?.();
-  });
   const focused = $derived(store.focused === pane.id);
 
   /** Same reasoning as the tab bar: "bob@Bobs-MacBook-Pro:~/x" is noise. */
@@ -150,9 +144,11 @@
       // instead, output laid out for the other width lands wrong — lines wrap,
       // and a TUI that redraws by moving up N rows erases the wrong ones and
       // leaves its old frame behind as a duplicate. A narrower window loses
-      // the right edge; nothing is mis-drawn. The server's answer arrives as
-      // `pane.cols`, which runs this again.
-      const cols = pane.cols || dims.cols;
+      // the right edge; nothing is mis-drawn. The width arrives in the output
+      // itself (`width_marker` in core/src/pty.rs), between the bytes drawn
+      // for the old one and the new, so it is left to that — `pane.cols` is
+      // only the guess until the replay lands.
+      const cols = store.loading.has(pane.id) ? pane.cols || dims.cols : term.cols;
       if (term.cols !== cols || term.rows !== dims.rows) term.resize(cols, dims.rows);
       t.refresh();
       if (!force && dims.cols === lastCols && dims.rows === lastRows) return;

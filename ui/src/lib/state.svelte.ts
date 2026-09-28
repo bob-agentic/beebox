@@ -339,12 +339,18 @@ class Store {
   terminal(pane: PaneId): PaneTerm {
     let t = this.terms.get(pane);
     if (t) return t;
+    // Nothing is typed into a terminal still hidden for its replay: what it
+    // sends then is xterm answering queries in the history (`ESC[c` from a
+    // program long gone), which would land in whatever runs now as `1;2c`.
     t = new PaneTerm({
       data: (s) => {
+        if (this.loading.has(pane)) return;
         this.noteTyping();
         this.send({ t: 'input', pane, data: new TextEncoder().encode(this.withMods(s)) });
       },
-      binary: (data) => this.send({ t: 'input', pane, data }),
+      binary: (data) => {
+        if (!this.loading.has(pane)) this.send({ t: 'input', pane, data });
+      },
       cwd: () => this.pane(pane)?.cwd ?? '',
       agent: () => this.isAgent(pane),
     });
@@ -521,10 +527,15 @@ class Store {
   }
 
   /** Asks every mounted pane to re-measure and say so, even if the numbers
-   *  come out the same. Bound to the re-fit button, which only a client that
-   *  drives its own size gets to see. */
+   *  come out the same, then rebuilds it: replayed, and redrawn by its
+   *  program, which is what cleans up a screen drawn wrong. Bound to the
+   *  re-fit button, which only a client that drives its own size gets to see. */
   refit() {
-    for (const t of this.terms.values()) t.report(true);
+    for (const [pane, t] of this.terms) {
+      t.report(true);
+      this.loading.add(pane);
+      this.send({ t: 'replay', pane });
+    }
   }
 
   /** True while the layout is animating, so terminals keep their size until

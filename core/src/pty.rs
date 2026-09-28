@@ -44,8 +44,9 @@ pub enum PtyEvent {
 }
 
 /// Our own OSC, `ESC ] 7788 ; cols BEL`: the width the output after it was
-/// written at. Only a replay carries it; the client resizes its terminal
-/// there, so every stretch is drawn at the width it was laid out for.
+/// written at. It goes into the stream itself, live and in the ring, so a
+/// client resizes its terminal exactly between the bytes drawn for the old
+/// width and those drawn for the new — the order a real terminal sees them in.
 fn width_marker(cols: u16) -> Vec<u8> {
     format!("\x1b]7788;{cols}\x07").into_bytes()
 }
@@ -70,36 +71,31 @@ struct History {
     ring: Ring,
     sniffer: Sniffer,
     cols: u16,
-    /// The width the output from each ring offset on was written at, oldest
-    /// first. A replay needs it: a TUI redraws by moving up the rows it
-    /// counted at that width, and at another it erases the wrong ones.
+    /// The ring offset each width took effect at, oldest first. The ring
+    /// carries a marker for every change; this is for where a replay starts
+    /// between two of them.
     widths: VecDeque<(u64, u16)>,
 }
 
 impl History {
-    fn note_width(&mut self, cols: u16) {
-        let at = self.ring.written();
-        // Nothing written since the last change — a window being dragged —
-        // leaves nothing drawn at that width to remember.
-        if self.widths.back().is_some_and(|w| w.0 == at) {
-            self.widths.pop_back();
-        }
-        if self.widths.back().is_none_or(|w| w.1 != cols) {
-            self.widths.push_back((at, cols));
-        }
+    /// Puts a width change into the ring, and returns the marker to send.
+    fn set_width(&mut self, cols: u16) -> Vec<u8> {
+        let marker = width_marker(cols);
+        self.ring.push(&marker);
+        self.cols = cols;
+        self.widths.push_back((self.ring.written(), cols));
         // What the ring has dropped needs no width, except the one it still
         // starts in.
         let oldest = self.ring.oldest();
         while self.widths.get(1).is_some_and(|w| w.0 <= oldest) {
             self.widths.pop_front();
         }
+        marker
     }
 
-    /// The ring from `from` on, with a width marker wherever the width
-    /// changed, starting with the one it opens at.
+    /// The ring from `from` on, opening with the width it starts at.
     fn replay(&self, from: u64) -> Vec<u8> {
         let from = from.max(self.ring.oldest());
-        let data = self.ring.since(from);
         let opening = self
             .widths
             .iter()
@@ -107,14 +103,7 @@ impl History {
             .find(|w| w.0 <= from)
             .map_or(self.cols, |w| w.1);
         let mut out = width_marker(opening);
-        let mut at = 0;
-        for &(offset, cols) in self.widths.iter().filter(|w| w.0 > from) {
-            let cut = ((offset - from) as usize).min(data.len());
-            out.extend_from_slice(&data[at..cut]);
-            out.extend(width_marker(cols));
-            at = cut;
-        }
-        out.extend_from_slice(&data[at..]);
+        out.extend(self.ring.since(from));
         out
     }
 
@@ -327,8 +316,10 @@ impl Registry {
     /// Records a chunk in the ring, updates sniffed state, and fans it out.
     fn flush(&self, id: PtyId, pane: PaneId, pending: &mut Vec<u8>) {
         // A chunk goes into the ring whole, under the lock a snapshot takes
-        // too, so every snapshot ends on a chunk boundary.
-        let (end, title) = {
+        // too, so every snapshot ends on a chunk boundary. And is sent under
+        // it, so a width change pushed in between reaches clients in the
+        // ring's order.
+        let title = {
             let mut ptys = self.ptys.lock().unwrap();
             let Some(p) = ptys.get_mut(&id) else {
                 pending.clear();
@@ -338,11 +329,11 @@ impl Registry {
             let base = h.ring.written();
             h.sniffer.feed(pending, base);
             h.ring.push(pending);
-            (h.ring.written(), h.sniffer.take_title())
+            let end = h.ring.written();
+            let data = Arc::new(std::mem::take(pending));
+            let _ = self.tx.send(PtyEvent::Output { pane, pty: id, data, end });
+            h.sniffer.take_title()
         };
-
-        let data = Arc::new(std::mem::take(pending));
-        let _ = self.tx.send(PtyEvent::Output { pane, pty: id, data, end });
         if let Some(text) = title {
             let _ = self.tx.send(PtyEvent::Title { pane, text });
         }
@@ -364,13 +355,45 @@ impl Registry {
         if p.hist.cols == cols && p.rows == rows {
             return Ok(()); // avoid a pointless SIGWINCH repaint
         }
-        p.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })?;
+        // Before the resize, so what the program redraws for the new width
+        // comes after the marker.
         if p.hist.cols != cols {
-            p.hist.note_width(cols);
+            let marker = p.hist.set_width(cols);
+            let end = p.hist.ring.written();
+            let data = Arc::new(marker);
+            let _ = self.tx.send(PtyEvent::Output { pane: p.pane, pty: id, data, end });
         }
-        p.hist.cols = cols;
+        p.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })?;
         p.rows = rows;
         Ok(())
+    }
+
+    /// Makes the program repaint its screen. A replay rebuilds what was
+    /// printed, but a TUI caught mid-redraw, or drawn at a width since
+    /// changed, only comes out right when the program draws it again. Setting
+    /// the size it already has sends no SIGWINCH, so the height is nudged and
+    /// put back — shpool does the same on attach.
+    pub fn redraw(self: &Arc<Self>, id: PtyId) {
+        if !self.nudge(id, 1) {
+            return;
+        }
+        let reg = Arc::clone(self);
+        tokio::spawn(async move {
+            // Long enough for the program to have seen the first size.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            reg.nudge(id, 0);
+        });
+    }
+
+    /// Sets the pty `less` rows short of its size, or back to it with 0.
+    fn nudge(&self, id: PtyId, less: u16) -> bool {
+        let ptys = self.ptys.lock().unwrap();
+        let Some(p) = ptys.get(&id) else { return false };
+        if p.rows <= less {
+            return false;
+        }
+        let size = PtySize { rows: p.rows - less, cols: p.hist.cols, pixel_width: 0, pixel_height: 0 };
+        p.master.resize(size).is_ok()
     }
 
     pub fn size(&self, id: PtyId) -> Option<(u16, u16)> {
@@ -656,10 +679,7 @@ mod tests {
             .spawn(spec(1, &["sh", "-c", "printf wide; sleep 0.4; printf narrow; sleep 0.6"]))
             .unwrap();
         tokio::time::sleep(Duration::from_millis(200)).await;
-        // A drag: only where it came to rest was anything drawn.
-        for cols in [60, 30, 40] {
-            reg.resize(id, cols, 24).unwrap();
-        }
+        reg.resize(id, 40, 24).unwrap();
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         let (_, data, _) = reg.attach_snapshot(id, None).unwrap();
@@ -667,7 +687,29 @@ mod tests {
             String::from_utf8_lossy(&data),
             "\x1b]7788;80\x07wide\x1b]7788;40\x07narrow"
         );
-        let _ = drain(rx).await;
+        // Started after the change, it opens at the new width.
+        {
+            let ptys = reg.ptys.lock().unwrap();
+            let h = &ptys[&id].hist;
+            let from = h.ring.written() - "narrow".len() as u64;
+            assert_eq!(String::from_utf8_lossy(&h.replay(from)), "\x1b]7788;40\x07narrow");
+        }
+        // Live, the change sits between the same bytes.
+        assert_eq!(drain(rx).await, "wide\x1b]7788;40\x07narrow");
+    }
+
+    #[tokio::test]
+    async fn redraw_signals_without_changing_the_size() {
+        let reg = Registry::new();
+        let rx = reg.subscribe();
+        let id = reg
+            .spawn(spec(1, &["sh", "-c", "trap 'printf winch' WINCH; sleep 0.3; sleep 0.3; sleep 0.3"]))
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        reg.redraw(id);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(reg.size(id), Some((80, 24)));
+        assert!(drain(rx).await.contains("winch"), "the program must hear of it");
     }
 
     #[tokio::test]

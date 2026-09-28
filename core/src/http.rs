@@ -532,6 +532,11 @@ async fn serve(
                     In::Replay { pane } => {
                         if app.visible(&grant).await.contains(&pane) {
                             resync(&app, pane, replay, &mut shown, &tx).await;
+                            // The history as printed, then the screen as the
+                            // program draws it now.
+                            if let Some(pty) = app.pty_of(pane).await {
+                                app.ptys.redraw(pty);
+                            }
                         }
                         continue;
                     }
