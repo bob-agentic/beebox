@@ -319,6 +319,9 @@ pub enum Out {
     /// that a raw byte-ring tail would have lost — see ARCHITECTURE.md §4.
     /// The client must reset its terminal, apply `modes`, then write `data`.
     Resync {
+        /// Named outright: a pane whose process ended has its history
+        /// replayed too, and its pty is in no tree to look the pane up by.
+        pane: PaneId,
         pty: PtyId,
         #[serde(with = "serde_bytes")]
         modes: Vec<u8>,
@@ -413,6 +416,11 @@ pub enum In {
         rows: u16,
     },
     Ping,
+    /// Send this pane's history again. A client drops the terminal of a pane
+    /// it has not shown for a while, and asks for it back when it does.
+    Replay {
+        pane: PaneId,
+    },
 
     // ---- owner only; rejected otherwise ----
     Split {

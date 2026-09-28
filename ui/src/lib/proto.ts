@@ -131,7 +131,7 @@ export type CloseReason = 'revoked';
 export type Out =
   | { t: 'tree'; tree: TreeView; caps: Caps }
   | { t: 'output'; pty: PtyId; data: Uint8Array }
-  | { t: 'resync'; pty: PtyId; modes: Uint8Array; data: Uint8Array; through: number }
+  | { t: 'resync'; pane: PaneId; pty: PtyId; modes: Uint8Array; data: Uint8Array; through: number }
   | { t: 'status'; pane: PaneId; status: AgentStatusView }
   | { t: 'session_title'; pane: PaneId; text: string }
   | { t: 'agent_settings'; settings: AgentSettings; codex_hooks: string }
@@ -155,6 +155,7 @@ export type In =
   | { t: 'input'; pane: PaneId; data: Uint8Array }
   | { t: 'viewport'; pane: PaneId; cols: number; rows: number }
   | { t: 'ping' }
+  | { t: 'replay'; pane: PaneId }
   | { t: 'split'; pane: PaneId; dir: Dir }
   | { t: 'set_sizes'; tab: TabId; path: number[]; sizes: number[] }
   | { t: 'close_pane'; pane: PaneId }

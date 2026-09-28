@@ -164,6 +164,11 @@ impl App {
     async fn commit(&self) {
         let tree = self.tree.lock().await;
         self.store.lock().await.save_tree(&tree).expect("write state.db");
+        // Every close and every re-run comes through here. A pane still naming
+        // the pty has not had its exit noted yet, and is kept.
+        self.ptys.keep_ended(|pane, pty| {
+            tree.pane(pane).is_some_and(|p| p.pty.is_none_or(|now| now == pty))
+        });
         drop(tree);
         let _ = self.changed.send(TreeChanged);
     }
@@ -589,7 +594,11 @@ impl App {
                 self.set_exposed(exposed).await;
             }
             // Not owner-gated; handled by the caller.
-            In::Input { .. } | In::Viewport { .. } | In::Ping | In::CreateGrant { .. } => {}
+            In::Input { .. }
+            | In::Viewport { .. }
+            | In::Ping
+            | In::Replay { .. }
+            | In::CreateGrant { .. } => {}
         }
         Ok(Vec::new())
     }

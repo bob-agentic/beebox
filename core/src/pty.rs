@@ -53,21 +53,30 @@ fn width_marker(cols: u16) -> Vec<u8> {
 /// Everything about one live process.
 struct Pty {
     pane: PaneId,
-    ring: Ring,
-    sniffer: Sniffer,
+    hist: History,
     writer: Box<dyn Write + Send>,
     master: Box<dyn portable_pty::MasterPty + Send>,
-    cols: u16,
     rows: u16,
-    /// The width the output from each ring offset on was written at, oldest
-    /// first. A replay needs it: a TUI redraws by moving up the rows it
-    /// counted at that width, and at another it erases the wrong ones.
-    widths: VecDeque<(u64, u16)>,
     /// The shell's pid, for cwd polling of its foreground process group.
     child_pid: Option<u32>,
 }
 
-impl Pty {
+/// A replay: the mode prefix, the output, and the ring offset it runs through.
+pub type Snapshot = (Vec<u8>, Vec<u8>, u64);
+
+/// What a process printed, and what a replay of it needs. Outlives the
+/// process: a pane whose process failed stays open to be read.
+struct History {
+    ring: Ring,
+    sniffer: Sniffer,
+    cols: u16,
+    /// The width the output from each ring offset on was written at, oldest
+    /// first. A replay needs it: a TUI redraws by moving up the rows it
+    /// counted at that width, and at another it erases the wrong ones.
+    widths: VecDeque<(u64, u16)>,
+}
+
+impl History {
     fn note_width(&mut self, cols: u16) {
         let at = self.ring.written();
         // Nothing written since the last change — a window being dragged —
@@ -108,6 +117,17 @@ impl Pty {
         out.extend_from_slice(&data[at..]);
         out
     }
+
+    /// In alt screen the replay starts at the switch — an alt screen has no
+    /// scrollback, so earlier history does not belong in it.
+    fn snapshot(&self, lines: Option<usize>) -> Snapshot {
+        let lines = lines.unwrap_or(ATTACH_LINES).clamp(1, MAX_ATTACH_LINES);
+        let from = match self.sniffer.replay_from() {
+            Some(alt) => alt,
+            None => self.ring.tail_lines(lines).1,
+        };
+        (self.sniffer.modes().to_escapes(), self.replay(from), self.ring.written())
+    }
 }
 
 pub struct Spawn {
@@ -123,6 +143,9 @@ pub struct Spawn {
 
 pub struct Registry {
     ptys: Mutex<HashMap<PtyId, Pty>>,
+    /// The history of each pane whose process ended on its own, with the pty
+    /// it was — kept until the pane closes or re-runs (`keep_ended`).
+    ended: Mutex<HashMap<PaneId, (PtyId, History)>>,
     /// Fan-out to every connected client. Bounded: on lag a subscriber resyncs
     /// from the ring rather than the channel.
     tx: broadcast::Sender<PtyEvent>,
@@ -134,6 +157,7 @@ impl Registry {
         let (tx, _) = broadcast::channel(4096);
         Arc::new(Self {
             ptys: Mutex::new(HashMap::new()),
+            ended: Mutex::new(HashMap::new()),
             tx,
             next_id: Mutex::new(0),
         })
@@ -214,13 +238,15 @@ impl Registry {
             id,
             Pty {
                 pane: spec.pane,
-                ring: Ring::new(spec.scrollback_lines),
-                sniffer: Sniffer::default(),
+                hist: History {
+                    ring: Ring::new(spec.scrollback_lines),
+                    sniffer: Sniffer::default(),
+                    cols: spec.cols,
+                    widths: VecDeque::from([(0, spec.cols)]),
+                },
                 writer,
                 master: pair.master,
-                cols: spec.cols,
                 rows: spec.rows,
-                widths: VecDeque::from([(0, spec.cols)]),
                 child_pid,
             },
         );
@@ -282,7 +308,12 @@ impl Registry {
             if !pending.is_empty() {
                 reg.flush(id, pane, &mut pending);
             }
-            reg.ptys.lock().unwrap().remove(&id);
+            // The history stays for as long as the pane does. Unless the pty
+            // was killed, which is its pane closing.
+            let gone = reg.ptys.lock().unwrap().remove(&id);
+            if let Some(p) = gone {
+                reg.ended.lock().unwrap().insert(pane, (id, p.hist));
+            }
             // The reader thread is the only one that can wait on the child, so
             // the status comes back from there. -1 if it never arrived: the
             // thread died without reaping, which is not a clean exit.
@@ -303,10 +334,11 @@ impl Registry {
                 pending.clear();
                 return;
             };
-            let base = p.ring.written();
-            p.sniffer.feed(pending, base);
-            p.ring.push(pending);
-            (p.ring.written(), p.sniffer.take_title())
+            let h = &mut p.hist;
+            let base = h.ring.written();
+            h.sniffer.feed(pending, base);
+            h.ring.push(pending);
+            (h.ring.written(), h.sniffer.take_title())
         };
 
         let data = Arc::new(std::mem::take(pending));
@@ -329,48 +361,46 @@ impl Registry {
     pub fn resize(&self, id: PtyId, cols: u16, rows: u16) -> Result<()> {
         let mut ptys = self.ptys.lock().unwrap();
         let p = ptys.get_mut(&id).ok_or_else(|| anyhow!("no pty {id}"))?;
-        if p.cols == cols && p.rows == rows {
+        if p.hist.cols == cols && p.rows == rows {
             return Ok(()); // avoid a pointless SIGWINCH repaint
         }
         p.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })?;
-        if p.cols != cols {
-            p.note_width(cols);
+        if p.hist.cols != cols {
+            p.hist.note_width(cols);
         }
-        p.cols = cols;
+        p.hist.cols = cols;
         p.rows = rows;
         Ok(())
     }
 
     pub fn size(&self, id: PtyId) -> Option<(u16, u16)> {
         let ptys = self.ptys.lock().unwrap();
-        ptys.get(&id).map(|p| (p.cols, p.rows))
+        ptys.get(&id).map(|p| (p.hist.cols, p.rows))
     }
 
     /// Everything a newly attached viewer needs: the mode prefix that puts its
     /// terminal into the right state, then the scrollback tail.
-    ///
-    /// In alt screen the replay starts at the switch — an alt screen has no
-    /// scrollback, so earlier history does not belong in it.
-    pub fn attach_snapshot(
-        &self,
-        id: PtyId,
-        lines: Option<usize>,
-    ) -> Option<(Vec<u8>, Vec<u8>, u64)> {
-        let lines = lines.unwrap_or(ATTACH_LINES).clamp(1, MAX_ATTACH_LINES);
+    pub fn attach_snapshot(&self, id: PtyId, lines: Option<usize>) -> Option<Snapshot> {
         let ptys = self.ptys.lock().unwrap();
-        let p = ptys.get(&id)?;
-        let modes = p.sniffer.modes().to_escapes();
+        Some(ptys.get(&id)?.hist.snapshot(lines))
+    }
 
-        let from = match p.sniffer.replay_from() {
-            Some(alt) => alt,
-            None => p.ring.tail_lines(lines).1,
-        };
-        Some((modes, p.replay(from), p.ring.written()))
+    /// The same for a pane whose process has ended, with the pty it was.
+    pub fn ended_snapshot(&self, pane: PaneId, lines: Option<usize>) -> Option<(PtyId, Snapshot)> {
+        let ended = self.ended.lock().unwrap();
+        let (pty, hist) = ended.get(&pane)?;
+        Some((*pty, hist.snapshot(lines)))
+    }
+
+    /// Drops the history of every ended pane `keep` says no to, given the
+    /// pane and the pty it was — one that closed, or runs again.
+    pub fn keep_ended(&self, keep: impl Fn(PaneId, PtyId) -> bool) {
+        self.ended.lock().unwrap().retain(|&pane, (pty, _)| keep(pane, *pty));
     }
 
     pub fn modes(&self, id: PtyId) -> Option<Modes> {
         let ptys = self.ptys.lock().unwrap();
-        ptys.get(&id).map(|p| p.sniffer.modes())
+        ptys.get(&id).map(|p| p.hist.sniffer.modes())
     }
 
     pub fn kill(&self, id: PtyId) {
@@ -678,6 +708,48 @@ mod tests {
             }
         }
         assert_eq!(reg.live_count(), 0, "registry must not leak dead ptys");
+    }
+
+    #[tokio::test]
+    async fn an_ended_process_can_still_be_replayed_until_let_go() {
+        let reg = Registry::new();
+        let mut rx = reg.subscribe();
+        let id = reg
+            .spawn(spec(7, &["sh", "-c", "echo last-words; sleep 0.2; exit 3"]))
+            .unwrap();
+        loop {
+            match tokio::time::timeout(Duration::from_secs(10), rx.recv()).await {
+                Ok(Ok(PtyEvent::Exited { .. })) => break,
+                Ok(Ok(_)) => {}
+                Ok(Err(_)) | Err(_) => panic!("never saw Exited"),
+            }
+        }
+        assert!(reg.attach_snapshot(id, None).is_none(), "the process is gone");
+
+        let (pty, (_, data, _)) = reg.ended_snapshot(7, None).expect("history kept");
+        assert_eq!(pty, id);
+        assert!(String::from_utf8_lossy(&data).contains("last-words"));
+
+        reg.keep_ended(|_, _| true);
+        assert!(reg.ended_snapshot(7, None).is_some());
+        reg.keep_ended(|pane, _| pane != 7);
+        assert!(reg.ended_snapshot(7, None).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_killed_process_leaves_no_history() {
+        let reg = Registry::new();
+        let mut rx = reg.subscribe();
+        let id = reg.spawn(spec(7, &["sleep", "5"])).unwrap();
+        reg.kill(id);
+        loop {
+            match tokio::time::timeout(Duration::from_secs(10), rx.recv()).await {
+                Ok(Ok(PtyEvent::Exited { .. })) => break,
+                Ok(Ok(_)) => {}
+                Ok(Err(_)) | Err(_) => panic!("never saw Exited"),
+            }
+        }
+        assert!(reg.ended_snapshot(7, None).is_none(), "its pane closed");
     }
 
     #[tokio::test]

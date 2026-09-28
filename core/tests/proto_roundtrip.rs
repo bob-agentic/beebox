@@ -68,6 +68,7 @@ fn resync_carries_mode_prefix_and_offset() {
     // Replay must re-establish alt screen / bracketed paste / app cursor keys,
     // which a raw ring tail would have lost.
     let frame = Out::Resync {
+        pane: 5,
         pty: 2,
         modes: b"\x1b[?1049h\x1b[?2004h".to_vec(),
         data: b"partial output".to_vec(),
@@ -76,7 +77,8 @@ fn resync_carries_mode_prefix_and_offset() {
     let bytes = rmp_serde::to_vec_named(&frame).unwrap();
 
     match rmp_serde::from_slice::<Out>(&bytes).unwrap() {
-        Out::Resync { pty, modes, through, .. } => {
+        Out::Resync { pane, pty, modes, through, .. } => {
+            assert_eq!(pane, 5);
             assert_eq!(pty, 2);
             assert_eq!(modes, b"\x1b[?1049h\x1b[?2004h");
             assert_eq!(through, 1_048_576);

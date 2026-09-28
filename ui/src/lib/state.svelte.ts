@@ -3,6 +3,7 @@
 // component is rebuilt whenever the layout around it changes, and its history
 // must outlive that (see pane-term.ts).
 
+import { SvelteSet } from 'svelte/reactivity';
 import { markRead, pruneRead } from './agent-status';
 import { Conn } from './conn';
 import { settings } from './settings.svelte';
@@ -80,8 +81,11 @@ class Store {
   }
 
   /** Terminals by pane id: made when a pane first mounts, disposed when it
-      leaves the tree. */
+      leaves the tree — or when it has been out of sight a while (`release`). */
   private terms = new Map<PaneId, PaneTerm>();
+  /** Panes whose terminal was let go while hidden. Their output is dropped
+      rather than held: the daemon has it all, and sends it again on show. */
+  readonly released = new SvelteSet<PaneId>();
   /** Output for panes that have not mounted yet. */
   private buffered = new Map<PaneId, Uint8Array[]>();
   /** pty -> pane, so output frames can be routed without a tree lookup. */
@@ -216,11 +220,10 @@ class Store {
         break;
       }
       case 'resync': {
-        const pane = this.ptyToPane.get(msg.pty);
-        if (pane === undefined) {
-          this.holdEarly(msg);
-          break;
-        }
+        // By pane, not pty: a pane whose process ended is replayed too, and
+        // no tree names its pty. Output held for the pty is in the snapshot.
+        const pane = msg.pane;
+        this.early.delete(msg.pty);
         // Reset, re-establish terminal modes, then replay. Without the mode
         // prefix the client would send the wrong bytes for arrow keys and
         // pastes — see ARCHITECTURE.md §5a.
@@ -310,6 +313,9 @@ class Store {
     for (const id of this.buffered.keys()) {
       if (!live.has(id)) this.buffered.delete(id);
     }
+    for (const id of this.released) {
+      if (!live.has(id)) this.released.delete(id);
+    }
     // The pane is gone, not just moved: its component will not be back.
     for (const [id, t] of this.terms) {
       if (!live.has(id)) {
@@ -355,7 +361,20 @@ class Store {
     // Anything that arrived before there was a terminal to hold it.
     for (const chunk of this.buffered.get(pane) ?? []) t.term.write(chunk);
     this.buffered.delete(pane);
+    if (this.released.delete(pane)) this.send({ t: 'replay', pane });
     return t;
+  }
+
+  /** Lets go of a hidden pane's terminal — a terminal's memory is its
+      scrollback, some 24 MB per ten thousand lines at 175 columns, and most
+      panes are in tabs nobody is looking at. The daemon has all of it, even
+      for a process that has ended, and replays it when the pane is shown. */
+  release(pane: PaneId) {
+    const t = this.terms.get(pane);
+    if (!t) return;
+    t.dispose();
+    this.terms.delete(pane);
+    this.released.add(pane);
   }
 
   /** Called by a Pane as it mounts, to put the pane's terminal on screen. */
@@ -368,11 +387,11 @@ class Store {
     if (this.focused === pane) this.applyFocus();
   }
 
-  /** Holds a frame for a pty not in the tree yet. Bounded both ways: a pty
+  /** Holds output for a pty not in the tree yet. Bounded both ways: a pty
       that never appears — one whose pane closed as it spoke — must not
-      grow without end. A resync replaces whatever came before it. */
+      grow without end. */
   private holdEarly(msg: Out & { pty: number }) {
-    const held = msg.t === 'resync' ? [] : (this.early.get(msg.pty) ?? []);
+    const held = this.early.get(msg.pty) ?? [];
     if (held.length >= 256) return;
     held.push(msg);
     this.early.delete(msg.pty);
@@ -386,6 +405,7 @@ class Store {
       t.term.write(data);
       return;
     }
+    if (this.released.has(pane)) return;
     // Not mounted yet: hold it so first paint is not blank. Bounded, because
     // a pane in a background tab may never mount.
     const buf = this.buffered.get(pane) ?? [];

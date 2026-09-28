@@ -420,12 +420,7 @@ async fn serve(
     // rather than a blank terminal. `modes` restores alt screen / bracketed
     // paste / application cursor keys, which a raw tail would have lost.
     for pane in app.visible(&grant).await {
-        if let Some(pty) = app.pty_of(pane).await {
-            if let Some((modes, data, through)) = app.ptys.attach_snapshot(pty, replay) {
-                floor.insert(pty, through);
-                let _ = tx.send(Out::Resync { pty, modes, data, through }).await;
-            }
-        }
+        resync(&app, pane, replay, &mut floor, &tx).await;
     }
 
     loop {
@@ -468,12 +463,7 @@ async fn serve(
                 // the snapshot already holds — hence the floor.
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                     for pane in app.visible(&grant).await {
-                        if let Some(pty) = app.pty_of(pane).await {
-                            if let Some((modes, data, through)) = app.ptys.attach_snapshot(pty, replay) {
-                                floor.insert(pty, through);
-                                let _ = tx.send(Out::Resync { pty, modes, data, through }).await;
-                            }
-                        }
+                        resync(&app, pane, replay, &mut floor, &tx).await;
                     }
                 }
                 Err(_) => break,
@@ -537,6 +527,13 @@ async fn serve(
                 let Message::Binary(bytes) = msg else { continue };
                 let Ok(inbound) = rmp_serde::from_slice::<In>(&bytes) else { continue };
 
+                // Here rather than in `handle`: the floor is this loop's.
+                if let In::Replay { pane } = inbound {
+                    if app.visible(&grant).await.contains(&pane) {
+                        resync(&app, pane, replay, &mut floor, &tx).await;
+                    }
+                    continue;
+                }
                 if handle(&app, &grant, sizing, inbound, &tx).await.is_break() {
                     break;
                 }
@@ -547,6 +544,27 @@ async fn serve(
     app.remove_conn(session).await;
     drop(tx);
     let _ = writer.await;
+}
+
+/// Sends a pane's history, from which the stream carries on: output up to the
+/// snapshot's end is dropped from it, being in the snapshot already.
+async fn resync(
+    app: &Arc<App>,
+    pane: PaneId,
+    replay: Option<usize>,
+    floor: &mut HashMap<PtyId, u64>,
+    tx: &mpsc::Sender<Out>,
+) {
+    // A process that ended is found among the ended — even one still named
+    // by the pane, whose exit the tree has yet to note.
+    let live = app.pty_of(pane).await;
+    let snap = live
+        .and_then(|pty| Some((pty, app.ptys.attach_snapshot(pty, replay)?)))
+        .or_else(|| app.ptys.ended_snapshot(pane, replay));
+    if let Some((pty, (modes, data, through))) = snap {
+        floor.insert(pty, through);
+        let _ = tx.send(Out::Resync { pane, pty, modes, data, through }).await;
+    }
 }
 
 async fn handle(

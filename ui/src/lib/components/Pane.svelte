@@ -5,7 +5,7 @@
   // is only what belongs to this place on screen — measuring it, and watching
   // it change size.
 
-  import { onMount } from 'svelte';
+  import { untrack } from 'svelte';
   import { store } from '../state.svelte';
   import { settings } from '../settings.svelte';
   import type { PaneView } from '../proto';
@@ -84,7 +84,24 @@
     unread = isUnread(pane.id, pane.status);
   });
 
-  onMount(() => {
+  // Out of sight this long, the pane lets go of its terminal (`release` in
+  // the store). Long enough that flicking between tabs never waits on a
+  // replay.
+  const RELEASE_AFTER = 60_000;
+  $effect(() => {
+    if (shown) return;
+    const timer = setTimeout(() => store.release(pane.id), RELEASE_AFTER);
+    return () => clearTimeout(timer);
+  });
+
+  // With a terminal, or waiting to be shown to get one back. A derived, so
+  // taking the pane off the released list as it binds does not bind it again.
+  const bound = $derived(shown || !store.released.has(pane.id));
+  $effect(() => {
+    if (bound) return untrack(bind);
+  });
+
+  function bind() {
     const t = store.terminal(pane.id);
     const term = t.term;
     pt = t;
@@ -149,13 +166,17 @@
     ro.observe(host);
 
     // Only this mount's part. The terminal stays with the store until the
-    // pane leaves the tree.
+    // pane leaves the tree, or is released.
     return () => {
       ro.disconnect();
       reportSize = null;
+      pt = null;
+      // They hold the terminal, which a released pane has to let go of.
+      delete (host as any).__serialize;
+      delete (host as any).__type;
       t.detach(host);
     };
-  });
+  }
 </script>
 
 <!-- Background comes from the theme, not a constant: on a light theme a
