@@ -2,6 +2,7 @@
   import { store } from '../state.svelte';
   import { sortable } from '../dragsort.svelte';
   import { agentBadge, rollupWithUnread } from '../agent-status';
+  import { tabLabel as label } from '../labels';
   import type { Shelf, TabId, TabView } from '../proto';
   import StatusIcon from './StatusIcon.svelte';
   import Icon from './Icon.svelte';
@@ -10,21 +11,6 @@
     // readRev makes this re-derive when a pane is marked read in this browser.
     void store.readRev;
     return rollupWithUnread(tab.panes);
-  }
-
-  /** A shell's OSC title is "user@host:/path", which tells you nothing you
-      did not already know. Priority: the user's own name for the tab, then
-      the focused agent session's title, then the running command, then the
-      folder — never the hostname. */
-  function label(tab: TabView): string {
-    if (tab.title) return tab.title;
-    const session = tab.panes.find((p) => p.session_title)?.session_title;
-    if (session) return session;
-    const p = tab.panes[0];
-    if (!p) return 'shell';
-    const t = p.title ?? '';
-    if (t && !/^[\w.-]+@[\w.-]+[:\s]/.test(t)) return t;
-    return p.cwd.split('/').filter(Boolean).pop() || 'shell';
   }
 
   function agent(tab: TabView): string {

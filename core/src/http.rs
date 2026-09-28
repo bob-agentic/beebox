@@ -103,6 +103,8 @@ pub fn router(app: Arc<App>, ui: Option<std::path::PathBuf>) -> Router {
     // The exposure gate. Loopback is always served (the terminal itself rides
     // on this server); everyone else gets nothing until the owner flips the
     // Web Server toggle. Checked per request, so flipping it needs no rebind.
+    // A 503, not a 404: the phone app forgets a link that answers 404, and
+    // sharing is off after every restart — "not now" must not read as "gone".
     let gate = axum::middleware::from_fn_with_state(
         app.clone(),
         |State(app): State<Arc<App>>,
@@ -110,7 +112,7 @@ pub fn router(app: Arc<App>, ui: Option<std::path::PathBuf>) -> Router {
          req: axum::extract::Request,
          next: axum::middleware::Next| async move {
             if !addr.ip().is_loopback() && !app.is_exposed() {
-                return not_found();
+                return plain_page(StatusCode::SERVICE_UNAVAILABLE, "This service isn’t available right now.");
             }
             next.run(req).await
         },
@@ -121,21 +123,29 @@ pub fn router(app: Arc<App>, ui: Option<std::path::PathBuf>) -> Router {
 /// What anything unknown, revoked or not let in gets: a page that could have
 /// come from any web server. Nothing in it says what is running here, so
 /// probing the port teaches nobody that a terminal sits behind it.
-const NOT_FOUND_HTML: &str = r#"<!doctype html>
+const PLAIN_HTML: &str = r#"<!doctype html>
 <html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>404 Not Found</title>
+<title>{code} {reason}</title>
 <style>
 html,body{margin:0;height:100%;background:#0f0f13;color:#8b8b95;font-family:system-ui,-apple-system,sans-serif}
 body{display:flex;align-items:center;justify-content:center;text-align:center}
 b{display:block;font:600 56px ui-monospace,Menlo,monospace;color:#3a3a44;letter-spacing:4px}
 p{margin:10px 0 0;font-size:14px}
 </style></head>
-<body><div><b>404</b><p>This page isn’t available.</p></div></body></html>
+<body><div><b>{code}</b><p>{text}</p></div></body></html>
 "#;
 
 pub fn not_found() -> Response {
-    (StatusCode::NOT_FOUND, Html(NOT_FOUND_HTML)).into_response()
+    plain_page(StatusCode::NOT_FOUND, "This page isn’t available.")
+}
+
+fn plain_page(status: StatusCode, text: &str) -> Response {
+    let html = PLAIN_HTML
+        .replace("{code}", status.as_str())
+        .replace("{reason}", status.canonical_reason().unwrap_or(""))
+        .replace("{text}", text);
+    (status, Html(html)).into_response()
 }
 
 async fn index_html(ui: Option<std::path::PathBuf>, app: &App, key: Option<String>) -> Response {

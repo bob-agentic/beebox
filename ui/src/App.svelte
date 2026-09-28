@@ -1,6 +1,7 @@
 <script lang="ts">
   import { fade } from 'svelte/transition';
   import { store } from './lib/state.svelte';
+  import { paneLabel, tabLabel } from './lib/labels';
   import Sidebar, { FOLD_MS } from './lib/components/Sidebar.svelte';
   import TabBar from './lib/components/TabBar.svelte';
   import SplitTree from './lib/components/SplitTree.svelte';
@@ -45,6 +46,28 @@
       methods, and conflating them would mean each having to answer for the
       other's. */
   const appShell = () => (window as any).__beeboxShell;
+
+  /** What this link shows, by name, for the phone app's list of recent
+      links — several links to one machine look alike by address alone. The
+      scope is in the path; the tree it sends is already cut down to it. */
+  function shareName(): string | null {
+    const ws = store.tree.workspaces[0];
+    const tab = ws?.tabs[0];
+    switch (location.pathname.split('/')[1]) {
+      case 'w':
+        return ws?.name ?? null;
+      case 't':
+        return tab ? tabLabel(tab) : null;
+      case 'p':
+        return tab?.panes[0] ? paneLabel(tab.panes[0]) : null;
+      default:
+        return null;
+    }
+  }
+  $effect(() => {
+    const name = shareName();
+    if (name) appShell()?.named?.(name);
+  });
 
   /** Opening a workspace means choosing a folder — that is the whole model. Use
       the native folder chooser when the shell offers one; otherwise fall back
