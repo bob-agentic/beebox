@@ -49,6 +49,10 @@ dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.activity:activity-ktx:1.9.3")
+    // Material's Snackbar and progress indicator for the connect screen. R8
+    // keeps only what is used, so the cost is about 1.2 MB of APK and
+    // nothing at runtime once connected — the session is the WebView.
+    implementation("com.google.android.material:material:1.12.0")
     // The scanner. ML Kit's bundled model keeps the first scan offline — a LAN
     // tool that needs the internet to read its own code would be absurd.
     implementation("com.google.mlkit:barcode-scanning:17.3.0")

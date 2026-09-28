@@ -1,9 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.BeeBox" parent="Theme.AppCompat.DayNight.NoActionBar">
+    <!-- Material 3, dark to match the page it hosts, in the app's own
+         colours. Only the connect screen and its dialogs use it. -->
+    <style name="Theme.BeeBox" parent="Theme.Material3.Dark.NoActionBar">
         <item name="android:windowBackground">@color/bg</item>
+        <item name="android:colorBackground">@color/bg</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
-        <item name="colorAccent">@color/accent</item>
+        <item name="colorPrimary">@color/accent</item>
+        <item name="colorOnPrimary">@color/bg</item>
+        <item name="colorSurface">@color/bg</item>
+        <item name="colorSurfaceContainerHigh">@color/panel</item>
+        <item name="colorOnSurface">@color/fg</item>
+        <item name="colorOnSurfaceVariant">@color/dim</item>
+        <!-- The snackbar: light on the dark screen, as Material has it. -->
+        <item name="colorSurfaceInverse">@color/fg</item>
+        <item name="colorOnSurfaceInverse">@color/bg</item>
+        <item name="colorPrimaryInverse">@color/accent_inverse</item>
     </style>
 </resources>

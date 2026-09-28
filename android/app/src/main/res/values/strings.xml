@@ -9,7 +9,25 @@
     <string name="connect">Connect</string>
     <string name="link_hint">beebox://192.168.1.10:17788/t/…</string>
     <string name="bad_link">That doesn\'t look like a BeeBox link</string>
-    <string name="link_gone">This link isn\'t available</string>
-    <string name="unreachable">Couldn\'t reach BeeBox: %1$s</string>
+    <string name="connecting">Connecting…</string>
+    <string name="unreachable">Can\'t reach BeeBox</string>
+    <string name="unreachable_tips">• Same Wi-Fi or VPN as the computer?\n• Is BeeBox running there?</string>
+    <string name="sharing_off">Sharing is off</string>
+    <string name="sharing_off_detail">Turn on Web Server in BeeBox on the computer, then retry.</string>
+    <string name="link_gone">Link no longer valid</string>
+    <string name="link_gone_detail">It was revoked, or another device is using it. Removed from Recent — ask for a new link.</string>
+    <string name="http_error">BeeBox answered with an error</string>
+    <string name="http_error_detail">HTTP %1$d</string>
+    <string name="retry">Retry</string>
+    <string name="back">Back</string>
+    <string name="scan_new">Scan a new code</string>
+    <string name="recent">Recent</string>
+    <string name="recent_name">%1$s · %2$s</string>
+    <string name="forget">Forget this link</string>
+    <string name="scope_all">All workspaces</string>
+    <string name="scope_workspace">Workspace</string>
+    <string name="scope_tab">Tab</string>
+    <string name="scope_pane">Pane</string>
+    <string name="scope_owner">Owner</string>
     <string name="no_handler">No app can open that link</string>
 </resources>

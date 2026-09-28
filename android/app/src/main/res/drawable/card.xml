@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A panel with nothing to tap: the address and the checklist on the status screen. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android">
+    <solid android:color="@color/panel" />
+    <corners android:radius="8dp" />
+</shape>

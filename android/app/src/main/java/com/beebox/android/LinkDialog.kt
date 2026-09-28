@@ -4,7 +4,7 @@ import android.app.Activity
 import android.text.InputType
 import android.widget.EditText
 import android.widget.FrameLayout
-import androidx.appcompat.app.AlertDialog
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 
 /** Typing the link out, for when there is no code to point a camera at. */
 object LinkDialog {
@@ -15,14 +15,14 @@ object LinkDialog {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
             setSingleLine()
         }
-        // AlertDialog gives an EditText no margins of its own.
+        // A dialog gives an EditText no margins of its own.
         val pad = (activity.resources.displayMetrics.density * 20).toInt()
         val holder = FrameLayout(activity).apply {
             setPadding(pad, pad / 2, pad, 0)
             addView(field)
         }
 
-        AlertDialog.Builder(activity)
+        MaterialAlertDialogBuilder(activity)
             .setTitle(R.string.paste)
             .setView(holder)
             .setPositiveButton(R.string.connect) { _, _ ->

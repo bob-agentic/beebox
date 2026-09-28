@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:id="@+id/root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
@@ -12,11 +13,19 @@
         android:layout_height="match_parent"
         android:visibility="gone" />
 
-    <!-- Shown when there is no session: scan a code, or paste a link. -->
-    <LinearLayout
+    <!-- Shown when there is no session: scan a code, paste a link, or go
+         back through one used before. Scrolls, because five recent links
+         and the buttons outgrow a phone held sideways. -->
+    <ScrollView
         android:id="@+id/connect"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
+        android:fillViewport="true"
+        android:scrollbars="none">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
         android:orientation="vertical"
         android:gravity="center"
         android:padding="32dp">
@@ -45,17 +54,6 @@
             android:textSize="13sp"
             android:gravity="center" />
 
-        <!-- Why we are back here, when it was not by choice. -->
-        <TextView
-            android:id="@+id/status"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:textColor="@color/warn"
-            android:textSize="13sp"
-            android:gravity="center"
-            android:visibility="gone" />
-
         <Button
             android:id="@+id/scan"
             android:layout_width="match_parent"
@@ -71,6 +69,133 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="10dp"
             android:text="@string/paste"
+            android:backgroundTint="@color/panel"
+            android:textColor="@color/fg" />
+
+        <TextView
+            android:id="@+id/recent_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="28dp"
+            android:text="@string/recent"
+            android:textColor="@color/dim"
+            android:textSize="12sp"
+            android:visibility="gone" />
+
+        <LinearLayout
+            android:id="@+id/recent"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical" />
+    </LinearLayout>
+    </ScrollView>
+
+    <!-- One link on its way: connecting, or why it did not. A screen of its
+         own rather than a line on the one above, because a failure is read
+         and acted on, and that wants room and buttons within reach. -->
+    <LinearLayout
+        android:id="@+id/status"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:padding="32dp"
+        android:visibility="gone">
+
+        <ScrollView
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:fillViewport="true"
+            android:scrollbars="none">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <FrameLayout
+                    android:id="@+id/status_icon"
+                    android:layout_width="64dp"
+                    android:layout_height="64dp"
+                    android:background="@drawable/disc">
+
+                    <com.google.android.material.progressindicator.CircularProgressIndicator
+                        android:id="@+id/status_spin"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_gravity="center"
+                        android:indeterminate="true"
+                        app:indicatorSize="30dp"
+                        app:trackThickness="3dp" />
+
+                    <TextView
+                        android:id="@+id/status_mark"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_gravity="center"
+                        android:textSize="28sp"
+                        android:textStyle="bold" />
+                </FrameLayout>
+
+                <TextView
+                    android:id="@+id/status_title"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="20dp"
+                    android:gravity="center"
+                    android:textColor="@color/fg"
+                    android:textSize="19sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/status_host"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:background="@drawable/card"
+                    android:fontFamily="monospace"
+                    android:paddingHorizontal="8dp"
+                    android:paddingVertical="3dp"
+                    android:textColor="@color/fg"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:id="@+id/status_detail"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:gravity="center"
+                    android:lineSpacingMultiplier="1.3"
+                    android:textColor="@color/dim"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:id="@+id/status_tips"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="20dp"
+                    android:background="@drawable/card"
+                    android:lineSpacingMultiplier="1.5"
+                    android:padding="14dp"
+                    android:text="@string/unreachable_tips"
+                    android:textColor="@color/dim"
+                    android:textSize="13sp" />
+            </LinearLayout>
+        </ScrollView>
+
+        <Button
+            android:id="@+id/status_primary"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:backgroundTint="@color/accent"
+            android:textColor="@color/bg" />
+
+        <Button
+            android:id="@+id/status_secondary"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
             android:backgroundTint="@color/panel"
             android:textColor="@color/fg" />
     </LinearLayout>

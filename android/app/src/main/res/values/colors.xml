@@ -7,5 +7,11 @@
     <color name="fg">#e6edf3</color>
     <color name="dim">#8b949e</color>
     <color name="accent">#3fb950</color>
+    <color name="accent_inverse">#1a7f37</color>
+    <!-- The status screen's icon: a mark on a dark disc of its own hue. -->
+    <color name="accent_bg">#12261a</color>
     <color name="warn">#d29922</color>
+    <color name="warn_bg">#2b2210</color>
+    <color name="err">#f85149</color>
+    <color name="err_bg">#2a1215</color>
 </resources>
