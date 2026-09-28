@@ -2,7 +2,7 @@ import AppKit
 import WebKit
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate {
     private var window: NSWindow!
     private var web: ShellWebView!
     private let bridge = Bridge()
@@ -13,6 +13,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     private var mouseMonitor: Any?
     private var selfTest: SelfTest?
     private var screenshotPath: String?
+    /// Whether quitting asks first. Not for automated runs, which have no one
+    /// to ask, nor after a failure has already said why the app is going.
+    private var confirmQuit = false
 
     /// Where the daemon listens. Every interface by default — but the daemon
     /// refuses non-loopback clients until the owner flips the in-app
@@ -46,7 +49,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         web.navigationDelegate = self
         web.uiDelegate = webUI
         window = WindowChrome.makeWindow(content: web)
+        window.delegate = self
         bridge.window = window
+        confirmQuit = !isIsolatedRun
 
         // `performDrag(with:)` needs a genuine mouse-down, and by the time the
         // page has asked for a drag the current event is something else.
@@ -90,6 +95,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    /// Closing the one window is quitting, so it asks the same question —
+    /// before the window goes, so that saying no leaves it where it was.
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        NSApp.terminate(nil)
+        return false
+    }
+
+    /// The terminals live in the daemon, and the daemon goes with the app, so
+    /// quitting ends everything running in them. iTerm2 asks too.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let key = "skipQuitConfirmation"
+        guard confirmQuit, !UserDefaults.standard.bool(forKey: key) else { return .terminateNow }
+        let alert = NSAlert()
+        alert.messageText = "Quit BeeBox?"
+        alert.informativeText = "Every terminal will close, along with anything running in it."
+        alert.addButton(withTitle: "Quit")
+        alert.addButton(withTitle: "Cancel")
+        alert.showsSuppressionButton = true
+        alert.suppressionButton?.title = "Don't ask again"
+        guard alert.runModal() == .alertFirstButtonReturn else { return .terminateCancel }
+        if alert.suppressionButton?.state == .on {
+            UserDefaults.standard.set(true, forKey: key)
+        }
+        return .terminateNow
+    }
 
     func applicationWillTerminate(_ notification: Notification) {
         if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
@@ -236,6 +267,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     }
 
     private func fail(_ message: String, detail: String) {
+        confirmQuit = false
         if CommandLine.arguments.contains("--self-test") {
             FileHandle.standardError.write(Data("\(message)\n\(detail)\n".utf8))
             exit(1)
