@@ -107,7 +107,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     /// quitting ends everything running in them. iTerm2 asks too.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let key = "skipQuitConfirmation"
-        guard confirmQuit, !UserDefaults.standard.bool(forKey: key) else { return .terminateNow }
+        // Logging out or shutting down quits with a reason; asking then would
+        // hold the whole Mac up behind this dialog.
+        let bySystem = NSAppleEventManager.shared().currentAppleEvent?
+            .attributeDescriptor(forKeyword: kAEQuitReason) != nil
+        guard confirmQuit, !bySystem, !UserDefaults.standard.bool(forKey: key) else { return .terminateNow }
         let alert = NSAlert()
         alert.messageText = "Quit BeeBox?"
         alert.informativeText = "Every terminal will close, along with anything running in it."
