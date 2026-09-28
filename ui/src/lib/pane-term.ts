@@ -13,12 +13,24 @@
 import { Terminal, type ITerminalAddon } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
+import { WebLinksAddon } from '@xterm/addon-web-links';
 import { settings } from './settings.svelte';
 import { fileLinkProvider } from './file-links';
 import { sentRows } from './sent-messages';
 
 /** The Mac shell's WKWebView, which needs its own renderer and fixes. */
 const macShell = '__BEEBOX__' in window;
+
+/** Opens a web link clicked in a terminal, printed plain or as an OSC 8
+    hyperlink. In the Mac shell it takes ⌘, as file links do — a plain click
+    belongs to selecting text — and goes to the default browser through the
+    shell, since a WKWebView opens no windows of its own. Elsewhere a click
+    is enough: the phone has no ⌘, and its app sends the page to the system. */
+function openLink(e: MouseEvent, uri: string) {
+  if (!/^https?:\/\//i.test(uri)) return;
+  if (!macShell) window.open(uri, '_blank', 'noopener');
+  else if (e.metaKey) void (window as any).__BEEBOX__.openUrl({ url: uri });
+}
 
 export interface TermWiring {
   /** What the user typed, as xterm hands it over. */
@@ -63,15 +75,18 @@ export class PaneTerm {
       cursorBlink: cfg.cursorBlink,
       allowProposedApi: true,
       // How much history this browser holds ready to scroll through. Costs
-      // about 2 MB per ten thousand lines, per pane, and every pane pays it
-      // whether or not its tab is in front — which is why it is a setting
-      // rather than the ring's full 200k. The daemon keeps everything either
-      // way; this is the client's share.
+      // about 12 bytes a cell — 24 MB per ten thousand lines at 175 columns,
+      // whatever is on them — which is why it is a setting rather than the
+      // ring's full 200k, and why a hidden pane's terminal is let go (see
+      // `release` in the store). The daemon keeps everything either way; this
+      // is the client's share.
       scrollback: cfg.scrollback,
       theme: settings.xterm,
+      linkHandler: { activate: openLink },
     });
     this.term = term;
     term.loadAddon(this.fit);
+    term.loadAddon(new WebLinksAddon(openLink));
 
     // Lets the end-to-end tests read what the terminal is actually showing.
     // The renderers draw to a canvas, so there is nothing in the DOM to assert on.

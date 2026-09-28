@@ -47,6 +47,16 @@ describe('findPaths', () => {
     ]);
   });
 
+  it('takes the path after an assignment', () => {
+    const text = 'cd x && DOC=/a/docs/ARCH.md go test --file=b/c.ts';
+    expect(paths(text)).toEqual([
+      ['/a/docs/ARCH.md', undefined, undefined],
+      ['b/c.ts', undefined, undefined],
+    ]);
+    const [m] = findPaths(text);
+    expect(text.slice(m.start, m.end)).toBe('/a/docs/ARCH.md');
+  });
+
   it('leaves out words, numbers and URLs', () => {
     expect(paths('done in 0.2.0 — 93% of https://x.dev/a.js')).toEqual([]);
   });

@@ -66,6 +66,15 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
                 FileLinks.open(path, line: body["line"] as? Int, col: body["col"] as? Int)
             }
             reply(nil, nil)
+        case "openUrl":
+            // Web links only: the page has no business launching apps by
+            // scheme on this Mac.
+            if let text = body["url"] as? String, let url = URL(string: text),
+               ["http", "https"].contains(url.scheme?.lowercased() ?? "")
+            {
+                NSWorkspace.shared.open(url)
+            }
+            reply(nil, nil)
         case "hoverFile":
             web?.hoveredFile = body["path"] as? String
             reply(nil, nil)

@@ -28,15 +28,18 @@ const BARE = /^(?:[\w@+-][\w.@+-]*\.[A-Za-z]\w*|\.[A-Za-z][\w.-]*)$/;
 export function findPaths(text: string): PathMatch[] {
   const out: PathMatch[] = [];
   for (const m of text.matchAll(TOKEN)) {
-    const token = m[0];
+    // `DOC=/a/b.md` and `--file=a.md`: the path is what follows the `=`.
+    const lead = /^-*[A-Za-z_][\w-]*=/.exec(m[0])?.[0].length ?? 0;
+    const token = m[0].slice(lead);
+    const at = m.index + lead;
     if (token.includes('://')) continue;
     const p = PARTS.exec(token);
     if (!p) continue;
     const [, whole, path, line, col] = p;
     if (!/\w/.test(path) || !(path.includes('/') || BARE.test(path))) continue;
     out.push({
-      start: m.index,
-      end: m.index + whole.length,
+      start: at,
+      end: at + whole.length,
       path,
       line: line ? +line : undefined,
       col: col ? +col : undefined,

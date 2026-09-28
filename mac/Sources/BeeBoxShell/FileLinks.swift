@@ -1,8 +1,9 @@
 import AppKit
 
-/// Paths printed in a terminal: which of them are real files, and opening one.
+/// Paths printed in a terminal: which of them are real, and opening one.
 enum FileLinks {
-    /// The absolute path of each entry that names an existing file, or nil.
+    /// The absolute path of each entry that names an existing file or
+    /// directory, or nil.
     ///
     /// A relative path is tried against the shell's directory, then against its
     /// repository's root: an agent prints paths from the root even when the
@@ -14,15 +15,26 @@ enum FileLinks {
             let candidates = path.hasPrefix("/")
                 ? [path]
                 : bases.map { ($0 as NSString).appendingPathComponent(path) }
-            return candidates.first(where: isFile).map { ($0 as NSString).standardizingPath }
+            return candidates.first(where: exists).map { ($0 as NSString).standardizingPath }
         }
     }
 
     /// Opens in VS Code at the line, or with the file's default app when VS
-    /// Code is not installed.
+    /// Code is not installed. A directory opens in Finder: VS Code would take
+    /// it as a project and open a whole window.
     static func open(_ path: String, line: Int?, col: Int?) {
-        guard isFile(path) else { return }
+        guard exists(path) else { return }
         let workspace = NSWorkspace.shared
+        if !isFile(path) {
+            let dir = URL(fileURLWithPath: path, isDirectory: true)
+            // An `.app` is a directory too, and opening one launches it.
+            if workspace.isFilePackage(atPath: path) {
+                workspace.activateFileViewerSelecting([dir])
+            } else {
+                workspace.open(dir)
+            }
+            return
+        }
         var url = URLComponents()
         url.scheme = "vscode"
         url.host = "file"
@@ -39,6 +51,10 @@ enum FileLinks {
         } else {
             workspace.open(file)
         }
+    }
+
+    private static func exists(_ path: String) -> Bool {
+        FileManager.default.fileExists(atPath: path)
     }
 
     private static func isFile(_ path: String) -> Bool {

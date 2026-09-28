@@ -130,9 +130,11 @@ it's dead. To give someone access, send a **share link**, not this URL.
   link belongs to the first device that opens it; every paired device is listed
   under Connections until you disconnect it. A scanned code lets the phone set
   the terminal's width.
-- **Open files from the terminal (macOS).** ⌘-click a path an agent printed to
-  open it in VS Code at that line; right-click it to reveal it in Finder. Links
-  appear only over files that exist.
+- **Open files and links from the terminal.** ⌘-click a path an agent printed to
+  open it in VS Code at that line, or a directory to open it in Finder;
+  right-click either to reveal it in Finder. Links appear only over paths that
+  exist (macOS app). Web links open in the browser — ⌘-click in the macOS app,
+  a plain click elsewhere.
 - **Panes close when their shell does.** `exit` closes the pane, as in iTerm2. A
   non-zero exit leaves it open with its output and a Restart button.
 - **607 themes**, from Ghostty's set, with the window chrome derived from each.
@@ -153,12 +155,15 @@ it's dead. To give someone access, send a **share link**, not this URL.
 | `⇧⌘[` / `⇧⌘]` | Previous / next tab |
 | `⌘B` | Fold / unfold the sidebar |
 | `⌘,` | Settings |
+| `⌘↑` / `⌘↓` | Previous / next message you sent (in Claude Code or Codex) |
 
 ### Mouse
 
 | | |
 |---|---|
 | `⌘`-click a file path | Open it in VS Code (macOS app) |
+| `⌘`-click a directory | Open it in Finder (macOS app) |
+| `⌘`-click a web link | Open it in the browser (a plain click outside the macOS app) |
 | Right-click a file path | Reveal in Finder (macOS app) |
 | Double-click a workspace / tab title | Rename |
 | Right-click a workspace | Menu: Rename / Close |

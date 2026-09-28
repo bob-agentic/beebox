@@ -127,6 +127,7 @@ enum WebHost {
             resolvePaths: (opts) => post('resolvePaths', opts),
             openFile: (opts) => post('openFile', opts),
             hoverFile: (opts) => post('hoverFile', opts),
+            openUrl: (opts) => post('openUrl', opts),
           };
         })();
         """
