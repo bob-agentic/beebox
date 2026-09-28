@@ -349,7 +349,7 @@
   }
   .tag.ok {
     background: color-mix(in srgb, var(--accent) 12%, transparent);
-    color: #86efac;
+    color: var(--accent);
   }
 
   .perm {
@@ -399,7 +399,7 @@
     border-radius: 7px;
     padding: 9px 11px;
     font: 11.5px ui-monospace, monospace;
-    color: #7dd3fc;
+    color: var(--fg);
     display: flex;
     align-items: center;
     gap: 8px;

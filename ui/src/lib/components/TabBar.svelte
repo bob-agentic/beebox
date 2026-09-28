@@ -502,7 +502,7 @@
     color: var(--accent);
   }
   .shelf-icon.phase-failed.unread {
-    color: var(--danger, #f85149);
+    color: var(--err);
   }
   @keyframes shelf-breathe {
     0%,
