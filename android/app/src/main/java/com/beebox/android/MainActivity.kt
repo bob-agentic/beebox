@@ -18,8 +18,6 @@ import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
-import androidx.webkit.WebViewCompat
-import androidx.webkit.WebViewFeature
 import androidx.core.view.WindowInsetsCompat
 
 /**
@@ -38,16 +36,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var status: TextView
 
     /** Set when the next page to finish should become the start of history,
-     *  so Back cannot walk into `about:blank` or into the previous session —
-     *  which would load without the marker, and so without the sizing. */
+     *  so Back cannot walk into `about:blank` or into the previous session. */
     private var freshHistory = false
 
     /** Where we last connected. A fold, a rotation, or the app being evicted
      *  should all come back to the same terminal rather than the scanner. */
     private var current: String? = null
-
-    /** The injected marker, kept so it can be replaced rather than stacked. */
-    private var marker: androidx.webkit.ScriptHandler? = null
 
     private val scan = registerForActivityResult(ScanContract()) { url ->
         if (url != null) open(url)
@@ -128,32 +122,9 @@ class MainActivity : AppCompatActivity() {
     private fun open(url: String) {
         current = url
         freshHistory = true
-        announceSelf(url)
         connect.visibility = View.GONE
         web.visibility = View.VISIBLE
         web.loadUrl(url)
-    }
-
-    /** Says what this client is, before the page's bundle runs.
-     *
-     *  The page builds its socket URL at module scope — including whether it
-     *  may drive the terminal's size — so a marker delivered after load would
-     *  arrive too late to matter. The desktop shell does the same thing with
-     *  `__BEEBOX__`.
-     *
-     *  The origin has to be exact: a wildcard rule that omits the host is
-     *  rejected at runtime, so the rule is built per connection. The previous
-     *  one is dropped first — the script is additive, and re-registering
-     *  without clearing would stack a copy per session. */
-    private fun announceSelf(url: String) {
-        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
-        val origin = Links.origin(Uri.parse(url))
-        marker?.remove()
-        marker = WebViewCompat.addDocumentStartJavaScript(
-            web,
-            "window.__BEEBOX_APP__ = 'android';",
-            setOf(origin),
-        )
     }
 
     /** Back to the connect screen, saying why when there is a reason. A
@@ -191,7 +162,6 @@ class MainActivity : AppCompatActivity() {
         val params = web.layoutParams
         parent.removeView(web)
         web.destroy()
-        marker = null // it belonged to the dead view
         web = TerminalWebView(this).also { it.id = R.id.web }
         parent.addView(web, at, params)
         configure(web)
@@ -216,6 +186,11 @@ class MainActivity : AppCompatActivity() {
             // Only the daemon is ever loaded. API 29 still defaults these on.
             allowFileAccess = false
             allowContentAccess = false
+            // Says this is the phone app, the one client that sets the
+            // terminal's size (`is_phone_app` in core/src/http.rs). In the user
+            // agent because every request carries it — the socket included, so
+            // the daemon hears it, not only the page.
+            userAgentString = "$userAgentString BeeBoxApp/android"
         }
         web.isVerticalScrollBarEnabled = false
         web.isHorizontalScrollBarEnabled = false

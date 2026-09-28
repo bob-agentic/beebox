@@ -355,10 +355,10 @@ impl App {
     /// windows of different widths would flap it between them, repainting the
     /// whole TUI on every change. Normally that means the owner decides.
     ///
-    /// `sizing` lets a share link opt in: a phone is useless as a viewer of a
-    /// 175-column terminal, since the text arrives laid out for a screen it
-    /// does not have and overlaps itself. Such a link takes the terminal with
-    /// it, which is the trade the person sharing agreed to.
+    /// `sizing` is the phone app (`is_phone_app` in http.rs): a phone is
+    /// useless as a viewer of a 175-column terminal, since the text arrives
+    /// laid out for a screen it does not have and overlaps itself. It takes
+    /// the terminal with it, which is the trade the person sharing agreed to.
     pub async fn set_viewport(
         &self,
         grant: &Grant,
@@ -367,7 +367,9 @@ impl App {
         cols: u16,
         rows: u16,
     ) -> Option<(u16, u16)> {
-        if cols == 0 || rows == 0 {
+        // A pane outside the share is not the share's to size, whether or not
+        // anyone has sized it yet.
+        if cols == 0 || rows == 0 || !self.visible(grant).await.contains(&pane) {
             return None;
         }
         {
@@ -1233,12 +1235,12 @@ mod tests {
         // So would a writable one: size is not a write, it is ownership.
         let writable_viewer = shared(Scope::Pane(pane), true);
         assert!(a.set_viewport(&writable_viewer, false, pane, 40, 10).await.is_none());
-        // ...unless the link it came from was granted sizing: a phone cannot
-        // read a terminal laid out for a screen it does not have.
+        // ...unless it is the phone app: a phone cannot read a terminal laid
+        // out for a screen it does not have.
         assert_eq!(
             a.set_viewport(&writable_viewer, true, pane, 40, 10).await,
             Some((40, 10)),
-            "a link with sizing rights may resize the terminal"
+            "the phone app may resize the terminal"
         );
         // So may a whole-machine writable link: it shares the owner's view.
         let partner = shared(Scope::All, true);
@@ -1296,6 +1298,27 @@ mod tests {
             // switch has something to show.
             assert_eq!(a.visible(&viewer).await.len(), 2);
         }
+    }
+
+    #[tokio::test]
+    async fn no_one_sizes_a_pane_outside_their_share() {
+        let a = app().await;
+        let pane = {
+            let t = a.tree.lock().await;
+            t.workspaces[0].tabs[0].panes[0].id
+        };
+        a.handle_host(&a.owner_grant().await, In::Split { pane, dir: Dir::Horizontal })
+            .await
+            .unwrap();
+        let other = {
+            let t = a.tree.lock().await;
+            t.workspaces[0].tabs[0].panes[1].id
+        };
+
+        // Not sized by anyone yet, which is when a viewer's size would count.
+        let phone = shared(Scope::Pane(pane), true);
+        assert!(a.set_viewport(&phone, true, other, 40, 10).await.is_none());
+        assert_eq!(a.set_viewport(&phone, true, pane, 40, 10).await, Some((40, 10)));
     }
 
     #[tokio::test]

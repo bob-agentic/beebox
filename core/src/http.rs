@@ -205,11 +205,6 @@ struct WsQuery {
     /// less leaves its buffer half empty. Clamped, since it arrives from the
     /// page and a huge value would mean serialising the whole ring.
     replay: Option<usize>,
-    /// Lets this connection set the terminal's size, which normally only the
-    /// owner may do. For a phone: a 175-column layout on a 44-column screen
-    /// overlaps itself, so the choice is between resizing the terminal and
-    /// not being able to read it.
-    sizing: Option<bool>,
     /// The size this client will render at, if it already knows. A resizing
     /// client that only says so after mounting gets the replay at the old
     /// width and re-wraps it at the new one — which is where zsh's
@@ -285,7 +280,7 @@ async fn ws_upgrade(
     };
 
     let replay = q.replay;
-    let sizing = q.sizing.unwrap_or(false);
+    let sizing = is_phone_app(headers.get(axum::http::header::USER_AGENT));
     let first_size = q.cols.zip(q.rows);
     ws.on_upgrade(move |socket| serve(socket, app, grant, addr, replay, sizing, first_size))
 }
@@ -297,6 +292,18 @@ async fn refuse(mut socket: WebSocket) {
         let _ = socket.send(Message::Binary(bytes.into())).await;
     }
     let _ = socket.send(Message::Close(None)).await;
+}
+
+/// What the Android app adds to its WebView's user agent (`MainActivity`).
+const PHONE_APP_UA: &str = "BeeBoxApp/android";
+
+/// The phone app, which may set the terminal's size: a 175-column layout on a
+/// 44-column screen overlaps itself, so there the choice is between resizing
+/// the terminal and not being able to read it. A browser never may — not
+/// even with a flag in the URL, which anyone holding a link could add. From
+/// the header rather than the page, so a web page cannot claim it either.
+fn is_phone_app(ua: Option<&axum::http::HeaderValue>) -> bool {
+    ua.and_then(|v| v.to_str().ok()).is_some_and(|ua| ua.contains(PHONE_APP_UA))
 }
 
 /// A readable device label for the connection manager. Coarse on purpose: it

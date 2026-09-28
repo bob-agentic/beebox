@@ -55,10 +55,10 @@ class Store {
   /** Focused pane. Local to this browser: the server has no "current pane". */
   focused = $state<PaneId | null>(null);
 
-  /** True when this client may drive the terminal's size — `?phone=1`, which
-   *  the Android shell appends and the desktop offers as a checkbox. Only
-   *  such a client has any use for a re-fit control: everyone else's size is
-   *  the owner's, and asking for it again would change nothing. */
+  /** True in the phone app, the one client that drives the terminal's size
+   *  (`is_phone_app` in core/src/http.rs). Only it has any use for a re-fit
+   *  control: everyone else's size is the owner's, and asking for it again
+   *  would change nothing. */
   sizing = $state(false);
   share = $state<{ url: string; hosts: string[] } | null>(null);
   /** Daemon-owned Agents toggles. Owner-only; null until the server sends
@@ -125,17 +125,10 @@ class Store {
     // Sizing, for a screen the terminal was not laid out for. A phone shown a
     // 175-column terminal on a 44-column screen gets text overlapping itself —
     // it has to be able to resize the terminal to be readable at all. The cost
-    // is that the owner's window resizes with it, so it is not assumed.
-    //
-    // The native shell injects this before the bundle runs, which is the whole
-    // reason it is a marker and not a query parameter: a client that knows
-    // what it is should say so once, rather than have every share link carry
-    // the answer around and leak it to whoever the link is forwarded to. The
-    // desktop checkbox still works, and still travels in the URL, because
-    // there the answer really is per-link.
-    const native = (window as any).__BEEBOX_APP__ !== undefined;
-    this.sizing =
-      native || new URLSearchParams(location.search).get('phone') === '1';
+    // is that the owner's window resizes with it, so only the phone app does:
+    // it says so in its user agent, which the daemon reads too, so a browser
+    // cannot opt in by editing a link.
+    this.sizing = navigator.userAgent.includes('BeeBoxApp/android');
     const sizing = this.sizing;
     // A resizing client says its size up front, so the replay arrives laid
     // out for the width it will actually use. Saying it only after mounting
@@ -147,7 +140,6 @@ class Store {
     const guess = sizing ? this.guessSize() : null;
     this.wsBase =
       `${proto}://${host}/ws${q}${q ? '&' : '?'}replay=${replay}` +
-      (sizing ? '&sizing=true' : '') +
       (guess ? `&cols=${guess.cols}&rows=${guess.rows}` : '');
 
     this.connect();
