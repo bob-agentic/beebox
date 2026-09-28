@@ -219,6 +219,10 @@ class Store {
         // prefix the client would send the wrong bytes for arrow keys and
         // pastes — see ARCHITECTURE.md §5a. Shown once written, not before:
         // a long history parses in a few frames, and they should not show.
+        // Loading again on a reconnect too, not only the first time: that is
+        // also what keeps xterm's answers to the history's queries from being
+        // sent as input (see `terminal`).
+        this.loading.add(msg.pane);
         t.term.reset();
         t.term.write(msg.modes);
         t.term.write(stripPartialLineMarkers(msg.data), () => this.loading.delete(msg.pane));
