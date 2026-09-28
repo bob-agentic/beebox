@@ -402,25 +402,21 @@ async fn serve(
         let _ = tx.send(Out::WebServer { exposed: app.is_exposed() }).await;
     }
 
-    // Where each pty's last snapshot to this client ended. Output up to it is
-    // already on the client's screen; the stream only adds what follows.
-    let mut floor: HashMap<PtyId, u64> = HashMap::new();
+    // The panes this client has a terminal for, which it asks for by
+    // `Replay` and lets go of by `Release` — each with the pty and ring
+    // offset its last snapshot ran through, if it had one. Only these are
+    // sent output, and only what follows the snapshot: up to it is on screen
+    // already.
+    let mut shown: HashMap<PaneId, Option<(PtyId, u64)>> = HashMap::new();
 
-    // Before the replay, not after: a client that will resize should be sent
-    // history already laid out for the width it is about to use.
+    // Before any replay: a client that will resize should be sent history
+    // already laid out for the width it is about to use.
     if sizing {
         if let Some((c, r)) = first_size {
             for pane in app.visible(&grant).await {
                 let _ = app.set_viewport(&grant, true, pane, c, r).await;
             }
         }
-    }
-
-    // Replay each visible pane so a client joining mid-stream sees state
-    // rather than a blank terminal. `modes` restores alt screen / bracketed
-    // paste / application cursor keys, which a raw tail would have lost.
-    for pane in app.visible(&grant).await {
-        resync(&app, pane, replay, &mut floor, &tx).await;
     }
 
     loop {
@@ -437,8 +433,12 @@ async fn serve(
             // Terminal output, filtered to this connection's scope.
             ev = pty_rx.recv() => match ev {
                 Ok(PtyEvent::Output { pane, pty, data, end }) => {
-                    if floor.get(&pty).is_some_and(|&f| end <= f) {
-                        continue;
+                    // Only what follows the snapshot. A pty the snapshot was
+                    // not of is new: the client asks for it once its tree
+                    // names it, and until then has nowhere to put it.
+                    match shown.get(&pane) {
+                        Some(&Some((was, through))) if was == pty && end > through => {}
+                        _ => continue,
                     }
                     if app.visible(&grant).await.contains(&pane)
                         && tx.send(Out::Output { pty, data: data.to_vec() }).await.is_err()
@@ -460,10 +460,10 @@ async fn serve(
                 }
                 // Lagged: the ring, not the channel, is the source of truth.
                 // The receiver resumes at the oldest event still queued, which
-                // the snapshot already holds — hence the floor.
+                // the snapshot already holds — hence the offsets in `shown`.
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    for pane in app.visible(&grant).await {
-                        resync(&app, pane, replay, &mut floor, &tx).await;
+                    for pane in shown.keys().copied().collect::<Vec<_>>() {
+                        resync(&app, pane, replay, &mut shown, &tx).await;
                     }
                 }
                 Err(_) => break,
@@ -527,12 +527,19 @@ async fn serve(
                 let Message::Binary(bytes) = msg else { continue };
                 let Ok(inbound) = rmp_serde::from_slice::<In>(&bytes) else { continue };
 
-                // Here rather than in `handle`: the floor is this loop's.
-                if let In::Replay { pane } = inbound {
-                    if app.visible(&grant).await.contains(&pane) {
-                        resync(&app, pane, replay, &mut floor, &tx).await;
+                // Here rather than in `handle`: what is shown is this loop's.
+                match inbound {
+                    In::Replay { pane } => {
+                        if app.visible(&grant).await.contains(&pane) {
+                            resync(&app, pane, replay, &mut shown, &tx).await;
+                        }
+                        continue;
                     }
-                    continue;
+                    In::Release { pane } => {
+                        shown.remove(&pane);
+                        continue;
+                    }
+                    _ => {}
                 }
                 if handle(&app, &grant, sizing, inbound, &tx).await.is_break() {
                     break;
@@ -546,13 +553,14 @@ async fn serve(
     let _ = writer.await;
 }
 
-/// Sends a pane's history, from which the stream carries on: output up to the
-/// snapshot's end is dropped from it, being in the snapshot already.
+/// Sends a pane's history, from which the stream carries on. `modes` restores
+/// alt screen / bracketed paste / application cursor keys, which a raw tail
+/// would have lost.
 async fn resync(
     app: &Arc<App>,
     pane: PaneId,
     replay: Option<usize>,
-    floor: &mut HashMap<PtyId, u64>,
+    shown: &mut HashMap<PaneId, Option<(PtyId, u64)>>,
     tx: &mpsc::Sender<Out>,
 ) {
     // A process that ended is found among the ended — even one still named
@@ -561,10 +569,13 @@ async fn resync(
     let snap = live
         .and_then(|pty| Some((pty, app.ptys.attach_snapshot(pty, replay)?)))
         .or_else(|| app.ptys.ended_snapshot(pane, replay));
-    if let Some((pty, (modes, data, through))) = snap {
-        floor.insert(pty, through);
-        let _ = tx.send(Out::Resync { pane, pty, modes, data, through }).await;
-    }
+    // Answered even with nothing: the client waits on it to show the pane.
+    let (at, modes, data) = match snap {
+        Some((pty, (modes, data, through))) => (Some((pty, through)), modes, data),
+        None => (None, Vec::new(), Vec::new()),
+    };
+    shown.insert(pane, at);
+    let _ = tx.send(Out::Resync { pane, modes, data }).await;
 }
 
 async fn handle(

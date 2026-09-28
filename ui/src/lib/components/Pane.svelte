@@ -6,6 +6,7 @@
   // it change size.
 
   import { untrack } from 'svelte';
+  import { fade } from 'svelte/transition';
   import { store } from '../state.svelte';
   import { settings } from '../settings.svelte';
   import type { PaneView } from '../proto';
@@ -84,22 +85,31 @@
     unread = isUnread(pane.id, pane.status);
   });
 
-  // Out of sight this long, the pane lets go of its terminal (`release` in
-  // the store). Long enough that flicking between tabs never waits on a
-  // replay.
+  // A terminal is made the first time the pane is shown — never for one in
+  // a tab nobody opens — and let go (`release` in the store) once it has
+  // been out of sight this long. Long enough that flicking between tabs never
+  // waits on a replay.
   const RELEASE_AFTER = 60_000;
+  let recent = $state(false);
   $effect(() => {
-    if (shown) return;
-    const timer = setTimeout(() => store.release(pane.id), RELEASE_AFTER);
+    if (shown) {
+      recent = true;
+      return;
+    }
+    const timer = setTimeout(() => {
+      recent = false;
+      store.release(pane.id);
+    }, RELEASE_AFTER);
     return () => clearTimeout(timer);
   });
-
-  // With a terminal, or waiting to be shown to get one back. A derived, so
-  // taking the pane off the released list as it binds does not bind it again.
-  const bound = $derived(shown || !store.released.has(pane.id));
   $effect(() => {
-    if (bound) return untrack(bind);
+    if (shown || recent) return untrack(bind);
   });
+
+  // Until its history has arrived, the terminal is hidden rather than seen
+  // filling in. Usually that is a frame or two, and nothing shows; only a
+  // wait long enough to notice gets a placeholder.
+  const loading = $derived(store.loading.has(pane.id));
 
   function bind() {
     const t = store.terminal(pane.id);
@@ -157,6 +167,9 @@
     store.attach(pane.id, host, report);
     t.show(shown);
     report();
+    // After the first fit, so the history is laid out for the size it is
+    // shown at.
+    if (store.loading.has(pane.id)) store.send({ t: 'replay', pane: pane.id });
 
     // Not while the sidebar is moving: a terminal re-laid out on every frame
     // of the slide is what made it stutter. It fits once, when it lands.
@@ -207,7 +220,24 @@
     <span class="dims">{pane.cols}×{pane.rows}</span>
   </div>
 
-  <div class="term" bind:this={host}></div>
+  <div class="body">
+    <div class="term" class:loading bind:this={host}></div>
+    {#if loading}
+      <!-- Waits before showing, so a replay that lands in time never
+           flashes it. -->
+      <div
+        class="skeleton"
+        style="color:{settings.theme.foreground}"
+        in:fade={{ delay: 180, duration: 160 }}
+        out:fade={{ duration: 140 }}
+        aria-hidden="true"
+      >
+        {#each [58, 34, 72, 46, 64, 28, 52] as w, i (i)}
+          <span style="width:{w}%"></span>
+        {/each}
+      </div>
+    {/if}
+  </div>
 
   <!-- Path belongs to the pane, not the workspace: two panes in one tab can
        sit in different directories. -->
@@ -291,11 +321,74 @@
     color: var(--fg);
   }
 
-  .term {
+  .body {
     flex: 1;
     min-height: 0;
+    display: flex;
+    position: relative;
+  }
+  /* Settles in rather than switching on: a touch of blur and a two-pixel
+     rise, gone as it lands. The way macOS and iOS bring in content that was
+     loading, and short enough never to be waited on. */
+  .term {
+    flex: 1;
+    min-width: 0;
     padding: 7px 9px;
     overflow: hidden;
+    transition:
+      opacity 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+      filter 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+      transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  /* Hidden, not removed: the terminal still has to be measured and fitted. */
+  .term.loading {
+    opacity: 0;
+    filter: blur(4px);
+    transform: translateY(2px);
+    transition: none;
+  }
+
+  /* Lines of text, not a spinner: it says what is coming and where. */
+  .skeleton {
+    position: absolute;
+    inset: 0;
+    padding: 12px 11px;
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    pointer-events: none;
+  }
+  .skeleton span {
+    height: 8px;
+    border-radius: 4px;
+    background: linear-gradient(
+      90deg,
+      color-mix(in srgb, currentColor 7%, transparent) 0%,
+      color-mix(in srgb, currentColor 14%, transparent) 50%,
+      color-mix(in srgb, currentColor 7%, transparent) 100%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.4s ease-in-out infinite;
+  }
+  @keyframes shimmer {
+    from {
+      background-position: 100% 0;
+    }
+    to {
+      background-position: -100% 0;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .term {
+      transition: opacity 120ms linear;
+    }
+    .term.loading {
+      filter: none;
+      transform: none;
+    }
+    .skeleton span {
+      animation: none;
+    }
   }
 
   /* xterm paints its own background; the padding around it must match or a

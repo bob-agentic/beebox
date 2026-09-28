@@ -50,7 +50,10 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const pane = () => tree.workspaces[0].tabs[0].panes[0].id;
 
 async function main() {
-  await wait(1200);
+  await wait(600);
+  // Output only flows for a pane the client has asked for.
+  send({ t: 'replay', pane: pane() });
+  await wait(600);
 
   console.log('\n=== 1. tree + caps ===');
   console.log('workspaces:', tree.workspaces.length);

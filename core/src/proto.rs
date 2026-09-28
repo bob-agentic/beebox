@@ -322,14 +322,10 @@ pub enum Out {
         /// Named outright: a pane whose process ended has its history
         /// replayed too, and its pty is in no tree to look the pane up by.
         pane: PaneId,
-        pty: PtyId,
         #[serde(with = "serde_bytes")]
         modes: Vec<u8>,
         #[serde(with = "serde_bytes")]
         data: Vec<u8>,
-        /// Absolute ring offset this replay ends at, so the subscriber resumes
-        /// without a duplicated or dropped seam.
-        through: u64,
     },
 
     /// Live agent-status delta. Carries the whole view, not just the phase,
@@ -416,9 +412,14 @@ pub enum In {
         rows: u16,
     },
     Ping,
-    /// Send this pane's history again. A client drops the terminal of a pane
-    /// it has not shown for a while, and asks for it back when it does.
+    /// Send this pane's history, and its output from then on. A client asks
+    /// as it makes the pane a terminal, which it only does once it is shown.
+    /// Always answered, with nothing if there is nothing.
     Replay {
+        pane: PaneId,
+    },
+    /// Stop sending this pane's output: the client let go of its terminal.
+    Release {
         pane: PaneId,
     },
 

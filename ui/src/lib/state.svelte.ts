@@ -80,20 +80,15 @@ class Store {
     if (markRead(pane, view)) this.readRev++;
   }
 
-  /** Terminals by pane id: made when a pane first mounts, disposed when it
-      leaves the tree — or when it has been out of sight a while (`release`). */
+  /** Terminals by pane id: made when a pane is first shown, disposed when it
+      leaves the tree — or when it has been out of sight a while (`release`).
+      The daemon sends output only for these; the rest it keeps, and replays
+      when a terminal is made again. */
   private terms = new Map<PaneId, PaneTerm>();
-  /** Panes whose terminal was let go while hidden. Their output is dropped
-      rather than held: the daemon has it all, and sends it again on show. */
-  readonly released = new SvelteSet<PaneId>();
-  /** Output for panes that have not mounted yet. */
-  private buffered = new Map<PaneId, Uint8Array[]>();
+  /** Panes whose terminal is still waiting for its history. */
+  readonly loading = new SvelteSet<PaneId>();
   /** pty -> pane, so output frames can be routed without a tree lookup. */
   private ptyToPane = new Map<number, PaneId>();
-  /** Frames for a pty no tree has named yet. A new pane's first output can
-      beat the tree frame that says whose it is; held here, it is played in
-      once `reconcile` knows. */
-  private early = new Map<number, Out[]>();
   private conn: Conn | null = null;
 
   constructor() {
@@ -122,10 +117,10 @@ class Store {
       : key
         ? `?key=${encodeURIComponent(key)}`
         : '';
-    // Tell the daemon how much this browser can hold, so the replay it sends
-    // on connect matches — otherwise it guesses, and either sends more than
-    // will fit (parsed and dropped) or less than it could (a half-empty
-    // buffer). Read once at connect: it is what the first replay is sized to.
+    // Tell the daemon how much this browser can hold, so the replays it sends
+    // match — otherwise it guesses, and either sends more than will fit
+    // (parsed and dropped) or less than it could (a half-empty buffer). Read
+    // once at connect: it is what this connection's replays are sized to.
     const replay = settings.current.scrollback;
     // Sizing, for a screen the terminal was not laid out for. A phone shown a
     // 175-column terminal on a 44-column screen gets text overlapping itself —
@@ -176,7 +171,12 @@ class Store {
     this.conn = new Conn(
       this.wsBase,
       (msg) => this.handle(msg),
-      (up) => (this.connected = up),
+      (up) => {
+        this.connected = up;
+        // A new connection sends nothing until asked. What is on screen stays
+        // there until the replay replaces it.
+        if (up) for (const pane of this.terms.keys()) this.send({ t: 'replay', pane });
+      },
     );
   }
 
@@ -214,24 +214,22 @@ class Store {
         break;
       }
       case 'output': {
+        // A pty the tree does not name yet is replayed once it does.
         const pane = this.ptyToPane.get(msg.pty);
-        if (pane === undefined) this.holdEarly(msg);
-        else this.write(pane, stripPartialLineMarkers(msg.data));
+        if (pane !== undefined) this.terms.get(pane)?.term.write(stripPartialLineMarkers(msg.data));
         break;
       }
       case 'resync': {
-        // By pane, not pty: a pane whose process ended is replayed too, and
-        // no tree names its pty. Output held for the pty is in the snapshot.
-        const pane = msg.pane;
-        this.early.delete(msg.pty);
+        // Released while the answer was on its way: nothing to put it in.
+        const t = this.terms.get(msg.pane);
+        if (!t) break;
         // Reset, re-establish terminal modes, then replay. Without the mode
         // prefix the client would send the wrong bytes for arrow keys and
-        // pastes — see ARCHITECTURE.md §5a.
-        const t = this.terms.get(pane);
-        if (t) t.term.reset();
-        else this.buffered.delete(pane);
-        this.write(pane, msg.modes);
-        this.write(pane, stripPartialLineMarkers(msg.data));
+        // pastes — see ARCHITECTURE.md §5a. Shown once written, not before:
+        // a long history parses in a few frames, and they should not show.
+        t.term.reset();
+        t.term.write(msg.modes);
+        t.term.write(stripPartialLineMarkers(msg.data), () => this.loading.delete(msg.pane));
         break;
       }
       case 'size': {
@@ -300,33 +298,26 @@ class Store {
   /** Refreshes pty routing and keeps the focus on a pane that still exists. */
   private reconcile() {
     const live = new Set<PaneId>();
-    this.ptyToPane.clear();
+    const was = this.ptyToPane;
+    this.ptyToPane = new Map();
 
     for (const ws of this.tree.workspaces) {
       for (const tab of ws.tabs) {
         for (const p of tab.panes) {
           live.add(p.id);
-          if (p.pty !== null) this.ptyToPane.set(p.pty, p.id);
+          if (p.pty === null) continue;
+          this.ptyToPane.set(p.pty, p.id);
+          // Re-run: the daemon holds back a new process's output until the
+          // terminal asks for it.
+          if (was.get(p.pty) !== p.id && this.terms.has(p.id)) {
+            this.send({ t: 'replay', pane: p.id });
+          }
         }
       }
     }
-    for (const id of this.buffered.keys()) {
-      if (!live.has(id)) this.buffered.delete(id);
-    }
-    for (const id of this.released) {
-      if (!live.has(id)) this.released.delete(id);
-    }
     // The pane is gone, not just moved: its component will not be back.
     for (const [id, t] of this.terms) {
-      if (!live.has(id)) {
-        t.dispose();
-        this.terms.delete(id);
-      }
-    }
-    for (const [pty, held] of this.early) {
-      if (!this.ptyToPane.has(pty)) continue;
-      this.early.delete(pty);
-      for (const msg of held) this.handle(msg);
+      if (!live.has(id)) this.release(id);
     }
     // Read-state entries for deleted panes go with them.
     pruneRead(live);
@@ -358,10 +349,7 @@ class Store {
       agent: () => this.isAgent(pane),
     });
     this.terms.set(pane, t);
-    // Anything that arrived before there was a terminal to hold it.
-    for (const chunk of this.buffered.get(pane) ?? []) t.term.write(chunk);
-    this.buffered.delete(pane);
-    if (this.released.delete(pane)) this.send({ t: 'replay', pane });
+    this.loading.add(pane);
     return t;
   }
 
@@ -374,7 +362,8 @@ class Store {
     if (!t) return;
     t.dispose();
     this.terms.delete(pane);
-    this.released.add(pane);
+    this.loading.delete(pane);
+    this.send({ t: 'release', pane });
   }
 
   /** Called by a Pane as it mounts, to put the pane's terminal on screen. */
@@ -385,32 +374,6 @@ class Store {
     // half of that race — without it the first pane after a cold start still
     // needs a click.
     if (this.focused === pane) this.applyFocus();
-  }
-
-  /** Holds output for a pty not in the tree yet. Bounded both ways: a pty
-      that never appears — one whose pane closed as it spoke — must not
-      grow without end. */
-  private holdEarly(msg: Out & { pty: number }) {
-    const held = this.early.get(msg.pty) ?? [];
-    if (held.length >= 256) return;
-    held.push(msg);
-    this.early.delete(msg.pty);
-    this.early.set(msg.pty, held);
-    if (this.early.size > 16) this.early.delete(this.early.keys().next().value!);
-  }
-
-  private write(pane: PaneId, data: Uint8Array) {
-    const t = this.terms.get(pane);
-    if (t) {
-      t.term.write(data);
-      return;
-    }
-    if (this.released.has(pane)) return;
-    // Not mounted yet: hold it so first paint is not blank. Bounded, because
-    // a pane in a background tab may never mount.
-    const buf = this.buffered.get(pane) ?? [];
-    if (buf.length < 256) buf.push(data);
-    this.buffered.set(pane, buf);
   }
 
   /** Bumped on every keystroke sent to a terminal.

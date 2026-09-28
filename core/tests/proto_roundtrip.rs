@@ -69,19 +69,16 @@ fn resync_carries_mode_prefix_and_offset() {
     // which a raw ring tail would have lost.
     let frame = Out::Resync {
         pane: 5,
-        pty: 2,
         modes: b"\x1b[?1049h\x1b[?2004h".to_vec(),
         data: b"partial output".to_vec(),
-        through: 1_048_576,
     };
     let bytes = rmp_serde::to_vec_named(&frame).unwrap();
 
     match rmp_serde::from_slice::<Out>(&bytes).unwrap() {
-        Out::Resync { pane, pty, modes, through, .. } => {
+        Out::Resync { pane, modes, data } => {
             assert_eq!(pane, 5);
-            assert_eq!(pty, 2);
             assert_eq!(modes, b"\x1b[?1049h\x1b[?2004h");
-            assert_eq!(through, 1_048_576);
+            assert_eq!(data, b"partial output");
         }
         other => panic!("wrong variant: {other:?}"),
     }

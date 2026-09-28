@@ -598,6 +598,7 @@ impl App {
             | In::Viewport { .. }
             | In::Ping
             | In::Replay { .. }
+            | In::Release { .. }
             | In::CreateGrant { .. } => {}
         }
         Ok(Vec::new())
