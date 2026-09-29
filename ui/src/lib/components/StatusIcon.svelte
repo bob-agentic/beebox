@@ -67,23 +67,31 @@
     border-radius: 50%;
     flex: 0 0 auto;
   }
-  /* Both dots animate opacity alone, on their own compositor layer: the
-     sidebar and tab strip repaint around them constantly, and a dot that
-     shares those repaints stutters instead of pulsing. */
-  .ast.running,
-  .ast.needs_input {
-    will-change: opacity;
-  }
+  /* A turning arc, not a pulse: a pulsing green dot was hard to tell from a
+     steady one (a finished run) at this size, and several pulsing at once
+     tire the eye. Shape tells them apart, and an even turn does not pull at
+     the eye the way fading in and out does. Four pixels larger than the other
+     dots to hold a ring, with the margin giving it back so rows do not move. */
   .ast.running {
-    background: var(--run);
-    animation: pulse 1.6s ease-in-out infinite;
+    width: 11px;
+    height: 11px;
+    margin: -2px;
+    box-sizing: border-box;
+    border: 2.5px solid color-mix(in srgb, var(--run) 25%, transparent);
+    border-top-color: var(--run);
+    animation: spin 1.1s linear infinite;
+    will-change: transform;
   }
+  /* Each animated dot gets its own compositor layer (`will-change`): the
+     sidebar and tab strip repaint around them constantly, and a dot that
+     shares those repaints stutters. */
   .ast.needs_input {
     background: var(--wait);
     animation: blink 1.2s ease-in-out infinite;
+    will-change: opacity;
   }
-  /* Respect a system-level request for less motion: the colour still carries
-     the state, so the animation is the only thing lost. */
+  /* Respect a system-level request for less motion: colour and shape still
+     carry the state, so the animation is the only thing lost. */
   @media (prefers-reduced-motion: reduce) {
     .ast.running,
     .ast.needs_input {
