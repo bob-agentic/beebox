@@ -76,7 +76,6 @@
     width: 12px;
     height: 12px;
     margin: -1.5px;
-    box-sizing: border-box;
     border: 2.5px solid color-mix(in srgb, var(--run) 30%, transparent);
     border-top-color: var(--run);
     animation: spin 1.1s linear infinite;

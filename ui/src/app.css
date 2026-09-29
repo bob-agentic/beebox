@@ -109,10 +109,10 @@ button {
    plain terminal. The six-phase styles live in StatusIcon.svelte; the shared
    keyframes stay here. */
 
-/* A running agent's arc. Rotation, not scale: scaling a 7px dot lands its
-   edge between pixels, and the renderer re-antialiases it every frame — which
-   reads as a stutter, most visibly on a light theme where the fringing shows.
-   Opacity only, for the same reason, on the blink below. */
+/* A running agent's arc. Rotation, not scale: scaling a dot this small lands
+   its edge between pixels, and the renderer re-antialiases it every frame —
+   which reads as a stutter, most visibly on a light theme where the fringing
+   shows. Opacity only, for the same reason, on the blink below. */
 @keyframes spin {
   to { transform: rotate(360deg); }
 }

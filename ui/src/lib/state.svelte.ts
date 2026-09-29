@@ -97,8 +97,12 @@ class Store {
   private conn: Conn | null = null;
 
   constructor() {
-    addEventListener('focus', () => (this.windowFocused = true));
-    addEventListener('blur', () => (this.windowFocused = false));
+    // Asked afresh on each event rather than taken from its name: WKWebView
+    // sends `focus` when the web view takes first responder, even in a window
+    // that is not in front.
+    const syncFocus = () => (this.windowFocused = document.hasFocus());
+    addEventListener('focus', syncFocus);
+    addEventListener('blur', syncFocus);
     // In the desktop shell the daemon's address comes from the injected port
     // rather than `location`. It must be spelled `localhost`, not 127.0.0.1:
     // the shell's ATS exception is NSAllowsLocalNetworking, which covers the
