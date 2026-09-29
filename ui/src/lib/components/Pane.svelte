@@ -66,14 +66,15 @@
 
   const badge = $derived(agentBadge(pane.agent));
   const mark = $derived(AGENT_MARK[badge]);
-  // Reading is a local act: focusing the pane marks the completion seen in
-  // this browser only. localStorage is not reactive, so the flag is mirrored
-  // into local state and re-derived whenever the status or focus changes.
+  // Reading is a local act: focusing the pane, in a window that has focus,
+  // marks the completion seen in this browser only. localStorage is not
+  // reactive, so the flag is mirrored into local state and re-derived
+  // whenever the status or focus changes.
   let unread = $state(false);
   $effect(() => {
     const done = pane.status.phase === 'success' || pane.status.phase === 'failed';
     // Through the store so tab/workspace aggregate dots re-derive too.
-    if (focused && done) store.markStatusRead(pane.id, pane.status);
+    if (focused && store.windowFocused && done) store.markStatusRead(pane.id, pane.status);
     void store.readRev;
     unread = isUnread(pane.id, pane.status);
   });

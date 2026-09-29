@@ -72,6 +72,11 @@ class Store {
       not reactive, so aggregate dots (tab, workspace) depend on this to
       re-derive their unread flag. */
   readRev = $state(0);
+  /** Whether this window has the user's attention. The focused pane is only
+      the one last clicked; with the window behind another app, a run that
+      finishes there has not been seen, and must stay unread until you come
+      back. */
+  windowFocused = $state(document.hasFocus());
 
   /** The one write path for read-state, so every dot re-derives together.
       Only bumps when something changed — an unconditional bump inside a
@@ -92,6 +97,8 @@ class Store {
   private conn: Conn | null = null;
 
   constructor() {
+    addEventListener('focus', () => (this.windowFocused = true));
+    addEventListener('blur', () => (this.windowFocused = false));
     // In the desktop shell the daemon's address comes from the injected port
     // rather than `location`. It must be spelled `localhost`, not 127.0.0.1:
     // the shell's ATS exception is NSAllowsLocalNetworking, which covers the
