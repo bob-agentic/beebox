@@ -449,10 +449,11 @@ async fn serve(
                         Some(&Some((was, through))) if was == pty && end > through => {}
                         _ => continue,
                     }
-                    if app.visible(&grant).await.contains(&pane)
-                        && tx.send(Out::Output { pty, data: data.to_vec() }).await.is_err()
-                    {
-                        break;
+                    if app.visible(&grant).await.contains(&pane) {
+                        if tx.send(Out::Output { pty, data: data.to_vec() }).await.is_err() {
+                            break;
+                        }
+                        shown.insert(pane, Some((pty, end)));
                     }
                 }
                 Ok(PtyEvent::Title { pane, text }) => {
@@ -468,11 +469,26 @@ async fn serve(
                     }
                 }
                 // Lagged: the ring, not the channel, is the source of truth.
-                // The receiver resumes at the oldest event still queued, which
-                // the snapshot already holds — hence the offsets in `shown`.
+                // Each pane gets from it what this client missed, and the
+                // receiver resumes at the oldest event still queued, which
+                // that already holds — hence the offsets in `shown`. Only
+                // what the ring has dropped by now means a whole replay: a
+                // client lagging is a slow one, and whole histories would
+                // only put it further behind.
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    for pane in shown.keys().copied().collect::<Vec<_>>() {
-                        resync(&app, pane, &mut shown, &tx).await;
+                    for (pane, at) in shown.clone() {
+                        if !app.visible(&grant).await.contains(&pane) {
+                            continue;
+                        }
+                        let missed = at.and_then(|(pty, sent)| Some((pty, app.ptys.since(pty, sent)?)));
+                        let Some((pty, (data, end))) = missed else {
+                            resync(&app, pane, &mut shown, &tx).await;
+                            continue;
+                        };
+                        if !data.is_empty() && tx.send(Out::Output { pty, data }).await.is_err() {
+                            break;
+                        }
+                        shown.insert(pane, Some((pty, end)));
                     }
                 }
                 Err(_) => break,

@@ -397,6 +397,14 @@ impl Registry {
         Some(ptys.get(&id)?.hist.snapshot())
     }
 
+    /// What a viewer that has everything through `from` still lacks, and the
+    /// offset that brings it to. `None` once the ring has dropped any of it.
+    pub fn since(&self, id: PtyId, from: u64) -> Option<(Vec<u8>, u64)> {
+        let ptys = self.ptys.lock().unwrap();
+        let ring = &ptys.get(&id)?.hist.ring;
+        (from >= ring.oldest()).then(|| (ring.since(from), ring.written()))
+    }
+
     /// The same for a pane whose process has ended, with the pty it was.
     pub fn ended_snapshot(&self, pane: PaneId) -> Option<(PtyId, Snapshot)> {
         let ended = self.ended.lock().unwrap();
@@ -711,6 +719,30 @@ mod tests {
             }
         }
         assert_eq!(reg.live_count(), 0, "registry must not leak dead ptys");
+    }
+
+    #[tokio::test]
+    async fn a_lagging_viewer_is_sent_only_what_it_missed() {
+        let reg = Registry::new();
+        let id = reg.spawn(spec(1, &["sh", "-c", "echo one; sleep 0.3; echo two; sleep 2"])).unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let (_, _, sent) = reg.attach_snapshot(id).unwrap();
+        tokio::time::sleep(Duration::from_millis(400)).await;
+
+        let (missed, end) = reg.since(id, sent).expect("still in the ring");
+        assert_eq!(String::from_utf8_lossy(&missed), "two\r\n");
+        assert_eq!(end, reg.attach_snapshot(id).unwrap().2);
+        assert!(reg.since(id, end).unwrap().0.is_empty(), "caught up");
+    }
+
+    #[tokio::test]
+    async fn a_viewer_behind_what_the_ring_holds_needs_a_whole_replay() {
+        let reg = Registry::new();
+        let mut s = spec(1, &["sh", "-c", "for i in $(seq 1 200); do echo line $i; done; sleep 2"]);
+        s.scrollback_bytes = 64;
+        let id = reg.spawn(s).unwrap();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(reg.since(id, 0).is_none(), "the start was dropped");
     }
 
     #[tokio::test]
