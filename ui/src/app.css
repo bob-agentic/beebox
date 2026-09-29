@@ -47,6 +47,14 @@
   --done: #38bdf8;
   --accent: #4ade80;
 }
+/* Those colours are bright enough for a dark background and wash out on a
+   light one (the green is 1.7:1 against white). A light theme gets the same
+   hues a shade deeper, each at least 3:1. */
+:root.light {
+  --run: #16a34a;
+  --wait: #d97706;
+  --err: #dc2626;
+}
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body, #app { height: 100%; }

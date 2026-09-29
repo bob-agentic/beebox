@@ -62,22 +62,22 @@
     flex: 0 0 auto;
   }
   .ast {
-    width: 7px;
-    height: 7px;
+    width: 9px;
+    height: 9px;
     border-radius: 50%;
     flex: 0 0 auto;
   }
   /* A turning arc, not a pulse: a pulsing green dot was hard to tell from a
      steady one (a finished run) at this size, and several pulsing at once
      tire the eye. Shape tells them apart, and an even turn does not pull at
-     the eye the way fading in and out does. Four pixels larger than the other
+     the eye the way fading in and out does. Three pixels larger than the other
      dots to hold a ring, with the margin giving it back so rows do not move. */
   .ast.running {
-    width: 11px;
-    height: 11px;
-    margin: -2px;
+    width: 12px;
+    height: 12px;
+    margin: -1.5px;
     box-sizing: border-box;
-    border: 2.5px solid color-mix(in srgb, var(--run) 25%, transparent);
+    border: 2.5px solid color-mix(in srgb, var(--run) 30%, transparent);
     border-top-color: var(--run);
     animation: spin 1.1s linear infinite;
     will-change: transform;
@@ -100,7 +100,7 @@
   }
   .ast.idle {
     background: transparent;
-    border: 1px solid var(--idle);
+    border: 1.5px solid var(--idle);
   }
   .ast.success {
     background: var(--run);
@@ -112,11 +112,11 @@
      result here" and "you already saw this" stay distinguishable. */
   .ast.success.read {
     background: transparent;
-    border: 1px solid var(--run);
+    border: 1.5px solid var(--run);
   }
   .ast.failed.read {
     background: transparent;
-    border: 1px solid var(--err);
+    border: 1.5px solid var(--err);
   }
 
   .tip {

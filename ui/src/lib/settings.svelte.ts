@@ -155,6 +155,7 @@ class SettingsStore {
     // rings and primary buttons then match whatever palette is active instead
     // of a hardcoded green that clashes with light themes.
     root.setProperty('--accent', this.theme.palette[2]);
+    document.documentElement.classList.toggle('light', !this.theme.dark);
   }
 
   /** Panes subscribe so a change applies to terminals that already exist. */
