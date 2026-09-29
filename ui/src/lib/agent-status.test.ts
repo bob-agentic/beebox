@@ -88,13 +88,25 @@ describe('tooltip', () => {
 describe('read state', () => {
   beforeEach(() => localStorage.clear());
 
-  it('a completion is unread until marked, per revision', () => {
-    const v = view({ revision: 5 });
+  it('a completion is unread until marked', () => {
+    const v = view({ revision: 5, at_ms: 100_000 });
     expect(isUnread(1, v)).toBe(true);
     markRead(1, v);
     expect(isUnread(1, v)).toBe(false);
     // The next turn's completion is unread again.
-    expect(isUnread(1, view({ revision: 6 }))).toBe(true);
+    expect(isUnread(1, view({ revision: 6, at_ms: 160_000 }))).toBe(true);
+  });
+
+  it('a daemon restart does not hide new results', () => {
+    // The revision starts again from zero with the daemon; a pane read at a
+    // high revision before must not see a later result as already read.
+    markRead(1, view({ revision: 864, at_ms: 100_000 }));
+    expect(isUnread(1, view({ revision: 5, at_ms: 160_000 }))).toBe(true);
+  });
+
+  it('an entry stored as a revision does not hide new results', () => {
+    localStorage.setItem('beebox.agent-status-read.v1', JSON.stringify({ 1: 864 }));
+    expect(isUnread(1, view({ revision: 5, at_ms: 1_790_000_000_000 }))).toBe(true);
   });
 
   it('only completions can be unread', () => {
@@ -113,8 +125,8 @@ describe('read state', () => {
 
   it('an unread completion keeps the aggregate dot solid', () => {
     // Two panes, both success; one read, one not: the tab dot stays unread.
-    const a = { id: 1, status: view({ revision: 3 }) };
-    const b = { id: 2, status: view({ revision: 5 }) };
+    const a = { id: 1, status: view({ at_ms: 300_000 }) };
+    const b = { id: 2, status: view({ at_ms: 500_000 }) };
     markRead(1, a.status);
     expect(rollupWithUnread([a, b])).toEqual({ phase: 'success', unread: true });
 
@@ -124,8 +136,8 @@ describe('read state', () => {
 
   it('unread only counts panes in the winning phase', () => {
     // An unread success must not make a *failed* aggregate look unread.
-    const ok = { id: 1, status: view({ revision: 2 }) };
-    const bad = { id: 2, status: view({ phase: 'failed' as const, revision: 4 }) };
+    const ok = { id: 1, status: view({ at_ms: 200_000 }) };
+    const bad = { id: 2, status: view({ phase: 'failed' as const, at_ms: 400_000 }) };
     markRead(2, bad.status);
     expect(rollupWithUnread([ok, bad])).toEqual({ phase: 'failed', unread: false });
   });

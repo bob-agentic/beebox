@@ -103,8 +103,15 @@ export function tooltip(v: AgentStatusView, now: number): string[] {
 //
 // Read/unread is client-local by design: BeeBox has many browsers on one
 // daemon, and looking at a result on the desktop must not mark it read on the
-// phone. The stored value is the last *seen* revision per pane; a completion
-// is unread while its revision is newer than that.
+// phone. The stored value is when the last completion *seen* in each pane
+// happened; a completion is unread while it happened later than that.
+//
+// A time, not the view's revision: the revision is counted in the daemon's
+// memory and starts again from zero whenever it restarts, so a pane read at
+// revision 864 last week would show every new result as already read until
+// it counted past 864 again. The time keeps rising across restarts. Entries
+// written as revisions are small numbers, below any time, so they simply
+// stop mattering.
 
 const READ_KEY = 'beebox.agent-status-read.v1';
 
@@ -120,15 +127,15 @@ function load(): ReadMap {
 
 export function isUnread(pane: PaneId, v: AgentStatusView): boolean {
   if (v.phase !== 'success' && v.phase !== 'failed') return false;
-  return (load()[String(pane)] ?? -1) < v.revision;
+  return (load()[String(pane)] ?? -1) < v.at_ms;
 }
 
 /** Records the completion as seen. Returns true only when something actually
     changed — callers use this to avoid reactive feedback loops. */
 export function markRead(pane: PaneId, v: AgentStatusView): boolean {
   const m = load();
-  if ((m[String(pane)] ?? -1) >= v.revision) return false;
-  m[String(pane)] = v.revision;
+  if ((m[String(pane)] ?? -1) >= v.at_ms) return false;
+  m[String(pane)] = v.at_ms;
   try {
     localStorage.setItem(READ_KEY, JSON.stringify(m));
   } catch {

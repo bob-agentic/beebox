@@ -21,8 +21,9 @@ export type AgentPhase =
 export interface AgentStatusView {
   phase: AgentPhase;
   agent: AgentKind | null;
-  /** Bumped on every accepted event; local read-state keys on it. */
+  /** Bumped on every accepted event. Restarts from zero with the daemon. */
   revision: number;
+  /** When the last accepted event happened; local read-state keys on it. */
   at_ms: number;
   started_at_ms: number | null;
   tool_detail: string | null;
