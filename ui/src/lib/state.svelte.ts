@@ -117,11 +117,6 @@ class Store {
       : key
         ? `?key=${encodeURIComponent(key)}`
         : '';
-    // Tell the daemon how much this browser can hold, so the replays it sends
-    // match — otherwise it guesses, and either sends more than will fit
-    // (parsed and dropped) or less than it could (a half-empty buffer). Read
-    // once at connect: it is what this connection's replays are sized to.
-    const replay = settings.current.scrollback;
     // Sizing, for a screen the terminal was not laid out for. A phone shown a
     // 175-column terminal on a 44-column screen gets text overlapping itself —
     // it has to be able to resize the terminal to be readable at all. The cost
@@ -139,8 +134,8 @@ class Store {
     // figure follows from the first fit.
     const guess = sizing ? this.guessSize() : null;
     this.wsBase =
-      `${proto}://${host}/ws${q}${q ? '&' : '?'}replay=${replay}` +
-      (guess ? `&cols=${guess.cols}&rows=${guess.rows}` : '');
+      `${proto}://${host}/ws${q}` +
+      (guess ? `${q ? '&' : '?'}cols=${guess.cols}&rows=${guess.rows}` : '');
 
     this.connect();
   }

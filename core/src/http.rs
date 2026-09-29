@@ -210,11 +210,6 @@ struct WsQuery {
     /// A secret the client made up once and keeps. The first device to
     /// open a link binds it with this; any other device is turned away.
     device: Option<String>,
-    /// How many lines of scrollback this client can hold. Sending more than
-    /// it has room for means parsing work thrown away on arrival; sending
-    /// less leaves its buffer half empty. Clamped, since it arrives from the
-    /// page and a huge value would mean serialising the whole ring.
-    replay: Option<usize>,
     /// The size this client will render at, if it already knows. A resizing
     /// client that only says so after mounting gets the replay at the old
     /// width and re-wraps it at the new one — which is where zsh's
@@ -289,10 +284,9 @@ async fn ws_upgrade(
         _ => return not_found(),
     };
 
-    let replay = q.replay;
     let sizing = is_phone_app(headers.get(axum::http::header::USER_AGENT));
     let first_size = q.cols.zip(q.rows);
-    ws.on_upgrade(move |socket| serve(socket, app, grant, addr, replay, sizing, first_size))
+    ws.on_upgrade(move |socket| serve(socket, app, grant, addr, sizing, first_size))
 }
 
 /// Tells a client its link is no good, and closes.
@@ -355,8 +349,6 @@ async fn serve(
     app: Arc<App>,
     grant: Grant,
     addr: SocketAddr,
-    // How much scrollback this client can hold, if it said.
-    replay: Option<usize>,
     // Whether this connection may resize the terminal.
     sizing: bool,
     // The size it will render at, when it knew before connecting.
@@ -480,7 +472,7 @@ async fn serve(
                 // the snapshot already holds — hence the offsets in `shown`.
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                     for pane in shown.keys().copied().collect::<Vec<_>>() {
-                        resync(&app, pane, replay, &mut shown, &tx).await;
+                        resync(&app, pane, &mut shown, &tx).await;
                     }
                 }
                 Err(_) => break,
@@ -548,7 +540,7 @@ async fn serve(
                 match inbound {
                     In::Replay { pane } => {
                         if app.visible(&grant).await.contains(&pane) {
-                            resync(&app, pane, replay, &mut shown, &tx).await;
+                            resync(&app, pane, &mut shown, &tx).await;
                             // The history as printed, then the screen as the
                             // program draws it now.
                             if let Some(pty) = app.pty_of(pane).await {
@@ -581,7 +573,6 @@ async fn serve(
 async fn resync(
     app: &Arc<App>,
     pane: PaneId,
-    replay: Option<usize>,
     shown: &mut HashMap<PaneId, Option<(PtyId, u64)>>,
     tx: &mpsc::Sender<Out>,
 ) {
@@ -589,8 +580,8 @@ async fn resync(
     // by the pane, whose exit the tree has yet to note.
     let live = app.pty_of(pane).await;
     let snap = live
-        .and_then(|pty| Some((pty, app.ptys.attach_snapshot(pty, replay)?)))
-        .or_else(|| app.ptys.ended_snapshot(pane, replay));
+        .and_then(|pty| Some((pty, app.ptys.attach_snapshot(pty)?)))
+        .or_else(|| app.ptys.ended_snapshot(pane));
     // Answered even with nothing: the client waits on it to show the pane.
     let (at, modes, data) = match snap {
         Some((pty, (modes, data, through))) => (Some((pty, through)), modes, data),

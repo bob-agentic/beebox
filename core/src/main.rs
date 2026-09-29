@@ -11,7 +11,7 @@ use clap::Parser;
 
 use beebox_core::app::App;
 use beebox_core::http;
-use beebox_core::ring::DEFAULT_MAX_LINES;
+use beebox_core::ring::DEFAULT_MAX_BYTES;
 use beebox_core::store::Store;
 
 #[derive(Parser)]
@@ -27,11 +27,11 @@ struct Args {
     #[arg(long)]
     home: Option<PathBuf>,
 
-    /// Scrollback per pane. Generous by default: an agent working through a
-    /// long task emits tens of thousands of lines, and being unable to scroll
-    /// back to what it did an hour ago is a real failure.
-    #[arg(long, default_value_t = DEFAULT_MAX_LINES)]
-    scrollback: usize,
+    /// Scrollback per pane, in bytes. Generous by default: an agent working
+    /// through a long task emits tens of thousands of lines, and being unable
+    /// to scroll back to what it did an hour ago is a real failure.
+    #[arg(long, default_value_t = DEFAULT_MAX_BYTES)]
+    scrollback_bytes: usize,
 
     /// Serve the UI from disk instead of the embedded copy. For development.
     #[arg(long)]
@@ -66,7 +66,7 @@ async fn main() -> Result<()> {
     });
     let store = Store::open(&home.join("state.db"))?;
 
-    let app = App::new_with_adapters(store, args.scrollback, &home);
+    let app = App::new_with_adapters(store, args.scrollback_bytes, &home);
     // PTYs get the hook URL in their environment, so the port must be known
     // before the first spawn — which bootstrap/resume below trigger.
     app.set_hook_port(args.listen.port());

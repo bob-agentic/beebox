@@ -98,7 +98,7 @@ pub struct App {
     /// disconnect — so a paired device can be shown as online or not.
     conns: Mutex<HashMap<SessionId, Conn>>,
     next_session: Mutex<SessionId>,
-    pub scrollback_lines: usize,
+    pub scrollback_bytes: usize,
     pub shell: String,
     /// Proves a connection is the owner. Generated per run and never written
     /// to disk: without it, anything that can reach the port would have a full
@@ -107,14 +107,14 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(store: Store, scrollback_lines: usize) -> Arc<Self> {
-        Self::new_inner(store, scrollback_lines, None)
+    pub fn new(store: Store, scrollback_bytes: usize) -> Arc<Self> {
+        Self::new_inner(store, scrollback_bytes, None)
     }
 
     /// Like `new`, but also installs the agent adapter assets under `home`.
     /// Installation failure is logged and ignored: terminals must work even
     /// when the hook plumbing cannot be written.
-    pub fn new_with_adapters(store: Store, scrollback_lines: usize, home: &std::path::Path) -> Arc<Self> {
+    pub fn new_with_adapters(store: Store, scrollback_bytes: usize, home: &std::path::Path) -> Arc<Self> {
         let assets = match crate::agent_adapters::install(home) {
             Ok(a) => Some(a),
             Err(e) => {
@@ -122,12 +122,12 @@ impl App {
                 None
             }
         };
-        Self::new_inner(store, scrollback_lines, assets)
+        Self::new_inner(store, scrollback_bytes, assets)
     }
 
     fn new_inner(
         store: Store,
-        scrollback_lines: usize,
+        scrollback_bytes: usize,
         adapter_assets: Option<crate::agent_adapters::AdapterAssets>,
     ) -> Arc<Self> {
         let tree = store.load_tree().expect("read state.db");
@@ -149,7 +149,7 @@ impl App {
             exposed: std::sync::atomic::AtomicBool::new(false),
             conns: Mutex::new(HashMap::new()),
             next_session: Mutex::new(0),
-            scrollback_lines,
+            scrollback_bytes,
             shell: std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into()),
             owner_key: random_key(),
         })
@@ -264,7 +264,7 @@ impl App {
             cols,
             rows,
             env,
-            scrollback_lines: self.scrollback_lines,
+            scrollback_bytes: self.scrollback_bytes,
         };
         let pty = self.ptys.spawn(spec)?;
         let p = tree.pane_mut(pane).expect("just read");
@@ -1913,7 +1913,7 @@ mod tests {
                 cols: 80,
                 rows: 24,
                 env: vec![],
-                scrollback_lines: 100,
+                scrollback_bytes: 1 << 16,
             })
             .unwrap();
         a.tree.lock().await.pane_mut(pane).unwrap().pty = Some(pty);
@@ -1951,7 +1951,7 @@ mod tests {
                 cols: 80,
                 rows: 24,
                 env: vec![],
-                scrollback_lines: 100,
+                scrollback_bytes: 1 << 16,
             })
             .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(900)).await;
@@ -1999,7 +1999,7 @@ mod tests {
                 cols: 80,
                 rows: 24,
                 env: vec![],
-                scrollback_lines: 100,
+                scrollback_bytes: 1 << 16,
             })
             .unwrap();
         for _ in 0..40 {

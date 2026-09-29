@@ -1,11 +1,15 @@
 //! Scrollback ring.
 //!
-//! Line-based and large by default: an agent working through a long task emits
-//! tens of thousands of lines, and being unable to scroll back to what it did
-//! an hour ago is a real failure of this product. So the default is generous.
+//! Bounded in bytes and large by default: an agent working through a long task
+//! emits tens of thousands of lines, and being unable to scroll back to what it
+//! did an hour ago is a real failure of this product. So the default is
+//! generous.
 //!
 //! It stores raw bytes split on newlines — not a parsed grid — so the cost is
-//! storage and nothing else.
+//! storage and nothing else. Lines are only what eviction drops whole; they are
+//! no measure of history, since a program that redraws in place (Claude Code
+//! repaints its whole live area every frame) writes far more newlines than it
+//! leaves on screen.
 //!
 //! Every subscriber holds an absolute offset instead of only a channel. That is
 //! what removes the seam where a live read loop would otherwise duplicate or
@@ -13,7 +17,7 @@
 
 use std::collections::VecDeque;
 
-pub const DEFAULT_MAX_LINES: usize = 200_000;
+pub const DEFAULT_MAX_BYTES: usize = 20 << 20;
 
 /// An unterminated line is sealed at this length so eviction can reclaim it.
 const MAX_OPEN_LINE: usize = 1 << 20;
@@ -31,7 +35,9 @@ struct Line {
 #[derive(Debug)]
 pub struct Ring {
     lines: VecDeque<Line>,
-    max_lines: usize,
+    max_bytes: usize,
+    /// Bytes held across `lines`.
+    held: usize,
     /// Total bytes ever written. Offsets are absolute and monotonic, so they
     /// stay meaningful after eviction.
     written: u64,
@@ -40,10 +46,11 @@ pub struct Ring {
 }
 
 impl Ring {
-    pub fn new(max_lines: usize) -> Self {
+    pub fn new(max_bytes: usize) -> Self {
         Self {
             lines: VecDeque::new(),
-            max_lines: max_lines.max(1),
+            max_bytes,
+            held: 0,
             written: 0,
             oldest: 0,
         }
@@ -61,7 +68,7 @@ impl Ring {
     }
 
     pub fn len_bytes(&self) -> usize {
-        self.lines.iter().map(|l| l.bytes.len()).sum()
+        self.held
     }
 
     pub fn len_lines(&self) -> usize {
@@ -80,6 +87,7 @@ impl Ring {
                 }),
             }
             self.written += 1;
+            self.held += 1;
 
             // Seal on a newline, or when an unterminated line grows past the
             // cap — a progress bar can redraw forever without ever emitting
@@ -97,9 +105,12 @@ impl Ring {
         }
     }
 
+    /// Drops lines from the front until the rest fits. The newest always
+    /// stays, so the ring runs over by at most one line — `MAX_OPEN_LINE`.
     fn evict(&mut self) {
-        while self.lines.len() > self.max_lines {
+        while self.held > self.max_bytes && self.lines.len() > 1 {
             if let Some(dropped) = self.lines.pop_front() {
+                self.held -= dropped.bytes.len();
                 self.oldest = dropped.start + dropped.bytes.len() as u64;
             }
         }
@@ -125,23 +136,11 @@ impl Ring {
         }
         out
     }
-
-    /// The tail, at most `lines` long. Used for the first frame a viewer sees:
-    /// replaying 200k lines into a fresh terminal would be pointless.
-    pub fn tail_lines(&self, lines: usize) -> (Vec<u8>, u64) {
-        let skip = self.lines.len().saturating_sub(lines);
-        let start = self
-            .lines
-            .get(skip)
-            .map(|l| l.start)
-            .unwrap_or(self.written);
-        (self.since(start), start)
-    }
 }
 
 impl Default for Ring {
     fn default() -> Self {
-        Self::new(DEFAULT_MAX_LINES)
+        Self::new(DEFAULT_MAX_BYTES)
     }
 }
 
@@ -151,11 +150,13 @@ mod tests {
 
     #[test]
     fn offsets_are_absolute_and_survive_eviction() {
-        let mut r = Ring::new(2);
+        // Room for "two\nthree\n" (10 bytes) but not "one\n" as well.
+        let mut r = Ring::new(10);
         r.push(b"one\ntwo\nthree\n");
 
         assert_eq!(r.written(), 14);
         assert_eq!(r.len_lines(), 2, "kept the last two");
+        assert_eq!(r.len_bytes(), 10);
         assert_eq!(r.oldest(), 4, "'one\\n' was evicted");
         // Offsets stay meaningful after eviction — that is the whole point.
         assert_eq!(r.since(4), b"two\nthree\n");
@@ -164,14 +165,14 @@ mod tests {
     #[test]
     fn since_resumes_mid_line() {
         // A subscriber's offset can land anywhere, including inside a line.
-        let mut r = Ring::new(10);
+        let mut r = Ring::new(100);
         r.push(b"hello world\n");
         assert_eq!(r.since(6), b"world\n");
     }
 
     #[test]
     fn since_past_the_end_is_empty() {
-        let mut r = Ring::new(10);
+        let mut r = Ring::new(100);
         r.push(b"abc\n");
         assert!(r.since(4).is_empty(), "caller is already current");
         assert!(r.since(999).is_empty(), "never panics on a stale offset");
@@ -179,7 +180,7 @@ mod tests {
 
     #[test]
     fn a_stale_offset_yields_what_remains() {
-        let mut r = Ring::new(2);
+        let mut r = Ring::new(4);
         r.push(b"a\nb\nc\nd\n");
         // Offset 0 is long gone; the caller gets the surviving tail, not an error.
         assert_eq!(r.since(0), b"c\nd\n");
@@ -188,7 +189,7 @@ mod tests {
     #[test]
     fn partial_writes_join_the_open_line() {
         // The common case: PTY reads split mid-line.
-        let mut r = Ring::new(10);
+        let mut r = Ring::new(100);
         r.push(b"par");
         r.push(b"tial");
         assert_eq!(r.len_lines(), 1);
@@ -197,46 +198,37 @@ mod tests {
     }
 
     #[test]
-    fn tail_lines_bounds_the_first_replay() {
-        let mut r = Ring::new(1000);
-        for i in 0..100 {
-            r.push(format!("line {i}\n").as_bytes());
+    fn redrawing_in_place_costs_bytes_not_history() {
+        // A program repainting a ten-line area writes ten newlines a frame.
+        // Counted in lines, a few thousand frames pushed out everything before
+        // them; in bytes, the budget is spent at the rate output actually grows.
+        let mut r = Ring::new(1 << 20);
+        r.push(b"the start\n");
+        for _ in 0..5_000 {
+            r.push(b"\x1b[10A");
+            r.push(&b"spinner\n".repeat(10));
         }
-        let (bytes, start) = r.tail_lines(3);
-        let text = String::from_utf8(bytes).unwrap();
-        assert_eq!(text, "line 97\nline 98\nline 99\n");
-        assert_eq!(r.since(start).len(), text.len());
-    }
-
-    #[test]
-    fn tail_lines_handles_asking_for_more_than_exists() {
-        let mut r = Ring::new(10);
-        r.push(b"only\n");
-        let (bytes, start) = r.tail_lines(100);
-        assert_eq!(bytes, b"only\n");
-        assert_eq!(start, 0);
+        assert!(r.len_lines() > 50_000);
+        assert_eq!(r.oldest(), 0, "the start is still held");
     }
 
     #[test]
     fn an_endless_line_cannot_grow_without_bound() {
         // A progress bar that never emits a newline must not eat memory: the
-        // open line gets sealed at MAX_OPEN_LINE so eviction can reclaim it,
-        // bounding the ring at max_lines × MAX_OPEN_LINE rather than the total
-        // written.
-        let mut r = Ring::new(4);
+        // open line gets sealed at MAX_OPEN_LINE so eviction can reclaim it.
+        let mut r = Ring::new(4 << 20);
         for _ in 0..40 {
             r.push(&vec![b'x'; 400_000]); // 16 MB written, no newline ever
         }
-        // Ceiling is max_lines sealed lines plus the one still open.
-        let ceiling = (4 + 1) * MAX_OPEN_LINE;
+        // Ceiling is the budget plus the one line still open.
+        let ceiling = (4 << 20) + MAX_OPEN_LINE;
         assert!(r.len_bytes() <= ceiling, "held {} bytes", r.len_bytes());
-        assert!(r.len_lines() <= 5);
         assert_eq!(r.written(), 40 * 400_000, "offsets still count every byte");
     }
 
     #[test]
     fn default_scrollback_is_generous() {
         // Scrolling back an hour is a product requirement, not a nicety.
-        assert_eq!(Ring::default().max_lines, DEFAULT_MAX_LINES);
+        assert_eq!(Ring::default().max_bytes, DEFAULT_MAX_BYTES);
     }
 }

@@ -23,16 +23,6 @@ use crate::ring::Ring;
 const FLUSH_INTERVAL: Duration = Duration::from_millis(4);
 const FLUSH_BYTES: usize = 64 * 1024;
 
-/// How much scrollback a newly attached viewer receives when it does not ask
-/// for a particular amount. Clients say what their own buffer holds; this is
-/// the answer for one that does not.
-pub const ATTACH_LINES: usize = 10_000;
-
-/// Ceiling on what a client may ask to have replayed. It arrives from the
-/// page, and serialising the whole ring for every pane on connect is not
-/// something a query string gets to ask for.
-pub const MAX_ATTACH_LINES: usize = 200_000;
-
 /// What the read loop publishes. Subscribers translate this into `Out` frames.
 #[derive(Debug, Clone)]
 pub enum PtyEvent {
@@ -107,14 +97,13 @@ impl History {
         out
     }
 
-    /// In alt screen the replay starts at the switch — an alt screen has no
-    /// scrollback, so earlier history does not belong in it.
-    fn snapshot(&self, lines: Option<usize>) -> Snapshot {
-        let lines = lines.unwrap_or(ATTACH_LINES).clamp(1, MAX_ATTACH_LINES);
-        let from = match self.sniffer.replay_from() {
-            Some(alt) => alt,
-            None => self.ring.tail_lines(lines).1,
-        };
+    /// The whole ring, which the viewer's own scrollback then trims: only a
+    /// terminal knows how many lines the bytes make, since a program redrawing
+    /// in place writes many newlines for each one it leaves. In alt screen the
+    /// replay starts at the switch — an alt screen has no scrollback, so
+    /// earlier history does not belong in it.
+    fn snapshot(&self) -> Snapshot {
+        let from = self.sniffer.replay_from().unwrap_or(self.ring.oldest());
         (self.sniffer.modes().to_escapes(), self.replay(from), self.ring.written())
     }
 }
@@ -127,7 +116,7 @@ pub struct Spawn {
     pub rows: u16,
     /// Extra environment, used to point agent hooks at this pane.
     pub env: Vec<(String, String)>,
-    pub scrollback_lines: usize,
+    pub scrollback_bytes: usize,
 }
 
 pub struct Registry {
@@ -228,7 +217,7 @@ impl Registry {
             Pty {
                 pane: spec.pane,
                 hist: History {
-                    ring: Ring::new(spec.scrollback_lines),
+                    ring: Ring::new(spec.scrollback_bytes),
                     sniffer: Sniffer::default(),
                     cols: spec.cols,
                     widths: VecDeque::from([(0, spec.cols)]),
@@ -402,17 +391,17 @@ impl Registry {
     }
 
     /// Everything a newly attached viewer needs: the mode prefix that puts its
-    /// terminal into the right state, then the scrollback tail.
-    pub fn attach_snapshot(&self, id: PtyId, lines: Option<usize>) -> Option<Snapshot> {
+    /// terminal into the right state, then the scrollback.
+    pub fn attach_snapshot(&self, id: PtyId) -> Option<Snapshot> {
         let ptys = self.ptys.lock().unwrap();
-        Some(ptys.get(&id)?.hist.snapshot(lines))
+        Some(ptys.get(&id)?.hist.snapshot())
     }
 
     /// The same for a pane whose process has ended, with the pty it was.
-    pub fn ended_snapshot(&self, pane: PaneId, lines: Option<usize>) -> Option<(PtyId, Snapshot)> {
+    pub fn ended_snapshot(&self, pane: PaneId) -> Option<(PtyId, Snapshot)> {
         let ended = self.ended.lock().unwrap();
         let (pty, hist) = ended.get(&pane)?;
-        Some((*pty, hist.snapshot(lines)))
+        Some((*pty, hist.snapshot()))
     }
 
     /// Drops the history of every ended pane `keep` says no to, given the
@@ -468,7 +457,7 @@ mod tests {
             cols: 80,
             rows: 24,
             env: Vec::new(),
-            scrollback_lines: 1000,
+            scrollback_bytes: 1 << 20,
         }
     }
 
@@ -585,34 +574,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn attach_replay_is_sized_to_what_the_client_asked_for() {
-        // The client says what its own buffer holds. Sending more than that is
-        // parsing work thrown away on arrival; sending less leaves it half
-        // empty. A request past the ring's own size is simply all of it.
-        let reg = Registry::new();
-        let rx = reg.subscribe();
-        // Kept alive past the output: attach_snapshot reads a live pty, and a
-        // command that exits takes its registry entry with it.
-        let id = reg
-            .spawn(spec(
-                1,
-                &["sh", "-c", "for i in $(seq 1 200); do echo line $i; done; sleep 2"],
-            ))
-            .unwrap();
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        let count = |lines: Option<usize>| {
-            let (_, data, _) = reg.attach_snapshot(id, lines).expect("pty is live");
-            String::from_utf8_lossy(&data).lines().count()
-        };
-        assert!(count(Some(10)) <= 10, "a small ask gets a small replay");
-        assert!(count(Some(10)) < count(Some(150)), "a larger ask gets more");
-        // Absurd asks are clamped rather than refused.
-        assert!(count(Some(usize::MAX)) > 0);
-        let _ = drain(rx).await;
-    }
-
-    #[tokio::test]
     async fn attach_snapshot_carries_modes_then_scrollback() {
         let reg = Registry::new();
         let rx = reg.subscribe();
@@ -622,7 +583,7 @@ mod tests {
             .unwrap();
         tokio::time::sleep(Duration::from_millis(300)).await;
 
-        let (modes, data, through) = reg.attach_snapshot(id, None).expect("pty is live");
+        let (modes, data, through) = reg.attach_snapshot(id).expect("pty is live");
         let modes = String::from_utf8_lossy(&modes);
         assert!(modes.contains("\x1b[?1049h"), "alt screen must be restored");
         assert!(modes.contains("\x1b[?2004h"), "bracketed paste must be restored");
@@ -643,7 +604,7 @@ mod tests {
             .spawn(spec(1, &["sh", "-c", "printf one; sleep 0.2; printf two; sleep 0.4"]))
             .unwrap();
         tokio::time::sleep(Duration::from_millis(400)).await;
-        let (_, _, through) = reg.attach_snapshot(id, None).unwrap();
+        let (_, _, through) = reg.attach_snapshot(id).unwrap();
 
         let mut ends = Vec::new();
         let mut total = 0;
@@ -682,7 +643,7 @@ mod tests {
         reg.resize(id, 40, 24).unwrap();
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        let (_, data, _) = reg.attach_snapshot(id, None).unwrap();
+        let (_, data, _) = reg.attach_snapshot(id).unwrap();
         assert_eq!(
             String::from_utf8_lossy(&data),
             "\x1b]7788;80\x07wide\x1b]7788;40\x07narrow"
@@ -766,16 +727,16 @@ mod tests {
                 Ok(Err(_)) | Err(_) => panic!("never saw Exited"),
             }
         }
-        assert!(reg.attach_snapshot(id, None).is_none(), "the process is gone");
+        assert!(reg.attach_snapshot(id).is_none(), "the process is gone");
 
-        let (pty, (_, data, _)) = reg.ended_snapshot(7, None).expect("history kept");
+        let (pty, (_, data, _)) = reg.ended_snapshot(7).expect("history kept");
         assert_eq!(pty, id);
         assert!(String::from_utf8_lossy(&data).contains("last-words"));
 
         reg.keep_ended(|_, _| true);
-        assert!(reg.ended_snapshot(7, None).is_some());
+        assert!(reg.ended_snapshot(7).is_some());
         reg.keep_ended(|pane, _| pane != 7);
-        assert!(reg.ended_snapshot(7, None).is_none());
+        assert!(reg.ended_snapshot(7).is_none());
     }
 
     #[tokio::test]
@@ -791,7 +752,7 @@ mod tests {
                 Ok(Err(_)) | Err(_) => panic!("never saw Exited"),
             }
         }
-        assert!(reg.ended_snapshot(7, None).is_none(), "its pane closed");
+        assert!(reg.ended_snapshot(7).is_none(), "its pane closed");
     }
 
     #[tokio::test]
@@ -834,7 +795,7 @@ mod tests {
                 Ok(Err(broadcast::error::RecvError::Lagged(_))) => {
                     for p in 1..=3u64 {
                         if let Some(pty) = live.get(&p) {
-                            if let Some((_, data, _)) = reg.attach_snapshot(*pty, None) {
+                            if let Some((_, data, _)) = reg.attach_snapshot(*pty) {
                                 seen.entry(p)
                                     .or_default()
                                     .push_str(&String::from_utf8_lossy(&data));
