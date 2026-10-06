@@ -28,6 +28,9 @@ export interface SortOptions {
       element is passed too, since one selector can match several places to
       drop — two shelves, say — and the caller has to tell them apart. */
   drop?: (id: number, on: HTMLElement | null) => void;
+  /** Carried freely in both directions, for a row that only ever leaves its
+      list — dropped on a `dropTarget` or nowhere — and is never reordered. */
+  free?: boolean;
 }
 
 /** Long enough that a sloppy click is not a drag, short enough to feel direct. */
@@ -47,6 +50,7 @@ export function sortable(node: HTMLElement, opts: SortOptions) {
 
     const axis = current.axis ?? 'y';
     const startPos = axis === 'y' ? e.clientY : e.clientX;
+    const start = { x: e.clientX, y: e.clientY };
     let dragging = false;
 
     // Measured once the drag starts, so the arithmetic below is not fighting
@@ -91,12 +95,17 @@ export function sortable(node: HTMLElement, opts: SortOptions) {
       node.style.zIndex = '5';
       node.style.position = 'relative';
       node.setPointerCapture(ev.pointerId);
+      // Carried over other things, so it must not be what the pointer finds.
+      if (current.free) node.style.pointerEvents = 'none';
       for (const o of others) o.el.style.transition = `transform ${SLIDE_MS}ms ease`;
     }
 
     function move(ev: PointerEvent) {
       const pos = axis === 'y' ? ev.clientY : ev.clientX;
-      if (!dragging && Math.abs(pos - startPos) < SLOP) return;
+      const far = current.free
+        ? Math.hypot(ev.clientX - start.x, ev.clientY - start.y) >= SLOP
+        : Math.abs(pos - startPos) >= SLOP;
+      if (!dragging && !far) return;
       if (!dragging) begin(ev);
 
       const delta = pos - startPos;
@@ -112,6 +121,10 @@ export function sortable(node: HTMLElement, opts: SortOptions) {
         overZone?.classList.remove('drop-over');
         zone?.classList.add('drop-over');
         overZone = zone;
+      }
+      if (current.free) {
+        node.style.transform = `translate(${ev.clientX - start.x}px, ${ev.clientY - start.y}px)`;
+        return;
       }
       if (zone) {
         node.style.transform =
@@ -173,6 +186,7 @@ export function sortable(node: HTMLElement, opts: SortOptions) {
       node.style.transform = '';
       node.style.zIndex = '';
       node.style.position = '';
+      node.style.pointerEvents = '';
       if (node.hasPointerCapture(ev.pointerId)) node.releasePointerCapture(ev.pointerId);
 
       // Suppress the click that would otherwise follow the drop. Registered
@@ -194,6 +208,7 @@ export function sortable(node: HTMLElement, opts: SortOptions) {
         current.drop?.(current.id, landed);
         return;
       }
+      if (current.free) return;
 
       const parent = node.parentElement;
       if (parent) {

@@ -324,6 +324,26 @@
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
           class="shelf-row"
+          use:sortable={{
+            id: tab.id,
+            free: true,
+            ignore: '.shelf-move',
+            order: () => [],
+            commit: () => {},
+            // Another shelf, or the strip to take it back. Not the shelf it
+            // is on, and the freezer only for a tab with a session to resume.
+            dropTarget: SHELVES.filter(
+              (s) => s.key !== openShelf && (s.key !== 'freezer' || tab.can_freeze),
+            )
+              .map((s) => `.shelf-${s.key}`)
+              .concat('.tabbar')
+              .join(', '),
+            drop: (id, el) => {
+              const to = (el?.dataset.shelf as Shelf | undefined) ?? null;
+              shelve(id, to);
+              if (to === null) openShelf = null;
+            },
+          }}
           onclick={() => {
             shelve(tab.id, null);
             openShelf = null;
@@ -544,6 +564,26 @@
     position: fixed;
     inset: 0;
     z-index: 30;
+  }
+  /* While a row is carried out of the drawer, the scrim must not catch the
+     drop meant for the strip or a shelf, and the drawer must not clip the row
+     it is carrying. */
+  .shelf-scrim:has(+ .shelf-drawer :global(.dragging)) {
+    pointer-events: none;
+  }
+  .shelf-drawer:has(:global(.dragging)) {
+    overflow: visible;
+  }
+  .shelf-row:global(.dragging) {
+    cursor: grabbing;
+    background: var(--panel-2);
+    color: var(--fg);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  }
+  /* The strip lit as the place a carried row would go back to. */
+  .tabbar:global(.drop-over) {
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    border-radius: 7px;
   }
   /* Fixed and positioned from the strip's own box: the tab bar's ancestors
      carry no positioning, and `.tabbar` itself clips on the x axis. */
