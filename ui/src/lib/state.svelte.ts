@@ -7,7 +7,7 @@ import { SvelteSet } from 'svelte/reactivity';
 import { markRead, pruneRead } from './agent-status';
 import { Conn } from './conn';
 import { settings } from './settings.svelte';
-import { stripPartialLineMarkers } from './partial-line';
+import { fixPartialLineMarkers } from './partial-line';
 import { PaneTerm } from './pane-term';
 import type {
   AgentSettings,
@@ -219,7 +219,8 @@ class Store {
       case 'output': {
         // A pty the tree does not name yet is replayed once it does.
         const pane = this.ptyToPane.get(msg.pty);
-        if (pane !== undefined) this.terms.get(pane)?.term.write(stripPartialLineMarkers(msg.data));
+        const t = pane === undefined ? undefined : this.terms.get(pane);
+        t?.term.write(fixPartialLineMarkers(msg.data, t.term.cols, t.line));
         break;
       }
       case 'resync': {
@@ -236,7 +237,9 @@ class Store {
         this.loading.add(msg.pane);
         t.term.reset();
         t.term.write(msg.modes);
-        t.term.write(stripPartialLineMarkers(msg.data), () => this.loading.delete(msg.pane));
+        // A reset terminal starts on an empty line.
+        t.line.text = false;
+        t.term.write(fixPartialLineMarkers(msg.data, t.term.cols, t.line), () => this.loading.delete(msg.pane));
         break;
       }
       case 'size': {

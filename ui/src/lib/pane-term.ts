@@ -18,6 +18,7 @@ import { settings } from './settings.svelte';
 import { fileLinkProvider } from './file-links';
 import { findImageMessage, imageAtPoint, imageLinkProvider } from './image-links';
 import { sentRows } from './sent-messages';
+import type { LineState } from './partial-line';
 
 /** The Mac shell's WKWebView, which needs its own renderer and fixes. */
 const macShell = '__BEEBOX__' in window;
@@ -69,6 +70,9 @@ export class PaneTerm {
       viewport. Scrolling anywhere else starts the next step afresh. */
   private stepped: { row: number; viewport: number } | null = null;
   private wiring: TermWiring;
+  /** Whether the line being written has text on it so far, carried between
+      chunks of output for `fixPartialLineMarkers`. */
+  readonly line: LineState = { text: false };
 
   constructor(wiring: TermWiring) {
     const cfg = settings.current;
