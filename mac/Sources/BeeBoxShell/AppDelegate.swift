@@ -75,6 +75,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         }
     }
 
+    /// Collects the page's garbage once BeeBox is no longer in front. Every
+    /// line a terminal parses leaves short-lived objects behind, and WebKit
+    /// lets a few hundred megabytes of them pile up before collecting — the
+    /// number Activity Monitor shows. A full collection pauses the page, so it
+    /// runs only when the window has just stopped being the one in use.
+    /// WebKit offers no public call for it; if this one goes away, nothing
+    /// happens, as before.
+    func applicationDidResignActive(_ notification: Notification) {
+        let collect = NSSelectorFromString("_garbageCollectJavaScriptObjectsForTesting")
+        guard let pool = web?.configuration.processPool, pool.responds(to: collect) else { return }
+        pool.perform(collect)
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         selfTest?.begin()
         guard let screenshotPath else { return }
