@@ -562,6 +562,7 @@ async fn serve(
                             if let Some(pty) = app.pty_of(pane).await {
                                 app.ptys.redraw(pty);
                             }
+                            app.resume_on_show(pane).await;
                         }
                         continue;
                     }

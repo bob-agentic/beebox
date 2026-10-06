@@ -72,6 +72,10 @@ pub struct App {
     /// restart, and rotated whenever a pane spawns, so events from a previous
     /// process can never impersonate the new one.
     hook_secrets: Mutex<HashMap<PaneId, String>>,
+    /// Resumes waiting for their pane to be shown. Typed at spawn, a restart
+    /// brought back every agent at once — forty-odd Claudes starting together,
+    /// some 80 MB each, for tabs nobody had opened yet.
+    pending_resume: Mutex<HashMap<PaneId, PendingResume>>,
     changed: broadcast::Sender<TreeChanged>,
     /// Agent status/title deltas, fanned out to every socket.
     agent_tx: broadcast::Sender<AgentDelta>,
@@ -108,6 +112,14 @@ pub struct App {
     pub images: crate::images::Images,
 }
 
+struct PendingResume {
+    pty: PtyId,
+    agent: AgentKind,
+    cmd: String,
+    /// When the shell was spawned.
+    at: tokio::time::Instant,
+}
+
 impl App {
     pub fn new(store: Store, scrollback_bytes: usize) -> Arc<Self> {
         Self::new_inner(store, scrollback_bytes, None)
@@ -142,6 +154,7 @@ impl App {
             store: Mutex::new(store),
             owner_size: Mutex::new(HashMap::new()),
             hook_secrets: Mutex::new(HashMap::new()),
+            pending_resume: Mutex::new(HashMap::new()),
             changed,
             agent_tx,
             hook_port: std::sync::atomic::AtomicU16::new(0),
@@ -316,16 +329,15 @@ impl App {
         };
         drop(tree);
 
-        if let Some((agent, cmd)) = resume {
-            if self.agent_settings.lock().await.resume(agent) {
-                let ptys = Arc::clone(&self.ptys);
-                // Give the shell a beat to reach its prompt: input written
-                // during rc execution can be swallowed by prompt frameworks
-                // (powerlevel10k instant prompt drains the queue).
-                tokio::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
-                    let _ = ptys.write(pty, format!("{cmd}\r").as_bytes());
-                });
+        // Typed when the pane is first shown, not now (`resume_on_show`).
+        let mut pending = self.pending_resume.lock().await;
+        match resume {
+            Some((agent, cmd)) => {
+                let at = tokio::time::Instant::now();
+                pending.insert(pane, PendingResume { pty, agent, cmd, at });
+            }
+            None => {
+                pending.remove(&pane);
             }
         }
         Ok(pty)
@@ -364,6 +376,25 @@ impl App {
         if started {
             self.commit().await;
         }
+    }
+
+    /// Types a pane's waiting resume, the first time any client shows it.
+    /// The session id stays stored either way, so a pane never opened before
+    /// the next restart still resumes when it finally is.
+    pub async fn resume_on_show(&self, pane: PaneId) {
+        let Some(r) = self.pending_resume.lock().await.remove(&pane) else { return };
+        // Restarted since, or the toggle went off while it waited.
+        if self.pty_of(pane).await != Some(r.pty) || !self.agent_settings.lock().await.resume(r.agent) {
+            return;
+        }
+        let ptys = Arc::clone(&self.ptys);
+        // Give the shell a beat to reach its prompt: input written during rc
+        // execution can be swallowed by prompt frameworks (powerlevel10k
+        // instant prompt drains the queue).
+        tokio::spawn(async move {
+            tokio::time::sleep_until(r.at + std::time::Duration::from_millis(600)).await;
+            let _ = ptys.write(r.pty, format!("{}\r", r.cmd).as_bytes());
+        });
     }
 
     pub async fn pty_of(&self, pane: PaneId) -> Option<PtyId> {
@@ -1452,6 +1483,31 @@ mod tests {
             a.tree.lock().await.active_tab,
             Some(second),
             "returning to a workspace lands on the tab it was last showing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_resume_waits_until_its_pane_is_shown() {
+        // A restart must not bring back every agent at once: only the ones in
+        // panes someone actually looks at.
+        let a = app().await;
+        let pane = {
+            let mut t = a.tree.lock().await;
+            let id = t.workspaces[0].tabs[0].panes[0].id;
+            let p = t.pane_mut(id).unwrap();
+            p.agent = Some(AgentKind::Claude);
+            p.session_ref = Some("0c8f6c3e-5b1a-4d2e-9f7a-1b2c3d4e5f60".into());
+            p.pty = None; // as after a restart
+            id
+        };
+        a.ensure_running(pane).await.unwrap();
+        assert!(a.pending_resume.lock().await.contains_key(&pane), "not typed at spawn");
+
+        a.resume_on_show(pane).await;
+        assert!(a.pending_resume.lock().await.is_empty(), "typed once, when first shown");
+        assert!(
+            a.tree.lock().await.pane(pane).unwrap().session_ref.is_some(),
+            "the session id stays for the next restart"
         );
     }
 
