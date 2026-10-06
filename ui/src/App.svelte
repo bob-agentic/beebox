@@ -141,15 +141,13 @@
   }
 
   const tab = $derived(store.activeTab);
-  const paneCount = $derived(
-    store.tree.workspaces.reduce(
-      (n, w) => n + w.tabs.reduce((m, t) => m + t.panes.length, 0),
-      0,
-    ),
+  // What is running. A frozen tab has no process, so it is counted on its
+  // own rather than inflating the rest.
+  const running = $derived(
+    store.tree.workspaces.flatMap((w) => w.tabs).filter((t) => t.shelf !== 'freezer'),
   );
-  const tabCount = $derived(
-    store.tree.workspaces.reduce((n, w) => n + w.tabs.length, 0),
-  );
+  const tabCount = $derived(running.length);
+  const paneCount = $derived(running.reduce((n, t) => n + t.panes.length, 0));
   const frozenCount = $derived(
     store.tree.workspaces.reduce((n, w) => n + w.tabs.filter((t) => t.shelf === 'freezer').length, 0),
   );
@@ -460,9 +458,12 @@
   {#if store.caps.show_sidebar}
     <div class="sep-v scope-sep"></div>
     <span class="item stats">
-      {store.tree.workspaces.length} workspaces · {tabCount} tabs{frozenCount
-        ? ` (${frozenCount} frozen)`
-        : ''} · {paneCount} panes
+      {store.tree.workspaces.length} workspaces · {tabCount} tabs · {paneCount} panes
+      {#if frozenCount}
+        · <span class="frozen" title="{frozenCount} frozen tabs"
+          ><Icon name="freezer" size={11} /> {frozenCount}</span
+        >
+      {/if}
     </span>
   {/if}
 
@@ -750,6 +751,11 @@
   }
   .item.off {
     color: var(--wait);
+  }
+  .stats .frozen {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
   }
   .live {
     color: #86efac;
