@@ -33,9 +33,11 @@
   // Only what is on the strip. Hibernated tabs are still in `ws.tabs` — they
   // are running — so every walk of the strip goes through the store's filter.
   const tabs = $derived(store.liveTabs);
-  // Filing only. A shelved tab runs, is shared, and carries a status dot
-  // exactly as it did on the strip — it has simply given up its place.
+  // Archive and Later are filing only: a tab on them runs, is shared, and
+  // carries a status dot exactly as it did on the strip — it has simply given
+  // up its place. The freezer stops it (see `Shelf::Freezer` in the core).
   const SHELVES = [
+    { key: 'freezer' as const, icon: 'freezer' as const, label: 'Freezer', hint: 'done with and stopped, resumed when taken out' },
     { key: 'archive' as const, icon: 'archive' as const, label: 'Archive', hint: 'done with, kept to look back at' },
     { key: 'later' as const, icon: 'later' as const, label: 'Later', hint: 'not started yet' },
   ];
@@ -46,7 +48,9 @@
     void store.readRev;
     return SHELVES.map((s) => {
       const tabs = store.shelved(s.key);
-      return { ...s, tabs, dot: rollupWithUnread(tabs.flatMap((t) => t.panes)) };
+      // Nothing runs in the freezer, so there is no status to roll up.
+      const panes = s.key === 'freezer' ? [] : tabs.flatMap((t) => t.panes);
+      return { ...s, tabs, dot: rollupWithUnread(panes) };
     });
   });
 
@@ -200,8 +204,9 @@
         // rejects every drag.
         order: () => tabs.map((t) => t.id),
         commit: (order) => ws && store.send({ t: 'reorder_tabs', ws: ws.id, order }),
-        // Either shelf takes a drop; which one is read off the element.
-        dropTarget: '.shelf',
+        // Any shelf takes a drop; which one is read off the element. The
+        // freezer only takes a tab with a session to resume.
+        dropTarget: tab.can_freeze ? '.shelf' : '.shelf:not(.shelf-freezer)',
         drop: (id, el) =>
           shelve(id, (el?.dataset.shelf as Shelf | undefined) ?? 'archive'),
       }}
@@ -298,11 +303,16 @@
           onclick={() => {
             for (const t of cur.tabs) shelve(t.id, null);
             openShelf = null;
-          }}>Take all back</button
+          }}>{openShelf === 'freezer' ? 'Thaw all' : 'Take all back'}</button
         >
       {/if}
     </div>
-    {#if cur.tabs.length === 0}
+    {#if cur.tabs.length === 0 && openShelf === 'freezer'}
+      <p class="shelf-empty">
+        Nothing here. Drag a finished Claude or Codex tab onto this icon to
+        stop it and give its memory back. Taking it out resumes the session.
+      </p>
+    {:else if cur.tabs.length === 0}
       <p class="shelf-empty">
         Nothing here — {cur.hint}. Drag a tab onto this icon to file it. It
         keeps running and stays shared; it just gives up its place on the
@@ -319,7 +329,11 @@
             openShelf = null;
           }}
         >
-          <StatusIcon phase={tabDot(tab).phase} unread={tabDot(tab).unread} />
+          {#if openShelf === 'freezer'}
+            <span class="frozen"><Icon name="freezer" size={11} /></span>
+          {:else}
+            <StatusIcon phase={tabDot(tab).phase} unread={tabDot(tab).unread} />
+          {/if}
           {#if AGENT_MARK[agent(tab)]}
             <span class="mark" style="color:{AGENT_MARK[agent(tab)].color}">
               <Icon name={AGENT_MARK[agent(tab)].icon} size={11} />
@@ -331,17 +345,31 @@
           <!-- The other shelf, one click away: a thing you meant to do and
                then did belongs in the archive, and moving it should not mean
                putting it back on the strip first. -->
-          <button
-            class="shelf-move"
-            title={openShelf === 'archive' ? 'Move to Later' : 'Move to Archive'}
-            onclick={(e) => {
-              e.stopPropagation();
-              shelve(tab.id, openShelf === 'archive' ? 'later' : 'archive');
-            }}
-          >
-            <Icon name={openShelf === 'archive' ? 'later' : 'archive'} size={12} />
-          </button>
-          <span class="shelf-take">Take back</span>
+          {#if openShelf !== 'freezer'}
+            {#if tab.can_freeze}
+              <button
+                class="shelf-move"
+                title="Move to Freezer — stops it until taken out"
+                onclick={(e) => {
+                  e.stopPropagation();
+                  shelve(tab.id, 'freezer');
+                }}
+              >
+                <Icon name="freezer" size={12} />
+              </button>
+            {/if}
+            <button
+              class="shelf-move"
+              title={openShelf === 'archive' ? 'Move to Later' : 'Move to Archive'}
+              onclick={(e) => {
+                e.stopPropagation();
+                shelve(tab.id, openShelf === 'archive' ? 'later' : 'archive');
+              }}
+            >
+              <Icon name={openShelf === 'archive' ? 'later' : 'archive'} size={12} />
+            </button>
+          {/if}
+          <span class="shelf-take">{openShelf === 'freezer' ? 'Thaw' : 'Take back'}</span>
         </div>
       {/each}
     {/if}
@@ -478,6 +506,12 @@
   .shelf-icon {
     display: inline-flex;
     line-height: 0;
+  }
+  .frozen {
+    display: inline-flex;
+    width: 9px;
+    justify-content: center;
+    color: var(--dim);
   }
   .shelf-icon.phase-running,
   .shelf-icon.phase-needs_input {

@@ -461,10 +461,14 @@ async fn serve(
                         let _ = tx.send(Out::Title { pane, text }).await;
                     }
                 }
-                Ok(PtyEvent::Exited { pane, code }) => {
+                Ok(PtyEvent::Exited { pane, pty, code }) => {
                     // The tree side of this is handled once, by the app's own
-                    // watcher; here we only forward it to this socket.
-                    if app.visible(&grant).await.contains(&pane) {
+                    // watcher; here we only forward it to this socket. Not
+                    // when the pane has moved on to another process: a
+                    // frozen tab taken straight back out would show its new
+                    // shell as exited.
+                    let moved_on = app.pty_of(pane).await.is_some_and(|p| p != pty);
+                    if !moved_on && app.visible(&grant).await.contains(&pane) {
                         let _ = tx.send(Out::Exited { pane, code }).await;
                     }
                 }

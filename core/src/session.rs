@@ -67,6 +67,16 @@ pub struct Tab {
     pub panes: Vec<Pane>,
 }
 
+impl Tab {
+    /// Has a Claude or Codex session to come back to. Freezing anything else
+    /// would only lose what was running.
+    pub fn can_freeze(&self) -> bool {
+        self.panes.iter().any(|p| {
+            matches!(p.agent, Some(AgentKind::Claude | AgentKind::Codex)) && p.session_ref.is_some()
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Workspace {
     pub id: WsId,
@@ -390,6 +400,14 @@ impl SessionTree {
             .find(|t| t.id == id)
     }
 
+    /// In a frozen tab, whose processes are stopped on purpose: nothing but
+    /// taking the tab out may start them.
+    pub fn is_frozen(&self, pane: PaneId) -> bool {
+        self.tab_of(pane)
+            .and_then(|t| self.tab(t))
+            .is_some_and(|t| t.shelf == Some(Shelf::Freezer))
+    }
+
     pub fn tab_of(&self, pane: PaneId) -> Option<TabId> {
         self.workspaces
             .iter()
@@ -470,6 +488,7 @@ impl SessionTree {
                             // and its panes are still reachable. Which tabs the
                             // strip draws is the client's business.
                             shelf: t.shelf,
+                            can_freeze: t.can_freeze(),
                             layout,
                             panes,
                         })

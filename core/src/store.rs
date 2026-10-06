@@ -20,6 +20,7 @@ fn shelf_to_text(shelf: Option<Shelf>) -> &'static str {
     match shelf {
         Some(Shelf::Archive) => "archive",
         Some(Shelf::Later) => "later",
+        Some(Shelf::Freezer) => "freezer",
         None => "",
     }
 }
@@ -30,6 +31,7 @@ fn text_to_shelf(text: &str) -> Option<Shelf> {
     match text {
         "archive" => Some(Shelf::Archive),
         "later" => Some(Shelf::Later),
+        "freezer" => Some(Shelf::Freezer),
         _ => None,
     }
 }

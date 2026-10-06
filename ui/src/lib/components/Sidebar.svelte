@@ -21,10 +21,11 @@
   }: { onnew: () => void; ontoggle: () => void; folded: boolean } = $props();
 
   /** A workspace shows the most urgent state among its panes; an unread
-      completion keeps the aggregate dot solid. */
+      completion keeps the aggregate dot solid. Frozen tabs run nothing, so
+      whatever their panes last said is left out. */
   function wsDot(ws: WorkspaceView) {
     void store.readRev;
-    return rollupWithUnread(ws.tabs.flatMap((t) => t.panes));
+    return rollupWithUnread(ws.tabs.filter((t) => t.shelf !== 'freezer').flatMap((t) => t.panes));
   }
 
   function paneCount(ws: WorkspaceView): number {

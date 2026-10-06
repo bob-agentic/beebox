@@ -30,7 +30,7 @@ pub enum PtyEvent {
     /// one of these, so a subscriber can tell what it already has.
     Output { pane: PaneId, pty: PtyId, data: Arc<Vec<u8>>, end: u64 },
     Title { pane: PaneId, text: String },
-    Exited { pane: PaneId, code: i32 },
+    Exited { pane: PaneId, pty: PtyId, code: i32 },
 }
 
 /// Our own OSC, `ESC ] 7788 ; cols BEL`: the width the output after it was
@@ -296,7 +296,7 @@ impl Registry {
             // the status comes back from there. -1 if it never arrived: the
             // thread died without reaping, which is not a clean exit.
             let code = code_rx.await.unwrap_or(-1);
-            let _ = reg.tx.send(PtyEvent::Exited { pane, code });
+            let _ = reg.tx.send(PtyEvent::Exited { pane, pty: id, code });
         });
 
         Ok(id)
@@ -423,10 +423,23 @@ impl Registry {
         ptys.get(&id).map(|p| p.hist.sniffer.modes())
     }
 
+    /// Ends a pty's processes, as closing a terminal window does: a hangup
+    /// to whatever is in the foreground — an agent and the MCP servers it
+    /// started share its process group — and to the shell. Dropping the
+    /// master alone never did it: the reader thread holds a clone, so the
+    /// terminal never hung up, and every closed tab left its shell and agent
+    /// running. Their exit ends the read loop, which reaps the child.
     pub fn kill(&self, id: PtyId) {
-        // Dropping the master closes the PTY, which ends the read loop, which
-        // reaps the child.
-        self.ptys.lock().unwrap().remove(&id);
+        let Some(p) = self.ptys.lock().unwrap().remove(&id) else { return };
+        // SAFETY: plain signal sends to pids this pty started.
+        unsafe {
+            if let Some(fg) = p.master.process_group_leader() {
+                libc::killpg(fg, libc::SIGHUP);
+            }
+            if let Some(pid) = p.child_pid {
+                libc::kill(pid as libc::pid_t, libc::SIGHUP);
+            }
+        }
     }
 
     pub fn pane_of(&self, id: PtyId) -> Option<PaneId> {
@@ -691,7 +704,7 @@ mod tests {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         loop {
             match tokio::time::timeout_at(deadline, rx.recv()).await {
-                Ok(Ok(PtyEvent::Exited { pane, code })) => {
+                Ok(Ok(PtyEvent::Exited { pane, code, .. })) => {
                     assert_eq!(pane, 9);
                     assert_eq!(code, 3, "the child's own status, not a stand-in");
                     break;
@@ -719,6 +732,37 @@ mod tests {
             }
         }
         assert_eq!(reg.live_count(), 0, "registry must not leak dead ptys");
+    }
+
+    #[tokio::test]
+    async fn killing_a_pty_ends_what_runs_in_it() {
+        // Closing a tab, or freezing one, must not leave its agent running.
+        let reg = Registry::new();
+        let mut rx = reg.subscribe();
+        let id = reg.spawn(spec(3, &["sh", "-c", "sleep 600 & echo pid=$!; wait"])).unwrap();
+        let mut out = String::new();
+        let child: libc::pid_t = loop {
+            match tokio::time::timeout(Duration::from_secs(10), rx.recv()).await {
+                Ok(Ok(PtyEvent::Output { data, .. })) => {
+                    out.push_str(&String::from_utf8_lossy(&data));
+                    if let Some(n) = out.split("pid=").nth(1).and_then(|r| r.split_whitespace().next()) {
+                        break n.parse().unwrap();
+                    }
+                }
+                Ok(Ok(_)) => {}
+                Ok(Err(_)) | Err(_) => panic!("never saw the child's pid"),
+            }
+        };
+        reg.kill(id);
+        loop {
+            match tokio::time::timeout(Duration::from_secs(5), rx.recv()).await {
+                Ok(Ok(PtyEvent::Exited { .. })) => break,
+                Ok(Ok(_)) => {}
+                Ok(Err(_)) | Err(_) => panic!("the shell never exited"),
+            }
+        }
+        // SAFETY: signal 0 only asks whether the pid exists.
+        assert_ne!(unsafe { libc::kill(child, 0) }, 0, "its child must be gone too");
     }
 
     #[tokio::test]

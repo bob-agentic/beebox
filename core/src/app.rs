@@ -13,7 +13,7 @@ use tokio::sync::{broadcast, Mutex};
 
 use crate::proto::{
     AgentEvent, AgentKind, AgentSetting, AgentSettings, AgentStatusView, Caps, In, Out, PaneId,
-    CloseReason, Peer, PtyId, SessionId, TabId, TreeView, WsId,
+    CloseReason, Peer, PtyId, SessionId, Shelf, TabId, TreeView, WsId,
 };
 use crate::pty::{Registry, Spawn};
 use crate::session::SessionTree;
@@ -369,6 +369,7 @@ impl App {
                 .await
                 .pane(pane)
                 .is_some_and(|p| p.pty.is_none() && !p.exited);
+            let fresh = fresh && !self.tree.lock().await.is_frozen(pane);
             if fresh && self.ensure_running(pane).await.is_ok() {
                 started = true;
             }
@@ -376,6 +377,38 @@ impl App {
         if started {
             self.commit().await;
         }
+    }
+
+    /// Files a tab on a shelf, or brings it back. Archive and Later touch no
+    /// process: the point of filing a tab rather than closing it is that
+    /// whatever is running keeps running. The freezer stops them all, and
+    /// taking a tab out of it starts them again — each agent resuming when its
+    /// pane is shown (`resume_on_show`).
+    async fn shelve_tab(&self, tab: TabId, shelf: Option<Shelf>) -> Result<()> {
+        let mut tree = self.tree.lock().await;
+        let Some(t) = tree.tab(tab) else { return Ok(()) };
+        let (was, can_freeze) = (t.shelf, t.can_freeze());
+        let panes: Vec<PaneId> = t.panes.iter().map(|p| p.id).collect();
+        let freeze = shelf == Some(Shelf::Freezer);
+        if freeze && !can_freeze {
+            return Ok(());
+        }
+        tree.shelve_tab(tab, shelf);
+        if freeze && was != shelf {
+            for &pane in &panes {
+                if let Some(pty) = tree.pane_mut(pane).and_then(|p| p.pty.take()) {
+                    self.ptys.kill(pty);
+                }
+            }
+        }
+        drop(tree);
+        if was == Some(Shelf::Freezer) && !freeze {
+            for pane in panes {
+                self.ensure_running(pane).await?;
+            }
+        }
+        self.commit().await;
+        Ok(())
     }
 
     /// Types a pane's waiting resume, the first time any client shows it.
@@ -600,12 +633,7 @@ impl App {
                 }
                 self.commit().await;
             }
-            In::ShelveTab { tab, shelf } => {
-                // No pty is touched: the point of filing a tab rather than
-                // closing it is that whatever is running keeps running.
-                self.tree.lock().await.shelve_tab(tab, shelf);
-                self.commit().await;
-            }
+            In::ShelveTab { tab, shelf } => self.shelve_tab(tab, shelf).await?,
             In::ReorderWorkspaces { order } => {
                 let mut tree = self.tree.lock().await;
                 // Anything the client did not mention keeps its relative place
@@ -682,7 +710,12 @@ impl App {
                         p.title = text;
                     }
                 }
-                Ok(crate::pty::PtyEvent::Exited { pane, code }) => {
+                Ok(crate::pty::PtyEvent::Exited { pane, pty, code }) => {
+                    // Only the pane's own process. Freezing stops one on
+                    // purpose, and that must not close its pane.
+                    if self.pty_of(pane).await != Some(pty) {
+                        continue;
+                    }
                     self.mark_exited(pane).await;
                     if code == 0 {
                         self.close_pane_inner(pane).await;
@@ -781,6 +814,7 @@ impl App {
             tree.workspaces
                 .iter()
                 .flat_map(|w| &w.tabs)
+                .filter(|t| t.shelf != Some(Shelf::Freezer))
                 .flat_map(|t| &t.panes)
                 .map(|p| p.id)
                 .collect()
@@ -1531,6 +1565,55 @@ mod tests {
         let t = a.tree.lock().await;
         assert_eq!(t.workspaces[0].tabs[0].shelf, Some(Shelf::Archive));
         assert_eq!(t.workspaces[0].tabs.len(), 1, "the tab is set aside, not removed");
+    }
+
+    /// A tab whose one pane has a Claude session to resume.
+    async fn agent_tab(a: &App) -> (TabId, PaneId) {
+        let mut t = a.tree.lock().await;
+        let tab = &mut t.workspaces[0].tabs[0];
+        let p = &mut tab.panes[0];
+        p.agent = Some(AgentKind::Claude);
+        p.session_ref = Some("0c8f6c3e-5b1a-4d2e-9f7a-1b2c3d4e5f60".into());
+        (tab.id, p.id)
+    }
+
+    #[tokio::test]
+    async fn freezing_stops_a_tab_and_taking_it_out_resumes_it() {
+        let a = app().await;
+        let owner = a.owner_grant().await;
+        let watcher = tokio::spawn(a.clone().watch_ptys());
+        let (tab, pane) = agent_tab(&a).await;
+        assert_eq!(a.ptys.live_count(), 1);
+
+        a.handle_host(&owner, In::ShelveTab { tab, shelf: Some(Shelf::Freezer) }).await.unwrap();
+        // Long enough for the killed shell's exit to reach the watcher.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert_eq!(a.ptys.live_count(), 0, "every process in the tab stops");
+        {
+            let t = a.tree.lock().await;
+            let p = t.pane(pane).expect("the stopped shell's exit must not close its pane");
+            assert!(p.pty.is_none() && !p.exited);
+            assert!(p.session_ref.is_some(), "the session stays to resume");
+        }
+        a.start_never_run([pane]).await;
+        assert_eq!(a.ptys.live_count(), 0, "a client connecting does not thaw it");
+
+        a.handle_host(&owner, In::ShelveTab { tab, shelf: None }).await.unwrap();
+        assert_eq!(a.ptys.live_count(), 1, "taking it out starts its shell");
+        assert!(a.pending_resume.lock().await.contains_key(&pane), "and resumes when shown");
+        watcher.abort();
+    }
+
+    #[tokio::test]
+    async fn only_a_tab_with_an_agent_session_can_be_frozen() {
+        // A plain shell has nothing to come back to: freezing would only
+        // lose what was running in it.
+        let a = app().await;
+        let owner = a.owner_grant().await;
+        let tab = a.tree.lock().await.workspaces[0].tabs[0].id;
+        a.handle_host(&owner, In::ShelveTab { tab, shelf: Some(Shelf::Freezer) }).await.unwrap();
+        assert_eq!(a.tree.lock().await.tab(tab).unwrap().shelf, None);
+        assert_eq!(a.ptys.live_count(), 1);
     }
 
     #[tokio::test]

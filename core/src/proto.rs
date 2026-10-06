@@ -206,10 +206,11 @@ pub struct PaneView {
 
 /// Where a tab is filed, when it is not on the strip.
 ///
-/// Filing only, not a mode: a shelved tab runs exactly as it did, is shared
-/// exactly as it was, and carries the same status dot. The two shelves exist
-/// because a tab you are done with and a tab you have not started are worth
-/// telling apart when you come back to them.
+/// Archive and Later are filing only, not a mode: a tab on them runs exactly
+/// as it did, is shared exactly as it was, and carries the same status dot.
+/// They exist because a tab you are done with and a tab you have not started
+/// are worth telling apart when you come back to them. The freezer is the one
+/// that does something: see `Freezer`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Shelf {
@@ -217,15 +218,23 @@ pub enum Shelf {
     Archive,
     /// Not started yet.
     Later,
+    /// Finished with, and stopped: every process in the tab ends, giving back
+    /// the memory an agent and the MCP servers it started hold — a few hundred
+    /// megabytes each, which across dozens of finished tasks was most of the
+    /// machine. Taking the tab out starts its shells again, and each agent
+    /// resumes its session when its pane is shown. Only tabs with a Claude or
+    /// Codex session to resume can go in.
+    Freezer,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TabView {
     pub id: TabId,
     pub title: String,
-    /// Off the strip and on a shelf, or `None` for a tab on the strip. The
-    /// tab keeps running either way.
+    /// Off the strip and on a shelf, or `None` for a tab on the strip.
     pub shelf: Option<Shelf>,
+    /// May go in the freezer: has a Claude or Codex session to resume.
+    pub can_freeze: bool,
     /// Authoritative for structure. Pane membership is never derived from
     /// anywhere else.
     pub layout: Node,

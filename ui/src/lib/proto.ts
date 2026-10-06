@@ -71,7 +71,7 @@ export interface PaneView {
 }
 
 /** The two shelves a tab can be filed on, mirroring `proto.rs`. */
-export type Shelf = 'archive' | 'later';
+export type Shelf = 'freezer' | 'archive' | 'later';
 
 export interface TabView {
   id: TabId;
@@ -81,6 +81,8 @@ export interface TabView {
       a shelved tab runs, is shared, and carries a status dot exactly as it
       did on the strip. */
   shelf: Shelf | null;
+  /** May go in the freezer: has a Claude or Codex session to resume. */
+  can_freeze: boolean;
   layout: Node;
   panes: PaneView[];
 }
