@@ -104,6 +104,8 @@ pub struct App {
     /// to disk: without it, anything that can reach the port would have a full
     /// terminal on this machine, and the default bind is every interface.
     owner_key: String,
+    /// Each agent pane's sessions, and the images pasted into them.
+    pub images: crate::images::Images,
 }
 
 impl App {
@@ -152,7 +154,26 @@ impl App {
             scrollback_bytes,
             shell: std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into()),
             owner_key: random_key(),
+            images: Default::default(),
         })
+    }
+
+    /// Image `#n` as pasted into the agent running in `pane`. `row` is the
+    /// terminal row the tag was on. The transcript read is file IO, so it
+    /// runs off the async threads.
+    pub async fn pane_image(self: &Arc<Self>, pane: PaneId, n: u32, row: String) -> Option<Arc<crate::images::Image>> {
+        let stored = {
+            let tree = self.tree.lock().await;
+            tree.pane(pane).and_then(|p| p.agent.zip(p.session_ref.clone()))
+        };
+        let sessions = self.images.sessions_of(pane, stored);
+        let app = self.clone();
+        tokio::task::spawn_blocking(move || {
+            sessions.iter().find_map(|(agent, id)| app.images.lookup(*agent, id, n, &row))
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     pub fn subscribe_tree(&self) -> broadcast::Receiver<TreeChanged> {
@@ -601,6 +622,7 @@ impl App {
             | In::Ping
             | In::Replay { .. }
             | In::Release { .. }
+            | In::Image { .. }
             | In::CreateGrant { .. } => {}
         }
         Ok(Vec::new())
@@ -657,6 +679,7 @@ impl App {
                 if let Some(pty) = self.pty_of(pane).await {
                     self.ptys.kill(pty);
                 }
+                self.images.forget_pane(pane);
             }
             // Last pane in a tab: closing it means closing the tab.
             None => {
@@ -673,6 +696,7 @@ impl App {
         let ws = self.workspace_of_tab(tab).await;
         let panes = self.tree.lock().await.close_tab(tab);
         for pane in panes {
+            self.images.forget_pane(pane);
             if let Some(pty) = self.pty_of(pane).await {
                 self.ptys.kill(pty);
             }
@@ -955,6 +979,12 @@ impl App {
         let settings = *self.agent_settings.lock().await;
         let status_on = settings.status(ev.agent);
         let resume_on = settings.resume(ev.agent);
+
+        // Whatever the toggles say: an image pasted into the session should
+        // open whether or not its status or resume are wanted.
+        if let Some(id) = &ev.session_id {
+            self.images.note_session(pane, ev.agent, id, ev.at_ms);
+        }
 
         let mut dirty = false;
         let mut deltas: Vec<AgentDelta> = Vec::new();

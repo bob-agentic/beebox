@@ -144,6 +144,7 @@ export type Out =
   | { t: 'peers'; peers: Peer[] }
   | { t: 'grant'; url: string; hosts: string[] }
   | { t: 'pong' }
+  | { t: 'image'; req: number; mime: string; data: Uint8Array }
   | { t: 'closed'; reason: CloseReason };
 
 export type GrantScope =
@@ -158,6 +159,7 @@ export type In =
   | { t: 'ping' }
   | { t: 'replay'; pane: PaneId }
   | { t: 'release'; pane: PaneId }
+  | { t: 'image'; pane: PaneId; n: number; row: string; req: number }
   | { t: 'split'; pane: PaneId; dir: Dir }
   | { t: 'set_sizes'; tab: TabId; path: number[]; sizes: number[] }
   | { t: 'close_pane'; pane: PaneId }

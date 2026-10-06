@@ -146,10 +146,12 @@ version = "0.2.13"
 dependencies = [
  "anyhow",
  "axum",
+ "base64",
  "clap",
  "futures-util",
  "if-addrs",
  "libc",
+ "memchr",
  "mime_guess",
  "portable-pty",
  "rand",

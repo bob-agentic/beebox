@@ -387,6 +387,13 @@ pub enum Out {
         hosts: Vec<String>,
     },
     Pong,
+    /// Answer to `In::Image`. Empty `data` when there is no such image.
+    Image {
+        req: u32,
+        mime: String,
+        #[serde(with = "serde_bytes")]
+        data: Vec<u8>,
+    },
     Closed {
         reason: CloseReason,
     },
@@ -421,6 +428,15 @@ pub enum In {
     /// Stop sending this pane's output: the client let go of its terminal.
     Release {
         pane: PaneId,
+    },
+    /// The image an agent printed as `[Image #n]`. `row` is the terminal row
+    /// the tag was on: Codex numbers from 1 in every message, and the row's
+    /// text is what tells them apart. Answered with `Image` under `req`.
+    Image {
+        pane: PaneId,
+        n: u32,
+        row: String,
+        req: u32,
     },
 
     // ---- owner only; rejected otherwise ----

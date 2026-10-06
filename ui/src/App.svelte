@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { fade } from 'svelte/transition';
+  import { fade, fly } from 'svelte/transition';
   import { store } from './lib/state.svelte';
   import { paneLabel, tabLabel } from './lib/labels';
   import Sidebar, { FOLD_MS } from './lib/components/Sidebar.svelte';
@@ -11,6 +11,7 @@
   import OpenWorkspaceDialog from './lib/components/OpenWorkspaceDialog.svelte';
   import Icon from './lib/components/Icon.svelte';
   import KeyBar from './lib/components/KeyBar.svelte';
+  import ImageViewer from './lib/components/ImageViewer.svelte';
 
   let dialog = $state<'share' | 'conns' | 'settings' | 'openws' | null>(null);
 
@@ -476,9 +477,28 @@
     </button>
     <div class="sep-v"></div>
     {#if store.webExposed && store.peers.length > 0}
-      <button class="item live" onclick={() => (dialog = 'conns')}>
-        ● {store.peers.length} shared
-      </button>
+      <span class="anchor">
+        {#key store.paired?.id}
+          <button class="item live" class:pulse={store.paired} onclick={() => (dialog = 'conns')}>
+            ● {store.peers.length} shared
+          </button>
+        {/key}
+        <!-- A device that just joined, said where the shared devices live. -->
+        {#if store.paired}
+          {#key store.paired.id}
+            <button
+              class="paired"
+              aria-live="polite"
+              in:fly={{ y: 6, duration: 160 }}
+              out:fade={{ duration: 140 }}
+              onclick={() => (dialog = 'conns')}
+            >
+              <span class="tick">✓</span>
+              <span class="said"><b>{store.paired.title}</b><small>{store.paired.detail}</small></span>
+            </button>
+          {/key}
+        {/if}
+      </span>
       <div class="sep-v"></div>
     {/if}
   {/if}
@@ -490,6 +510,8 @@
 {#if store.sizing}
   <KeyBar />
 {/if}
+
+<ImageViewer />
 
 {#if dialog === 'share'}
   <ShareDialog onclose={() => (dialog = null)} />
@@ -731,6 +753,83 @@
   }
   button.live:hover {
     background: #14251a;
+  }
+  .anchor {
+    position: relative;
+    display: flex;
+  }
+  /* Twice, then still: enough to catch the eye on its way to the bubble. */
+  .live.pulse {
+    animation: pulse 1.2s ease-out 2;
+  }
+  @keyframes pulse {
+    from {
+      background: color-mix(in srgb, var(--accent) 30%, transparent);
+    }
+    to {
+      background: transparent;
+    }
+  }
+  .paired {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 10px);
+    z-index: 70;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: max-content;
+    max-width: min(360px, calc(100vw - 24px));
+    padding: 9px 14px 9px 10px;
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+    border-radius: 9px;
+    background: var(--panel-2);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+    color: var(--fg);
+    text-align: left;
+    font: inherit;
+    cursor: pointer;
+  }
+  /* The point, over the count's middle. */
+  .paired::after {
+    content: '';
+    position: absolute;
+    right: 28px;
+    bottom: -6px;
+    width: 10px;
+    height: 10px;
+    background: var(--panel-2);
+    border-right: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+    border-bottom: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+    transform: rotate(45deg);
+  }
+  .paired .tick {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 700;
+  }
+  .said {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .said b {
+    font-size: 12.5px;
+    font-weight: 600;
+  }
+  .said small {
+    overflow: hidden;
+    color: var(--dim);
+    font-size: 11.5px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   @media (max-width: 640px) {

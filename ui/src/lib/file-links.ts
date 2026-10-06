@@ -48,6 +48,23 @@ export function findPaths(text: string): PathMatch[] {
   return out;
 }
 
+/** A buffer row's text, and the cell each of its UTF-16 units sits in: a
+ *  CJK character takes two cells and an emoji two units, so they differ. */
+export function rowText(term: Terminal, y: number): { text: string; cellAt: number[] } | null {
+  const row = term.buffer.active.getLine(y);
+  if (!row) return null;
+  let text = '';
+  const cellAt: number[] = [];
+  for (let x = 0; x < row.length; x++) {
+    const cell = row.getCell(x);
+    if (!cell || cell.getWidth() === 0) continue;
+    const chars = cell.getChars() || ' ';
+    text += chars;
+    for (let i = 0; i < chars.length; i++) cellAt.push(x);
+  }
+  return { text, cellAt };
+}
+
 /** The desktop shell's side: which paths exist, and opening one. */
 interface Opener {
   resolvePaths(o: { paths: string[]; cwd: string }): Promise<(string | null)[]>;
@@ -65,19 +82,9 @@ export function fileLinkProvider(
 ): ILinkProvider {
   return {
     provideLinks(y, done) {
-      const row = term.buffer.active.getLine(y - 1);
-      if (!row) return done(undefined);
-      // The text, and the cell each of its UTF-16 units sits in: a CJK
-      // character takes two cells and an emoji two units, so they differ.
-      let text = '';
-      const cellAt: number[] = [];
-      for (let x = 0; x < row.length; x++) {
-        const cell = row.getCell(x);
-        if (!cell || cell.getWidth() === 0) continue;
-        const chars = cell.getChars() || ' ';
-        text += chars;
-        for (let i = 0; i < chars.length; i++) cellAt.push(x);
-      }
+      const line = rowText(term, y - 1);
+      if (!line) return done(undefined);
+      const { text, cellAt } = line;
       const found = findPaths(text);
       if (!found.length) return done(undefined);
       opener.resolvePaths({ paths: found.map((m) => m.path), cwd: cwd() }).then(

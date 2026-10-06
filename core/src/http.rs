@@ -569,6 +569,20 @@ async fn serve(
                         shown.remove(&pane);
                         continue;
                     }
+                    // Off the loop: a transcript read the first time can take
+                    // a moment, and output must not wait on it.
+                    In::Image { pane, n, row, req } => {
+                        let app = app.clone();
+                        let tx = tx.clone();
+                        let seen = app.visible(&grant).await.contains(&pane);
+                        tokio::spawn(async move {
+                            let row: String = row.chars().take(512).collect();
+                            let img = if seen { app.pane_image(pane, n, row).await } else { None };
+                            let (mime, data) = img.map(|i| (i.mime.clone(), i.data.clone())).unwrap_or_default();
+                            let _ = tx.send(Out::Image { req, mime, data }).await;
+                        });
+                        continue;
+                    }
                     _ => {}
                 }
                 if handle(&app, &grant, sizing, inbound, &tx).await.is_break() {

@@ -4,6 +4,7 @@ pub mod app;
 pub mod cwd;
 pub mod hooks;
 pub mod http;
+pub mod images;
 pub mod modes;
 pub mod proto;
 pub mod pty;

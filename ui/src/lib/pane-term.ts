@@ -16,6 +16,7 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { settings } from './settings.svelte';
 import { fileLinkProvider } from './file-links';
+import { findImageMessage, imageAtPoint, imageLinkProvider } from './image-links';
 import { sentRows } from './sent-messages';
 
 /** The Mac shell's WKWebView, which needs its own renderer and fixes. */
@@ -41,6 +42,8 @@ export interface TermWiring {
   /** Whether Claude Code or Codex has run here, which is where there are
       sent messages to step between. */
   agent(): boolean;
+  /** Opens the image an agent printed as `[Image #n]` on this row. */
+  image(n: number, row: string): void;
 }
 
 export class PaneTerm {
@@ -65,6 +68,7 @@ export class PaneTerm {
   /** The sent message the last ⌘↑/⌘↓ landed on, and where that left the
       viewport. Scrolling anywhere else starts the next step afresh. */
   private stepped: { row: number; viewport: number } | null = null;
+  private wiring: TermWiring;
 
   constructor(wiring: TermWiring) {
     const cfg = settings.current;
@@ -116,6 +120,11 @@ export class PaneTerm {
     if (macShell) {
       term.registerLinkProvider(fileLinkProvider(term, (window as any).__BEEBOX__, wiring.cwd));
     }
+
+    // `[Image #N]` opens the image pasted there — only where an agent runs,
+    // since a shell's output saying it means nothing.
+    term.registerLinkProvider(imageLinkProvider(term, wiring.image, wiring.agent));
+    this.wiring = wiring;
 
     // WebKit currently accepts the WebGL context but composites it as a blank
     // layer. Browsers keep the accelerated renderer; the native shell uses
@@ -181,6 +190,7 @@ export class PaneTerm {
     if (!el) {
       this.term.open(host);
       this.patchIme(this.term.element!);
+      this.watchTaps(this.term.element!);
       return;
     }
     // Moving an element loses its scroll offset, and xterm only writes the
@@ -231,6 +241,20 @@ export class PaneTerm {
       return;
     }
     // Near the bottom the viewport cannot put the row at its top.
+    const viewport = Math.min(row, buf.baseY);
+    this.scrollLines(viewport - buf.viewportY);
+    this.stepped = { row, viewport };
+    this.flash(row);
+  }
+
+  /** The message image `#n` was sent in, as `findImageMessage` finds it. */
+  imageMessage(n: number, row: string) {
+    return findImageMessage(this.term.buffer.active, n, row);
+  }
+
+  /** Scrolls a row to the top of the screen, and marks it, as a step does. */
+  reveal(row: number) {
+    const buf = this.term.buffer.active;
     const viewport = Math.min(row, buf.baseY);
     this.scrollLines(viewport - buf.viewportY);
     this.stepped = { row, viewport };
@@ -305,6 +329,40 @@ export class PaneTerm {
     this.renderer = null;
     this.report = () => {};
     this.term.dispose();
+  }
+
+  // A tap on `[Image #N]` opens it. xterm has no touch handling, so the
+  // link above never sees a finger; this finds the tag from where the tap
+  // landed. Only a tap — a touch that neither moved nor lingered — so
+  // scrolling and the long press are left as they were. Taken at touchend,
+  // whose default is what the browser turns into a click and a focus: a tap
+  // on an image should not bring the keyboard up.
+  private watchTaps(el: HTMLElement) {
+    let start: { x: number; y: number; at: number } | null = null;
+    el.addEventListener(
+      'touchstart',
+      (e) => {
+        const t = e.touches[0];
+        start = e.touches.length === 1 ? { x: t.clientX, y: t.clientY, at: e.timeStamp } : null;
+      },
+      { capture: true, passive: true },
+    );
+    el.addEventListener(
+      'touchend',
+      (e) => {
+        const s = start;
+        start = null;
+        const t = e.changedTouches[0];
+        if (!s || !t || e.touches.length || !this.wiring.agent()) return;
+        if (Math.hypot(t.clientX - s.x, t.clientY - s.y) > 10 || e.timeStamp - s.at > 500) return;
+        const hit = imageAtPoint(this.term, t.clientX, t.clientY);
+        if (!hit) return;
+        e.preventDefault();
+        e.stopPropagation();
+        this.wiring.image(hit.n, hit.row);
+      },
+      { capture: true, passive: false },
+    );
   }
 
   // WebKit drops the first Chinese full-width punctuation mark: `？` needs

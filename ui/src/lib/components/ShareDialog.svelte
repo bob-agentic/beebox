@@ -1,8 +1,10 @@
 <script lang="ts">
   import qrcode from 'qrcode-generator';
+  import { fade } from 'svelte/transition';
   import { store } from '../state.svelte';
   import { writeClipboard } from '../clipboard';
   import Icon from './Icon.svelte';
+  import { paneLabel, tabLabel } from '../labels';
   import type { GrantScope } from '../proto';
 
   let { onclose }: { onclose: () => void } = $props();
@@ -58,7 +60,8 @@
   function create() {
     const scope = scopeValue();
     if (!scope || creating) return;
-    const what = { all: '', workspace: ws?.name, tab: tab?.title, pane: pane?.title || pane?.agent }[kind];
+    // Named as the tab bar and the pane header name them.
+    const what = { all: '', workspace: ws?.name, tab: tab && tabLabel(tab), pane: pane && paneLabel(pane) }[kind];
     made = { kind, what: what ?? '', writable };
     store.send({ t: 'create_grant', scope, writable });
   }
@@ -101,6 +104,39 @@
     qr.addData(showing);
     qr.make();
     return qr.createSvgTag({ cellSize: 5, margin: 2, scalable: true });
+  });
+
+  /** Who opened the link. The code's card says so where the eye already is,
+      then the dialog goes and the status bar's share count takes over. */
+  let joined = $state<{ title: string; device: string; detail: string } | null>(null);
+  let joinedTimer: ReturnType<typeof setTimeout> | null = null;
+
+  $effect(() => {
+    const share = store.share;
+    const token = share?.url.split('/').pop() ?? null;
+    store.awaitingPair = made ? token : null;
+    if (!share || !made || !token || joined) return;
+    const scope = SCOPE_NAME[made.kind] + (made.what ? ` · ${made.what}` : '');
+    const detail = `${scope} · ${made.writable ? 'can type' : 'read-only'}`;
+    store.linkLabels.set(token, detail);
+    const peer = store.peers.find((p) => p.token === token);
+    if (!peer) return;
+    store.announced.add(peer.token);
+    joined = { title: `${peer.device} connected`, device: peer.device, detail };
+    joinedTimer = setTimeout(finish, 3000);
+  });
+
+  /** Ends the dialog after a pairing: now, on a click, or when the time is up. */
+  function finish() {
+    if (!joined) return;
+    if (joinedTimer) clearTimeout(joinedTimer);
+    store.announcePairing(joined.title, joined.detail);
+    onclose();
+  }
+
+  $effect(() => () => {
+    if (joinedTimer) clearTimeout(joinedTimer);
+    store.awaitingPair = null;
   });
 
   // The Copy button must answer, or the user assumes it did nothing.
@@ -177,12 +213,12 @@
 
         <button class:on={kind === 'tab'} onclick={() => (kind = 'tab')}>
           <b>This tab</b>
-          <small>{tab?.title || 'current tab'} · {tab?.panes.length ?? 0} panes</small>
+          <small>{tab ? tabLabel(tab) : '—'} · {tab?.panes.length ?? 0} panes</small>
         </button>
 
         <button class:on={kind === 'pane'} onclick={() => (kind = 'pane')}>
           <b>One pane <span class="tag ok">smallest surface</span></b>
-          <small>{pane?.title || pane?.agent || '—'} · this terminal only, nothing else</small>
+          <small>{pane ? paneLabel(pane) : '—'} · this terminal only, nothing else</small>
         </button>
       </div>
 
@@ -207,7 +243,21 @@
   </div>
 </div>
 
-{#if showing}
+{#if joined}
+  <!-- In the code's place — or where it would be, had the link been copied
+       instead. A click ends it early. -->
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="qr-mask" onclick={finish}>
+    <div class="qr-card" role="status">
+      <div class="joined" in:fade={{ duration: 160 }}>
+        <span class="tick">✓</span>
+        <b>Connected</b>
+        <small>{joined.device}<br />{joined.detail}</small>
+      </div>
+    </div>
+  </div>
+{:else if showing}
   <!-- Over the dialog rather than inside the URL list, which scrolls and would
        crop it. -->
   <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -255,6 +305,37 @@
     width: 100%;
     height: 100%;
     display: block;
+  }
+  /* Takes exactly the code's room, so the card does not change size. */
+  .joined {
+    width: 196px;
+    height: 196px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    text-align: center;
+  }
+  .tick {
+    display: grid;
+    place-items: center;
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+    color: var(--accent);
+    font-size: 26px;
+    font-weight: 700;
+  }
+  .joined b {
+    font-size: 14px;
+  }
+  .joined small {
+    color: var(--dim);
+    font-size: 12px;
+    line-height: 1.5;
   }
   .qr-btn {
     color: var(--faint);

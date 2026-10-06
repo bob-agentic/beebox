@@ -168,7 +168,7 @@ pub fn normalize_codex(body: &Value, at_ms: i64) -> Option<AgentEvent> {
 /// Rollouts this daemon is willing to open. Same confinement as Claude
 /// transcripts, against the real user CODEX_HOME (the overlay symlinks
 /// `sessions/` back here).
-fn codex_sessions_dir() -> Option<PathBuf> {
+pub(crate) fn codex_sessions_dir() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
     Some(PathBuf::from(home).join(".codex").join("sessions"))
 }
@@ -216,7 +216,7 @@ fn read_codex_rollout_title(session_id: &str) -> Option<String> {
 /// Walks the sessions tree (bounded depth: year/month/day) for the newest
 /// rollout matching the session id. The id is already whitelist-validated,
 /// so the suffix match cannot be a glob or path trick.
-fn find_rollout(dir: &Path, session_id: &str, depth: usize) -> Option<PathBuf> {
+pub(crate) fn find_rollout(dir: &Path, session_id: &str, depth: usize) -> Option<PathBuf> {
     if depth > 3 {
         return None;
     }
@@ -247,7 +247,7 @@ fn find_rollout(dir: &Path, session_id: &str, depth: usize) -> Option<PathBuf> {
 
 /// Transcripts this daemon is willing to open. Confinement, not trust: the
 /// path arrived over HTTP, so "wherever it points" is not an option.
-fn claude_data_dir() -> Option<PathBuf> {
+pub(crate) fn claude_data_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".claude"))
 }
 

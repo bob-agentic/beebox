@@ -174,6 +174,11 @@ class Store {
         // A new connection sends nothing until asked. What is on screen stays
         // there until the replay replaces it.
         if (up) for (const pane of this.terms.keys()) this.send({ t: 'replay', pane });
+        // A request the old socket took is never answered.
+        else for (const [req, done] of this.imageReqs) {
+          this.imageReqs.delete(req);
+          done(null);
+        }
       },
     );
   }
@@ -279,9 +284,22 @@ class Store {
         if (pane) pane.pty = null;
         break;
       }
-      case 'peers':
+      case 'peers': {
+        // A link someone has just opened, for the first time — not the
+        // list this connection starts with, and not a device coming back.
+        if (this.peersKnown) {
+          for (const p of msg.peers) {
+            if (this.peers.some((q) => q.token === p.token) || this.announced.has(p.token)) continue;
+            if (p.token === this.awaitingPair) continue;
+            this.announced.add(p.token);
+            const detail = this.linkLabels.get(p.token) ?? `${p.scope} · ${p.writable ? 'can type' : 'read-only'}`;
+            this.announcePairing(`${p.device} connected`, detail);
+          }
+        }
+        this.peersKnown = true;
         this.peers = msg.peers;
         break;
+      }
       case 'grant':
         this.share = { url: msg.url, hosts: msg.hosts };
         break;
@@ -294,6 +312,12 @@ class Store {
         break;
       case 'pong':
         break;
+      case 'image': {
+        const done = this.imageReqs.get(msg.req);
+        this.imageReqs.delete(msg.req);
+        done?.(msg.data.length ? URL.createObjectURL(new Blob([msg.data as BlobPart], { type: msg.mime })) : null);
+        break;
+      }
     }
   }
 
@@ -355,6 +379,7 @@ class Store {
       },
       cwd: () => this.pane(pane)?.cwd ?? '',
       agent: () => this.isAgent(pane),
+      image: (n, row) => this.openImage(pane, n, row),
     });
     this.terms.set(pane, t);
     this.loading.add(pane);
@@ -520,6 +545,107 @@ class Store {
   isAgent(pane: PaneId | null): boolean {
     const a = pane === null ? null : this.pane(pane)?.agent;
     return a === 'claude' || a === 'codex';
+  }
+
+  /** A device that has just opened a share link, said over the status bar's
+      share count — where it can be managed from — for a few seconds. */
+  paired = $state<{ id: number; title: string; detail: string } | null>(null);
+  private pairedTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Whether the first peer list has come: it is what already was. */
+  private peersKnown = false;
+  /** Links whose pairing has been told already. */
+  readonly announced = new Set<string>();
+  /** What each link made here was for, in the share dialog's words —
+      "This tab · bbimg · read-only" — for when it is opened later. The
+      daemon only knows the kind of scope, not its name. */
+  readonly linkLabels = new Map<string, string>();
+  /** The link the share dialog is showing, which it announces itself. */
+  awaitingPair: string | null = null;
+
+  announcePairing(title: string, detail: string) {
+    if (this.pairedTimer) clearTimeout(this.pairedTimer);
+    this.paired = { id: (this.paired?.id ?? 0) + 1, title, detail };
+    this.pairedTimer = setTimeout(() => (this.paired = null), 4500);
+  }
+
+  /** The image open in the viewer. `url` is null while it loads, and stays
+      null with `missing` when the transcript has no such image. */
+  image = $state<{
+    pane: PaneId;
+    n: number;
+    row: string;
+    url: string | null;
+    missing: boolean;
+    /** What was asked with it, from the terminal; null once that has
+        scrolled out of the terminal's history. */
+    asked: string | null;
+  } | null>(null);
+  private imageReqs = new Map<number, (url: string | null) => void>();
+  private nextImageReq = 1;
+  /** Images already fetched, as blob URLs, oldest first. */
+  private imageUrls = new Map<string, string>();
+
+  private fetchImage(pane: PaneId, n: number, row: string): Promise<string | null> {
+    const key = `${pane}:${n}:${row}`;
+    const have = this.imageUrls.get(key);
+    if (have) return Promise.resolve(have);
+    const req = this.nextImageReq++;
+    this.send({ t: 'image', pane, n, row, req });
+    return new Promise((resolve) => {
+      this.imageReqs.set(req, (url) => {
+        if (url) {
+          this.imageUrls.set(key, url);
+          // A screenshot is some hundreds of KB; a few dozen is plenty.
+          for (const [k, old] of this.imageUrls) {
+            if (this.imageUrls.size <= 40) break;
+            if (old === this.image?.url) continue;
+            URL.revokeObjectURL(old);
+            this.imageUrls.delete(k);
+          }
+        }
+        resolve(url);
+      });
+    });
+  }
+
+  private asked(pane: PaneId, n: number, row: string): string | null {
+    return this.terms.get(pane)?.imageMessage(n, row)?.text || null;
+  }
+
+  openImage(pane: PaneId, n: number, row: string) {
+    const view = { pane, n, row, url: null, missing: false, asked: this.asked(pane, n, row) };
+    this.image = view;
+    void this.fetchImage(pane, n, row).then((url) => {
+      if (this.image?.pane !== pane || this.image.n !== n) return;
+      this.image = { ...view, url, missing: !url };
+    });
+  }
+
+  /** The image before or after the open one: the session's next number for
+      Claude, the message's for Codex — the same row picks the same message. */
+  async stepImage(dir: -1 | 1): Promise<boolean> {
+    const cur = this.image;
+    if (!cur || cur.n + dir < 1) return false;
+    const n = cur.n + dir;
+    const url = await this.fetchImage(cur.pane, n, cur.row);
+    if (!url || this.image !== cur) return false;
+    this.image = { ...cur, n, url, missing: false, asked: this.asked(cur.pane, n, cur.row) };
+    return true;
+  }
+
+  /** Closes the viewer on the message the open image was sent in. Looked
+      up afresh: output may have moved it since the viewer opened. */
+  locateImage() {
+    const cur = this.image;
+    if (!cur) return;
+    const t = this.terms.get(cur.pane);
+    const found = t?.imageMessage(cur.n, cur.row);
+    this.image = null;
+    if (t && found) t.reveal(found.row);
+  }
+
+  closeImage() {
+    this.image = null;
   }
 
   /** ⌘↑/⌘↓ for the pane on screen, from the phone's key bar. */
