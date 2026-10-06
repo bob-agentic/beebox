@@ -150,6 +150,9 @@
   const tabCount = $derived(
     store.tree.workspaces.reduce((n, w) => n + w.tabs.length, 0),
   );
+  const frozenCount = $derived(
+    store.tree.workspaces.reduce((n, w) => n + w.tabs.filter((t) => t.shelf === 'freezer').length, 0),
+  );
 
   /** Every shortcut's behaviour, by name.
    *
@@ -457,7 +460,9 @@
   {#if store.caps.show_sidebar}
     <div class="sep-v scope-sep"></div>
     <span class="item stats">
-      {store.tree.workspaces.length} workspaces · {tabCount} tabs · {paneCount} panes
+      {store.tree.workspaces.length} workspaces · {tabCount} tabs{frozenCount
+        ? ` (${frozenCount} frozen)`
+        : ''} · {paneCount} panes
     </span>
   {/if}
 
