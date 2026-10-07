@@ -6,6 +6,7 @@
 import { SvelteSet } from 'svelte/reactivity';
 import { markRead, pruneRead } from './agent-status';
 import { Conn } from './conn';
+import { countdown, type Timer } from './countdown';
 import { settings } from './settings.svelte';
 import { fixPartialLineMarkers } from './partial-line';
 import { PaneTerm } from './pane-term';
@@ -22,6 +23,9 @@ import type {
   TreeView,
   WsId,
 } from './proto';
+
+/** How long the status bar says who just joined. */
+export const PAIRED_MS = 5000;
 
 const EMPTY_TREE: TreeView = { workspaces: [], active_ws: null, active_tab: null };
 
@@ -286,7 +290,7 @@ class Store {
             if (p.token === this.awaitingPair) continue;
             this.announced.add(p.token);
             const detail = this.linkLabels.get(p.token) ?? `${p.scope} · ${p.writable ? 'can type' : 'read-only'}`;
-            this.announcePairing(`${p.device} connected`, detail);
+            this.announcePairing(`${p.device} connected`, p.addr, detail);
           }
         }
         this.peersKnown = true;
@@ -541,9 +545,12 @@ class Store {
   }
 
   /** A device that has just opened a share link, said over the status bar's
-      share count — where it can be managed from — for a few seconds. */
-  paired = $state<{ id: number; title: string; detail: string } | null>(null);
-  private pairedTimer: ReturnType<typeof setTimeout> | null = null;
+      share count — where it can be managed from — for a few seconds. `from`
+      is the address it came from. */
+  paired = $state<{ id: number; title: string; from: string | null; detail: string } | null>(null);
+  /** The pointer is on the note: it stays until it leaves. */
+  pairedHeld = $state(false);
+  private pairedTimer: Timer | null = null;
   /** Whether the first peer list has come: it is what already was. */
   private peersKnown = false;
   /** Links whose pairing has been told already. */
@@ -555,11 +562,19 @@ class Store {
   /** The link the share dialog is showing, which it announces itself. */
   awaitingPair: string | null = null;
 
-  announcePairing(title: string, detail: string) {
-    if (this.pairedTimer) clearTimeout(this.pairedTimer);
-    this.paired = { id: (this.paired?.id ?? 0) + 1, title, detail };
-    // Eight seconds: it comes as a phone joins, while the eye is still on it.
-    this.pairedTimer = setTimeout(() => (this.paired = null), 8000);
+  announcePairing(title: string, from: string | null, detail: string) {
+    this.pairedTimer?.cancel();
+    this.paired = { id: (this.paired?.id ?? 0) + 1, title, from, detail };
+    this.pairedHeld = false;
+    this.pairedTimer = countdown(PAIRED_MS, () => {
+      this.paired = null;
+      this.pairedTimer = null;
+    });
+  }
+
+  holdPaired(on: boolean) {
+    this.pairedHeld = on;
+    this.pairedTimer?.hold(on);
   }
 
   /** The image open in the viewer. `url` is null while it loads, and stays

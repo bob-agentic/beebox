@@ -1,8 +1,11 @@
 <script lang="ts">
   import qrcode from 'qrcode-generator';
-  import { fade } from 'svelte/transition';
+  import { fade, scale } from 'svelte/transition';
+  import { cubicOut } from 'svelte/easing';
   import { store } from '../state.svelte';
   import { writeClipboard } from '../clipboard';
+  import { countdown, type Timer } from '../countdown';
+  import Countdown from './Countdown.svelte';
   import Icon from './Icon.svelte';
   import { paneLabel, tabLabel } from '../labels';
   import type { GrantScope } from '../proto';
@@ -106,57 +109,73 @@
     return qr.createSvgTag({ cellSize: 5, margin: 2, scalable: true });
   });
 
-  /** Who opened the link. The code's card says so where the eye already is,
-      then the dialog goes and the status bar's share count takes over. */
-  let joined = $state<{ title: string; device: string; detail: string } | null>(null);
-  let joinedTimer: ReturnType<typeof setTimeout> | null = null;
+  /** What just happened to the link, said on the code's card — where the eye
+      already is — for a few seconds before the dialog goes: it was copied, or
+      someone opened it. A link is one device's, so either way this dialog is
+      done with it; the next person gets a new one. */
+  type Note =
+    | { kind: 'copied'; host: string }
+    | { kind: 'joined'; device: string; from: string | null; title: string; detail: string };
+  const NOTE_MS = 3000;
+  let note = $state<Note | null>(null);
+  /** The pointer is on the card: a note waits for it to leave — including
+      one that appears under it, as the code turns into "Connected". */
+  let held = $state(false);
+  let timer: Timer | null = null;
+
+  function show(next: Note) {
+    timer?.cancel();
+    note = next;
+    timer = countdown(NOTE_MS, end);
+    timer.hold(held);
+  }
+  function hold(on: boolean) {
+    held = on;
+    timer?.hold(on);
+  }
+  /** Closes on the note: when its time is up, or on a click. Someone joining
+      is then said again by the status bar's share count, where they live. */
+  function end() {
+    timer?.cancel();
+    if (note?.kind === 'joined') store.announcePairing(note.title, note.from, note.detail);
+    onclose();
+  }
 
   $effect(() => {
     const share = store.share;
     const token = share?.url.split('/').pop() ?? null;
     store.awaitingPair = made ? token : null;
-    if (!share || !made || !token || joined) return;
+    if (!share || !made || !token || note?.kind === 'joined') return;
     const scope = SCOPE_NAME[made.kind] + (made.what ? ` · ${made.what}` : '');
     const detail = `${scope} · ${made.writable ? 'can type' : 'read-only'}`;
     store.linkLabels.set(token, detail);
     const peer = store.peers.find((p) => p.token === token);
     if (!peer) return;
     store.announced.add(peer.token);
-    joined = { title: `${peer.device} connected`, device: peer.device, detail };
-    // Long enough to be seen by someone still looking at the phone that just
-    // scanned it, which is where the eye is when this appears.
-    joinedTimer = setTimeout(finish, 6000);
+    show({ kind: 'joined', device: peer.device, from: peer.addr, title: `${peer.device} connected`, detail });
   });
 
-  /** Ends the dialog after a pairing: now, on a click, or when the time is up. */
-  function finish() {
-    if (!joined) return;
-    if (joinedTimer) clearTimeout(joinedTimer);
-    store.announcePairing(joined.title, joined.detail);
-    onclose();
-  }
-
   $effect(() => () => {
-    if (joinedTimer) clearTimeout(joinedTimer);
+    timer?.cancel();
     store.awaitingPair = null;
   });
 
-  // The Copy button must answer, or the user assumes it did nothing.
-  let copied = $state<string | null>(null);
-  let copiedTimer: ReturnType<typeof setTimeout> | null = null;
-  async function copy(text: string) {
+  async function copy(url: string) {
     // A share link is most often copied on the very device that cannot reach
     // navigator.clipboard — a viewer on plain http. Hence the helper.
-    if (!(await writeClipboard(text))) return;
-    copied = text;
-    if (copiedTimer) clearTimeout(copiedTimer);
-    copiedTimer = setTimeout(() => (copied = null), 1600);
+    if (!(await writeClipboard(url))) return;
+    // Someone already in says more than that the link was copied.
+    if (note?.kind !== 'joined') show({ kind: 'copied', host: new URL(url).host });
   }
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="mask" onclick={(e) => e.target === e.currentTarget && onclose()}>
+<div
+  class="mask"
+  out:fade|global={{ duration: 150 }}
+  onclick={(e) => e.target === e.currentTarget && onclose()}
+>
   <div class="modal">
     <h3>Share</h3>
     <div class="sub">The first device to open the link keeps it — nothing to install</div>
@@ -185,9 +204,7 @@
             >
               <Icon name="qr" size={13} />
             </button>
-            <button class:did={copied === u.http} onclick={() => copy(u.http)}>
-              {copied === u.http ? 'Copied ✓' : 'Copy'}
-            </button>
+            <button onclick={() => copy(u.http)}>Copy</button>
           </div>
         {/each}
       </div>
@@ -245,28 +262,41 @@
   </div>
 </div>
 
-{#if joined}
-  <!-- In the code's place — or where it would be, had the link been copied
-       instead. A click ends it early. -->
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="qr-mask" onclick={finish}>
-    <div class="qr-card" role="status">
-      <div class="joined" in:fade={{ duration: 160 }}>
-        <span class="tick">✓</span>
-        <b>Connected</b>
-        <small>{joined.device}<br />{joined.detail}</small>
-      </div>
-    </div>
-  </div>
-{:else if showing}
+{#if note || showing}
   <!-- Over the dialog rather than inside the URL list, which scrolls and would
-       crop it. -->
+       crop it. The note takes the code's place, or the place it would have
+       had when the link was copied instead. A click closes either. -->
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="qr-mask" onclick={() => (showing = null)}>
-    <div class="qr-card">
-      <div class="qr-svg">{@html codeSvg}</div>
+  <div
+    class="qr-mask"
+    in:fade={{ duration: 150 }}
+    out:fade|global={{ duration: 150 }}
+    onclick={note ? end : () => (showing = null)}
+  >
+    <div
+      class="qr-card"
+      in:scale={{ start: 0.92, duration: 200, easing: cubicOut }}
+      onmouseenter={() => hold(true)}
+      onmouseleave={() => hold(false)}
+    >
+      {#if note}
+        {#key note}
+          <div class="note" role="status" in:scale={{ start: 0.92, duration: 200, easing: cubicOut }}>
+            <span class="tick">✓</span>
+            {#if note.kind === 'copied'}
+              <b>Copied</b>
+              <small><i>{note.host}</i><br />For one device only</small>
+            {:else}
+              <b>Connected</b>
+              <small>{note.device}{#if note.from}<br /><i>{note.from}</i>{/if}</small>
+            {/if}
+            <div class="drain"><Countdown ms={NOTE_MS} {held} /></div>
+          </div>
+        {/key}
+      {:else}
+        <div class="qr-svg">{@html codeSvg}</div>
+      {/if}
     </div>
   </div>
 {/if}
@@ -309,7 +339,7 @@
     display: block;
   }
   /* Takes exactly the code's room, so the card does not change size. */
-  .joined {
+  .note {
     width: 196px;
     height: 196px;
     display: flex;
@@ -322,22 +352,30 @@
   .tick {
     display: grid;
     place-items: center;
-    width: 56px;
-    height: 56px;
+    width: 52px;
+    height: 52px;
     border-radius: 50%;
     background: color-mix(in srgb, var(--accent) 14%, transparent);
     border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
     color: var(--accent);
-    font-size: 26px;
+    font-size: 24px;
     font-weight: 700;
   }
-  .joined b {
+  .note b {
     font-size: 14px;
   }
-  .joined small {
+  .note small {
     color: var(--dim);
     font-size: 12px;
     line-height: 1.5;
+  }
+  .note i {
+    color: var(--fg);
+    font: 11px ui-monospace, Menlo, monospace;
+  }
+  .drain {
+    width: 120px;
+    margin-top: 4px;
   }
   .qr-btn {
     color: var(--faint);
@@ -472,9 +510,6 @@
   }
   .urls .field {
     margin-bottom: 0;
-  }
-  .field button.did {
-    color: var(--accent);
   }
   .field {
     background: var(--bg);

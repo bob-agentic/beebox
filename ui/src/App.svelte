@@ -1,6 +1,7 @@
 <script lang="ts">
   import { fade, fly } from 'svelte/transition';
-  import { store } from './lib/state.svelte';
+  import { cubicIn, cubicOut } from 'svelte/easing';
+  import { PAIRED_MS, store } from './lib/state.svelte';
   import { paneLabel, tabLabel } from './lib/labels';
   import Sidebar, { FOLD_MS } from './lib/components/Sidebar.svelte';
   import TabBar from './lib/components/TabBar.svelte';
@@ -11,6 +12,7 @@
   import OpenWorkspaceDialog from './lib/components/OpenWorkspaceDialog.svelte';
   import Icon from './lib/components/Icon.svelte';
   import KeyBar from './lib/components/KeyBar.svelte';
+  import Countdown from './lib/components/Countdown.svelte';
   import ImageViewer from './lib/components/ImageViewer.svelte';
 
   let dialog = $state<'share' | 'conns' | 'settings' | 'openws' | null>(null);
@@ -492,15 +494,25 @@
         <!-- A device that just joined, said where the shared devices live. -->
         {#if store.paired}
           {#key store.paired.id}
+            <!-- Waits while the pointer is on it, like the share dialog's note. -->
             <button
               class="paired"
               aria-live="polite"
-              in:fly={{ y: 6, duration: 160 }}
-              out:fade={{ duration: 140 }}
+              in:fly={{ y: 8, duration: 220, easing: cubicOut }}
+              out:fly={{ y: 6, duration: 160, easing: cubicIn }}
+              onmouseenter={() => store.holdPaired(true)}
+              onmouseleave={() => store.holdPaired(false)}
               onclick={() => (dialog = 'conns')}
             >
-              <span class="tick">✓</span>
-              <span class="said"><b>{store.paired.title}</b><small>{store.paired.detail}</small></span>
+              <span class="row">
+                <span class="tick">✓</span>
+                <span class="said">
+                  <b>{store.paired.title}</b>
+                  {#if store.paired.from}<small>from <i>{store.paired.from}</i></small>{/if}
+                  <small>{store.paired.detail}</small>
+                </span>
+              </span>
+              <Countdown ms={PAIRED_MS} held={store.pairedHeld} />
             </button>
           {/key}
         {/if}
@@ -787,11 +799,11 @@
     bottom: calc(100% + 10px);
     z-index: 70;
     display: flex;
-    align-items: center;
-    gap: 10px;
+    flex-direction: column;
+    gap: 8px;
     width: max-content;
-    max-width: min(360px, calc(100vw - 24px));
-    padding: 9px 14px 9px 10px;
+    max-width: min(380px, calc(100vw - 24px));
+    padding: 9px 12px 7px 10px;
     border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
     border-radius: 9px;
     background: var(--panel-2);
@@ -826,6 +838,12 @@
     font-size: 12px;
     font-weight: 700;
   }
+  .paired .row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding-right: 2px;
+  }
   .said {
     display: flex;
     flex-direction: column;
@@ -841,6 +859,10 @@
     font-size: 11.5px;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .said i {
+    color: var(--fg);
+    font: 11px ui-monospace, Menlo, monospace;
   }
 
   @media (max-width: 640px) {
