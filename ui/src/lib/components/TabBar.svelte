@@ -73,8 +73,22 @@
   const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   function shelvedDay(ms: number): string {
     const d = new Date(ms);
+    // Under "Today" the day says nothing; the time does.
+    if (groupOf(ms) === 0) return d.toTimeString().slice(0, 5);
     const day = `${String(d.getDate()).padStart(2, '0')} ${MONTHS[d.getMonth()]}`;
     return d.getFullYear() === new Date().getFullYear() ? day : `${day} ${d.getFullYear()}`;
+  }
+
+  /** A shelf is grouped by how long ago each tab went on it, so one holding
+      dozens can be read by when rather than scanned row by row. */
+  const GROUPS = ['Today', 'Yesterday', 'This week', 'Earlier'];
+  const DAY = 86_400_000;
+  function groupOf(ms: number | null): number {
+    if (!ms) return 3; // shelved before the day was kept
+    const today = new Date().setHours(0, 0, 0, 0);
+    if (ms >= today) return 0;
+    if (ms >= today - DAY) return 1;
+    return ms >= today - 6 * DAY ? 2 : 3;
   }
 
   function shelve(tab: TabId, shelf: Shelf | null) {
@@ -330,84 +344,90 @@
         strip.
       </p>
     {:else}
-      {#each cur.tabs as tab (tab.id)}
-        <!-- svelte-ignore a11y_click_events_have_key_events -->
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div
-          class="shelf-row"
-          use:sortable={{
-            id: tab.id,
-            free: true,
-            ignore: '.shelf-move',
-            order: () => [],
-            commit: () => {},
-            // Another shelf, or the strip to take it back. Not the shelf it
-            // is on, and the freezer only for a tab with a session to resume.
-            dropTarget: SHELVES.filter(
-              (s) => s.key !== openShelf && (s.key !== 'freezer' || tab.can_freeze),
-            )
-              .map((s) => `.shelf-${s.key}`)
-              .concat('.tabbar')
-              .join(', '),
-            drop: (id, el) => {
-              const to = (el?.dataset.shelf as Shelf | undefined) ?? null;
-              shelve(id, to);
-              if (to === null) openShelf = null;
-            },
-          }}
-          onclick={() => {
-            shelve(tab.id, null);
-            openShelf = null;
-          }}
-        >
-          {#if openShelf === 'freezer'}
-            <span class="frozen"><Icon name="freezer" size={11} /></span>
-          {:else}
-            <StatusIcon phase={tabDot(tab).phase} unread={tabDot(tab).unread} />
-          {/if}
-          {#if AGENT_MARK[agent(tab)]}
-            <span class="mark" style="color:{AGENT_MARK[agent(tab)].color}">
-              <Icon name={AGENT_MARK[agent(tab)].icon} size={11} />
-            </span>
-          {:else}
-            <span class="agent" style={AGENT_STYLE[agent(tab)] ?? AGENT_STYLE.SH}>{agent(tab)}</span>
-          {/if}
-          <span class="shelf-label">{label(tab)}</span>
-          <!-- The other shelf, one click away: a thing you meant to do and
-               then did belongs in the archive, and moving it should not mean
-               putting it back on the strip first. -->
-          {#if openShelf !== 'freezer'}
-            {#if tab.can_freeze}
+      {#each GROUPS as group, gi (group)}
+        {@const rows = cur.tabs.filter((t) => groupOf(t.shelved_at) === gi)}
+        {#if rows.length}
+          <div class="shelf-group">{group}</div>
+        {/if}
+        {#each rows as tab (tab.id)}
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div
+            class="shelf-row"
+            use:sortable={{
+              id: tab.id,
+              free: true,
+              ignore: '.shelf-move',
+              order: () => [],
+              commit: () => {},
+              // Another shelf, or the strip to take it back. Not the shelf it
+              // is on, and the freezer only for a tab with a session to resume.
+              dropTarget: SHELVES.filter(
+                (s) => s.key !== openShelf && (s.key !== 'freezer' || tab.can_freeze),
+              )
+                .map((s) => `.shelf-${s.key}`)
+                .concat('.tabbar')
+                .join(', '),
+              drop: (id, el) => {
+                const to = (el?.dataset.shelf as Shelf | undefined) ?? null;
+                shelve(id, to);
+                if (to === null) openShelf = null;
+              },
+            }}
+            onclick={() => {
+              shelve(tab.id, null);
+              openShelf = null;
+            }}
+          >
+            {#if openShelf === 'freezer'}
+              <span class="frozen"><Icon name="freezer" size={11} /></span>
+            {:else}
+              <StatusIcon phase={tabDot(tab).phase} unread={tabDot(tab).unread} />
+            {/if}
+            {#if AGENT_MARK[agent(tab)]}
+              <span class="mark" style="color:{AGENT_MARK[agent(tab)].color}">
+                <Icon name={AGENT_MARK[agent(tab)].icon} size={11} />
+              </span>
+            {:else}
+              <span class="agent" style={AGENT_STYLE[agent(tab)] ?? AGENT_STYLE.SH}>{agent(tab)}</span>
+            {/if}
+            <span class="shelf-label">{label(tab)}</span>
+            <!-- The other shelf, one click away: a thing you meant to do and
+                 then did belongs in the archive, and moving it should not mean
+                 putting it back on the strip first. -->
+            {#if openShelf !== 'freezer'}
+              {#if tab.can_freeze}
+                <button
+                  class="shelf-move"
+                  title="Move to Freezer — stops it until taken out"
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    shelve(tab.id, 'freezer');
+                  }}
+                >
+                  <Icon name="freezer" size={12} />
+                </button>
+              {/if}
               <button
                 class="shelf-move"
-                title="Move to Freezer — stops it until taken out"
+                title={openShelf === 'archive' ? 'Move to Later' : 'Move to Archive'}
                 onclick={(e) => {
                   e.stopPropagation();
-                  shelve(tab.id, 'freezer');
+                  shelve(tab.id, openShelf === 'archive' ? 'later' : 'archive');
                 }}
               >
-                <Icon name="freezer" size={12} />
+                <Icon name={openShelf === 'archive' ? 'later' : 'archive'} size={12} />
               </button>
             {/if}
-            <button
-              class="shelf-move"
-              title={openShelf === 'archive' ? 'Move to Later' : 'Move to Archive'}
-              onclick={(e) => {
-                e.stopPropagation();
-                shelve(tab.id, openShelf === 'archive' ? 'later' : 'archive');
-              }}
-            >
-              <Icon name={openShelf === 'archive' ? 'later' : 'archive'} size={12} />
-            </button>
-          {/if}
-          <!-- No "Take back": clicking anywhere on the row already does it.
-               The day it was shelved says more. -->
-          {#if tab.shelved_at}
-            <span class="shelf-day" title={new Date(tab.shelved_at).toLocaleString()}
-              >{shelvedDay(tab.shelved_at)}</span
-            >
-          {/if}
-        </div>
+            <!-- No "Take back": clicking anywhere on the row already does it.
+                 The day it was shelved says more. -->
+            {#if tab.shelved_at}
+              <span class="shelf-day" title={new Date(tab.shelved_at).toLocaleString()}
+                >{shelvedDay(tab.shelved_at)}</span
+              >
+            {/if}
+          </div>
+        {/each}
       {/each}
     {/if}
   </div>
@@ -655,6 +675,14 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .shelf-group {
+    padding: 8px 9px 3px;
+    font-size: 9.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--faint);
+    font-weight: 600;
   }
   .shelf-day {
     font-size: 10.5px;
