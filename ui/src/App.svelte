@@ -173,11 +173,11 @@
     // ⌘D splits side by side, ⇧⌘D stacks — as iTerm2 does.
     split_v: () => {
       const pane = store.targetPane();
-      if (pane !== null) store.send({ t: 'split', pane, dir: 'vertical' });
+      if (pane !== null) store.split(pane, 'vertical');
     },
     split_h: () => {
       const pane = store.targetPane();
-      if (pane !== null) store.send({ t: 'split', pane, dir: 'horizontal' });
+      if (pane !== null) store.split(pane, 'horizontal');
     },
     close_pane: () => {
       const pane = store.targetPane();

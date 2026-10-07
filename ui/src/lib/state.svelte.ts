@@ -13,6 +13,7 @@ import { PaneTerm } from './pane-term';
 import type {
   AgentStatusView,
   Caps,
+  Dir,
   In,
   Out,
   PaneId,
@@ -345,6 +346,18 @@ class Store {
     // Read-state entries for deleted panes go with them.
     pruneRead(live);
 
+    // A split asked for here arrives as a new pane in the split one's tab, and
+    // the keyboard goes to it, as in iTerm2: you split to work in the new one.
+    const split = this.splitFrom;
+    if (split) {
+      const tab = this.tree.workspaces
+        .flatMap((w) => w.tabs)
+        .find((t) => t.panes.some((p) => p.id === split.pane));
+      const fresh = tab?.panes.find((p) => !split.had.has(p.id));
+      if (fresh) this.focused = fresh.id;
+      if (fresh || !tab || performance.now() > split.until) this.splitFrom = null;
+    }
+
     // Focus follows the visible tab. Without this, opening a tab leaves focus
     // on the previous one, and ⌘D then splits a pane you cannot see.
     const visible = new Set(this.visiblePanes().map((p) => p.id));
@@ -452,6 +465,19 @@ class Store {
   focus(pane: PaneId) {
     this.focused = pane;
     this.applyFocus();
+  }
+
+  /** A split this window asked for: the pane split, the panes its tab had
+      then, and until when to wait for the new one — a refused split (the
+      depth limit) never brings one, and a pane added later by someone else
+      must not take the keyboard. */
+  private splitFrom: { pane: PaneId; had: Set<PaneId>; until: number } | null = null;
+
+  /** Splits a pane, and moves the keyboard into the new one when it comes. */
+  split(pane: PaneId, dir: Dir) {
+    const tab = this.tree.workspaces.flatMap((w) => w.tabs).find((t) => t.panes.some((p) => p.id === pane));
+    this.splitFrom = { pane, had: new Set(tab?.panes.map((p) => p.id)), until: performance.now() + 3000 };
+    this.send({ t: 'split', pane, dir });
   }
 
   /** The pane a split/close should act on: the focused one, but only if it is
