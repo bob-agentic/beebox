@@ -61,6 +61,7 @@ export function sortable(node: HTMLElement, opts: SortOptions) {
     let others: { el: HTMLElement; home: number; shift: number }[] = [];
     /** The drop target currently under the pointer, if any. */
     let overZone: HTMLElement | null = null;
+    let stopSelect = () => {};
 
     const rows = () =>
       [...(node.parentElement?.children ?? [])].filter(
@@ -78,6 +79,7 @@ export function sortable(node: HTMLElement, opts: SortOptions) {
 
     function begin(ev: PointerEvent) {
       dragging = true;
+      window.getSelection()?.removeAllRanges();
       const all = rows();
       index = all.indexOf(node);
       home = offsetOf(node);
@@ -168,6 +170,7 @@ export function sortable(node: HTMLElement, opts: SortOptions) {
     }
 
     function up(ev: PointerEvent) {
+      stopSelect();
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
       window.removeEventListener('pointercancel', up);
@@ -225,6 +228,13 @@ export function sortable(node: HTMLElement, opts: SortOptions) {
         current.commit(next);
       }
     }
+
+    // A row's drag is not a text selection. Left alone, WebKit takes the press
+    // and move for one and selects everything the pointer crosses — the
+    // terminal's canvas included, which it paints solid blue.
+    const noSelect = (ev: Event) => ev.preventDefault();
+    document.addEventListener('selectstart', noSelect);
+    stopSelect = () => document.removeEventListener('selectstart', noSelect);
 
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
