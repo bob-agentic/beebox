@@ -47,7 +47,8 @@
   const shelves = $derived.by(() => {
     void store.readRev;
     return SHELVES.map((s) => {
-      const tabs = store.shelved(s.key);
+      // Most recently shelved first: a long shelf is read from the top.
+      const tabs = store.shelved(s.key).sort((a, b) => (b.shelved_at ?? 0) - (a.shelved_at ?? 0));
       // Nothing runs in the freezer, so there is no status to roll up.
       const panes = s.key === 'freezer' ? [] : tabs.flatMap((t) => t.panes);
       return { ...s, tabs, dot: rollupWithUnread(panes) };
@@ -66,6 +67,16 @@
     shelfPos = { top: r.bottom + 6, left: r.left };
     openShelf = key;
   }
+  /** "06 Oct", or "14 Dec 2025" for another year: which day a shelved task
+      is from is what brings it back to mind. Spelled out rather than left to
+      the locale, which writes September as "Sept". */
+  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  function shelvedDay(ms: number): string {
+    const d = new Date(ms);
+    const day = `${String(d.getDate()).padStart(2, '0')} ${MONTHS[d.getMonth()]}`;
+    return d.getFullYear() === new Date().getFullYear() ? day : `${day} ${d.getFullYear()}`;
+  }
+
   function shelve(tab: TabId, shelf: Shelf | null) {
     store.send({ t: 'shelve_tab', tab, shelf });
   }
@@ -389,7 +400,13 @@
               <Icon name={openShelf === 'archive' ? 'later' : 'archive'} size={12} />
             </button>
           {/if}
-          <span class="shelf-take">{openShelf === 'freezer' ? 'Thaw' : 'Take back'}</span>
+          <!-- No "Take back": clicking anywhere on the row already does it.
+               The day it was shelved says more. -->
+          {#if tab.shelved_at}
+            <span class="shelf-day" title={new Date(tab.shelved_at).toLocaleString()}
+              >{shelvedDay(tab.shelved_at)}</span
+            >
+          {/if}
         </div>
       {/each}
     {/if}
@@ -639,13 +656,11 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .shelf-take {
-    opacity: 0;
+  .shelf-day {
     font-size: 10.5px;
-    color: var(--accent);
-  }
-  .shelf-row:hover .shelf-take {
-    opacity: 1;
+    color: var(--faint);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
   .shelf-empty {
     margin: 0;

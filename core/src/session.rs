@@ -61,6 +61,9 @@ pub struct Tab {
     /// keep running, it just gives up its place on the strip. For the ones you
     /// are not working on now but do not want to lose.
     pub shelf: Option<Shelf>,
+    /// When it went on the shelf it is on, in milliseconds since the epoch —
+    /// for a long shelf, the one thing that says which task this was.
+    pub shelved_at: Option<i64>,
     /// Authoritative for structure. Membership is never derived from anywhere
     /// else.
     pub layout: Node,
@@ -162,6 +165,7 @@ impl Workspace {
             return;
         };
         t.shelf = shelf;
+        t.shelved_at = shelf.map(|_| crate::hooks::now_ms());
         if shelf.is_some() {
             // Drop it from the history so the tab behind it comes forward,
             // exactly as closing would.
@@ -263,6 +267,7 @@ impl SessionTree {
             id: tab_id,
             title: String::new(),
             shelf: None,
+            shelved_at: None,
             layout: Node::Leaf { pane: pane_id },
             panes: vec![pane],
         });
@@ -488,6 +493,7 @@ impl SessionTree {
                             // and its panes are still reachable. Which tabs the
                             // strip draws is the client's business.
                             shelf: t.shelf,
+                            shelved_at: t.shelved_at,
                             can_freeze: t.can_freeze(),
                             layout,
                             panes,

@@ -81,6 +81,8 @@ export interface TabView {
       a shelved tab runs, is shared, and carries a status dot exactly as it
       did on the strip. */
   shelf: Shelf | null;
+  /** When it went on that shelf, in ms since the epoch. */
+  shelved_at: number | null;
   /** May go in the freezer: has a Claude or Codex session to resume. */
   can_freeze: boolean;
   layout: Node;

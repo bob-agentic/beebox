@@ -761,8 +761,13 @@ mod tests {
                 Ok(Err(_)) | Err(_) => panic!("the shell never exited"),
             }
         }
+        // The shell can be reported gone a moment before its child is.
         // SAFETY: signal 0 only asks whether the pid exists.
-        assert_ne!(unsafe { libc::kill(child, 0) }, 0, "its child must be gone too");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        while unsafe { libc::kill(child, 0) } == 0 {
+            assert!(tokio::time::Instant::now() < deadline, "its child must be gone too");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 
     #[tokio::test]

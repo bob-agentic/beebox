@@ -185,6 +185,13 @@ impl Store {
                 [],
             );
         }
+        // Nullable: a tab shelved before this was kept has no date to give.
+        let has_shelved_at = db
+            .prepare("SELECT 1 FROM pragma_table_info('tabs') WHERE name = 'shelved_at'")?
+            .exists([])?;
+        if !has_shelved_at {
+            db.execute("ALTER TABLE tabs ADD COLUMN shelved_at INTEGER", [])?;
+        }
         Ok(())
     }
 
@@ -208,15 +215,16 @@ impl Store {
             )?;
             for (ti, tab) in ws.tabs.iter().enumerate() {
                 tx.execute(
-                    "INSERT INTO tabs (id, ws_id, title, ord, layout_json, shelf)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    "INSERT INTO tabs (id, ws_id, title, ord, layout_json, shelf, shelved_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                     params![
                         to_db(tab.id),
                         to_db(ws.id),
                         tab.title,
                         ti as i64,
                         serde_json::to_string(&tab.layout)?,
-                        shelf_to_text(tab.shelf)
+                        shelf_to_text(tab.shelf),
+                        tab.shelved_at
                     ],
                 )?;
                 for pane in &tab.panes {
@@ -258,10 +266,10 @@ impl Store {
             let mut tabs = Vec::new();
 
             let mut tab_stmt = self.db.prepare(
-                "SELECT id, title, layout_json, shelf
+                "SELECT id, title, layout_json, shelf, shelved_at
                  FROM tabs WHERE ws_id = ?1 ORDER BY ord",
             )?;
-            let rows: Vec<(TabId, String, String, String)> = tab_stmt
+            let rows: Vec<(TabId, String, String, String, Option<i64>)> = tab_stmt
                 .query_map(params![to_db(ws_id)], |r| {
                     Ok((
                         from_db(r.get(0)?),
@@ -271,11 +279,12 @@ impl Store {
                         // may hold the old integer; anything unrecognised reads
                         // as the strip.
                         r.get::<_, String>(3).unwrap_or_default(),
+                        r.get(4)?,
                     ))
                 })?
                 .collect::<rusqlite::Result<_>>()?;
 
-            for (tab_id, title, layout_json, shelf) in rows {
+            for (tab_id, title, layout_json, shelf, shelved_at) in rows {
                 let layout: Node = serde_json::from_str(&layout_json)?;
 
                 let mut pane_stmt = self.db.prepare(
@@ -312,7 +321,8 @@ impl Store {
                     })?
                     .collect::<rusqlite::Result<_>>()?;
 
-                tabs.push(Tab { id: tab_id, title, shelf: text_to_shelf(&shelf), layout, panes });
+                let shelf = text_to_shelf(&shelf);
+                tabs.push(Tab { id: tab_id, title, shelf, shelved_at: shelved_at.filter(|_| shelf.is_some()), layout, panes });
             }
 
             // Which tab was in front, and the order tabs were visited in, are
@@ -770,10 +780,10 @@ mod tests {
         let back = s.load_tree().unwrap();
         let tabs = &back.workspaces[0].tabs;
         assert_eq!(tabs.iter().find(|t| t.id == keep).unwrap().shelf, None);
-        assert_eq!(
-            tabs.iter().find(|t| t.id == aside).unwrap().shelf,
-            Some(Shelf::Archive),
-        );
+        let aside = tabs.iter().find(|t| t.id == aside).unwrap();
+        assert_eq!(aside.shelf, Some(Shelf::Archive));
+        assert!(aside.shelved_at.is_some(), "and the day it went there");
+        assert_eq!(tabs.iter().find(|t| t.id == keep).unwrap().shelved_at, None);
     }
 
     #[test]

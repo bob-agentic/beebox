@@ -233,6 +233,9 @@ pub struct TabView {
     pub title: String,
     /// Off the strip and on a shelf, or `None` for a tab on the strip.
     pub shelf: Option<Shelf>,
+    /// When it went on that shelf, in milliseconds since the epoch. `None` on
+    /// the strip, and for a tab shelved before this was kept.
+    pub shelved_at: Option<i64>,
     /// May go in the freezer: has a Claude or Codex session to resume.
     pub can_freeze: bool,
     /// Authoritative for structure. Pane membership is never derived from
