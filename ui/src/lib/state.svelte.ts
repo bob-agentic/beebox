@@ -21,6 +21,7 @@ import type {
   Peer,
   Shelf,
   TabId,
+  TabView,
   TreeView,
   WsId,
 } from './proto';
@@ -350,9 +351,7 @@ class Store {
     // the keyboard goes to it, as in iTerm2: you split to work in the new one.
     const split = this.splitFrom;
     if (split) {
-      const tab = this.tree.workspaces
-        .flatMap((w) => w.tabs)
-        .find((t) => t.panes.some((p) => p.id === split.pane));
+      const tab = this.tabOf(split.pane);
       const fresh = tab?.panes.find((p) => !split.had.has(p.id));
       if (fresh) this.focused = fresh.id;
       if (fresh || !tab || performance.now() > split.until) this.splitFrom = null;
@@ -475,7 +474,7 @@ class Store {
 
   /** Splits a pane, and moves the keyboard into the new one when it comes. */
   split(pane: PaneId, dir: Dir) {
-    const tab = this.tree.workspaces.flatMap((w) => w.tabs).find((t) => t.panes.some((p) => p.id === pane));
+    const tab = this.tabOf(pane);
     this.splitFrom = { pane, had: new Set(tab?.panes.map((p) => p.id)), until: performance.now() + 3000 };
     this.send({ t: 'split', pane, dir });
   }
@@ -811,6 +810,11 @@ class Store {
 
   visiblePanes(): PaneView[] {
     return this.activeTab?.panes ?? [];
+  }
+
+  /** The tab a pane is in. */
+  tabOf(pane: PaneId): TabView | undefined {
+    return this.tree.workspaces.flatMap((w) => w.tabs).find((t) => t.panes.some((p) => p.id === pane));
   }
 
   pane(id: PaneId): PaneView | undefined {
