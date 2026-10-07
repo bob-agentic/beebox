@@ -124,11 +124,27 @@ it's dead. To give someone access, send a **share link**, not this URL.
   restored on restart, and terminals in the background keep running.
 - **Agent status.** Claude Code and Codex report through hooks: a status dot per
   pane (rolled up to its tab and workspace), the tool being run, a summary when
-  it finishes, automatic tab titles, and sessions resumed after a restart.
+  it finishes, automatic tab titles, and sessions resumed after a restart — each
+  as its pane is first shown, so dozens of agent tabs do not all start at once.
+  Always on; there is nothing to switch on.
+- **The images you pasted into an agent.** Click `[Image #N]` in a Claude Code
+  or Codex pane — or tap it on a phone — to see the image. `←`/`→` step through
+  the session's images; below each is the question it was sent with, and
+  clicking that (or `L`) takes you to that message in the terminal. Images are
+  read from the agent's own session transcript, so they open long after the
+  copies in `/tmp` are gone.
+- **Shelves: Freezer, Archive and Later.** Drag a tab onto one, left of the tab
+  strip, to take it off the strip. On Archive and Later it keeps running;
+  in the Freezer its processes stop — the agent and the MCP servers it started
+  give their memory back — and taking it out resumes the same session (Claude
+  Code and Codex tabs only). Each shelf lists its tabs by when they went on it
+  (Today, Yesterday, This week, Earlier); click one to take it back, or drag it
+  to another shelf.
 - **Sharing by link or QR code.** Four scopes — All / Workspace / Tab / Pane. A
   link belongs to the first device that opens it; every paired device is listed
   under Connections until you disconnect it. A scanned code lets the phone set
-  the terminal's width.
+  the terminal's width, and the code turns into "Connected" — who, and what they
+  can see — the moment it is opened.
 - **Open files and links from the terminal.** ⌘-click a path an agent printed to
   open it in VS Code at that line, or a directory to open it in Finder;
   right-click either to reveal it in Finder. Links appear only over paths that
@@ -139,6 +155,7 @@ it's dead. To give someone access, send a **share link**, not this URL.
 - **607 themes**, from Ghostty's set, with the window chrome derived from each.
 - **Phones.** A key bar for what a phone keyboard lacks (Esc, Tab, Ctrl, Alt,
   arrows), no autocorrect in the terminal, and a sidebar that gets out of the way.
+  In the image viewer: pinch to zoom, swipe to step, swipe down to close.
 
 ---
 
@@ -156,10 +173,20 @@ it's dead. To give someone access, send a **share link**, not this URL.
 | `⌘,` | Settings |
 | `⌘↑` / `⌘↓` | Previous / next message you sent (in Claude Code or Codex) |
 
+### Image viewer
+
+| | |
+|---|---|
+| `←` / `→` | Previous / next image in the session |
+| `L` | Close, and go to the message the image was sent with |
+| `Esc` | Close |
+| Scroll / double-click | Zoom |
+
 ### Mouse
 
 | | |
 |---|---|
+| Click `[Image #N]` | Open the image (tap, on a phone) |
 | `⌘`-click a file path | Open it in VS Code (macOS app) |
 | `⌘`-click a directory | Open it in Finder (macOS app) |
 | `⌘`-click a web link | Open it in the browser (a plain click outside the macOS app) |
@@ -170,6 +197,8 @@ it's dead. To give someone access, send a **share link**, not this URL.
 | A tab's `×`, or middle-click | Close tab |
 | Drag a divider | Resize the split |
 | Drag a workspace row / tab | Reorder |
+| Drag a tab onto Freezer / Archive / Later | Shelve it |
+| Drag a shelved tab | Onto another shelf, or back onto the tab strip |
 
 ---
 
@@ -220,11 +249,14 @@ core/src/
   app.rs            state and mutation ops
   http.rs           axum: /ws, /a /w /t /p, /hooks
   agent*.rs         agent hooks and adapters (Claude Code, Codex)
+  images.rs         [Image #N]: indexing agent transcripts for pasted images
 ui/src/
   lib/proto.ts           TS mirror of proto.rs
   lib/conn.ts            WebSocket + MessagePack + reconnect heartbeat
   lib/state.svelte.ts    state + terminal registry
   lib/file-links.ts      file paths in terminal output
+  lib/image-links.ts     [Image #N] links, phone taps, the message an image was sent with
+  lib/partial-line.ts    zsh's no-final-newline `%`, kept right at any width
   lib/components/        Sidebar, TabBar, SplitTree, Pane, dialogs
 mac/
   Sources/BeeBoxShell/   Swift WKWebView shell: the window, the menu, the daemon as a child
