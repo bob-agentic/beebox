@@ -30,21 +30,6 @@ export interface AgentStatusView {
   summary: string | null;
 }
 
-/** Daemon-owned Agents toggles. All default OFF; owner-only. */
-export interface AgentSettings {
-  status_claude: boolean;
-  status_opencode: boolean;
-  status_codex: boolean;
-  resume_claude: boolean;
-  resume_opencode: boolean;
-  resume_codex: boolean;
-}
-
-export type AgentSetting = 'status' | 'resume';
-
-/** Codex hooks readiness, probed by the daemon at startup. */
-export type CodexHooksState = 'stable' | 'legacy' | 'missing';
-
 export type Dir = 'vertical' | 'horizontal';
 
 export interface GitInfo {
@@ -139,7 +124,6 @@ export type Out =
   | { t: 'resync'; pane: PaneId; modes: Uint8Array; data: Uint8Array }
   | { t: 'status'; pane: PaneId; status: AgentStatusView }
   | { t: 'session_title'; pane: PaneId; text: string }
-  | { t: 'agent_settings'; settings: AgentSettings; codex_hooks: string }
   | { t: 'web_server'; exposed: boolean }
   | { t: 'title'; pane: PaneId; text: string }
   | { t: 'cwd'; pane: PaneId; path: string; git: GitInfo | null }
@@ -179,8 +163,6 @@ export type In =
   | { t: 'reorder_workspaces'; order: WsId[] }
   | { t: 'reorder_tabs'; ws: WsId; order: TabId[] }
   | { t: 'create_grant'; scope: GrantScope; writable: boolean }
-  | { t: 'set_agent_setting'; agent: AgentKind; setting: AgentSetting; on: boolean }
-  | { t: 'reset_agent_settings' }
   | { t: 'set_web_server'; exposed: boolean }
   | { t: 'revoke'; token: string }
   | { t: 'revoke_all' };

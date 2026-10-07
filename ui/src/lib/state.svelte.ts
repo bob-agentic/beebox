@@ -10,7 +10,6 @@ import { settings } from './settings.svelte';
 import { fixPartialLineMarkers } from './partial-line';
 import { PaneTerm } from './pane-term';
 import type {
-  AgentSettings,
   AgentStatusView,
   Caps,
   In,
@@ -61,10 +60,6 @@ class Store {
    *  would change nothing. */
   sizing = $state(false);
   share = $state<{ url: string; hosts: string[] } | null>(null);
-  /** Daemon-owned Agents toggles. Owner-only; null until the server sends
-      the snapshot. */
-  agentSettings = $state<AgentSettings | null>(null);
-  codexHooks = $state<string>('missing');
   /** Whether the daemon serves non-loopback clients. Owner-only knob. */
   webExposed = $state(false);
   private wsBase = '';
@@ -258,11 +253,6 @@ class Store {
       case 'session_title': {
         const pane = this.pane(msg.pane);
         if (pane) pane.session_title = msg.text;
-        break;
-      }
-      case 'agent_settings': {
-        this.agentSettings = msg.settings;
-        this.codexHooks = msg.codex_hooks;
         break;
       }
       case 'web_server': {

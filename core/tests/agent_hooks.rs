@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use beebox_core::app::{AgentDelta, App};
-use beebox_core::proto::{AgentKind, AgentPhase, AgentSetting};
+use beebox_core::proto::{AgentKind, AgentPhase};
 use beebox_core::store::Store;
 
 async fn served_app() -> (Arc<App>, SocketAddr) {
@@ -17,10 +17,6 @@ async fn served_app() -> (Arc<App>, SocketAddr) {
         let ws = t.open_workspace("/tmp".into(), "tmp".into());
         t.open_tab(ws).unwrap();
     }
-    // The six toggles default OFF; these tests exercise the pipeline with
-    // Claude enabled. The gate itself is covered by its own tests below.
-    app.set_agent_setting(AgentKind::Claude, AgentSetting::Status, true).await;
-    app.set_agent_setting(AgentKind::Claude, AgentSetting::Resume, true).await;
     let router = beebox_core::http::router(app.clone(), None);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -197,74 +193,23 @@ async fn the_full_claude_turn_reaches_failed_on_tool_error() {
 }
 
 #[tokio::test]
-async fn status_toggle_gates_events_and_turning_off_clears_the_dot() {
+async fn a_hook_keeps_the_session_id_to_resume() {
     let (app, addr) = served_app().await;
     let pane = first_pane(&app).await;
     let secret = app.hook_secret(pane).await;
     let path = format!("/hooks/{pane}/{secret}");
 
-    post(addr, &path, r#"{"hook_event_name":"UserPromptSubmit","at_ms":1000}"#).await;
-    assert_eq!(
-        app.tree.lock().await.pane(pane).unwrap().status.view().phase,
-        AgentPhase::Running
-    );
-
-    // OFF wipes the live dot immediately — no stale-dot bug.
-    let mut rx = app.subscribe_agent();
-    app.set_agent_setting(AgentKind::Claude, AgentSetting::Status, false).await;
-    assert_eq!(
-        app.tree.lock().await.pane(pane).unwrap().status.view().phase,
-        AgentPhase::NeverRan
-    );
-    let mut saw_clear = false;
-    while let Ok(d) = rx.try_recv() {
-        if let AgentDelta::Status { status, .. } = d {
-            saw_clear |= status.phase == AgentPhase::NeverRan;
-        }
-    }
-    assert!(saw_clear, "clients must be told to hide the dot at once");
-
-    // Events while OFF do nothing.
-    post(addr, &path, r#"{"hook_event_name":"UserPromptSubmit","at_ms":2000}"#).await;
-    assert_eq!(
-        app.tree.lock().await.pane(pane).unwrap().status.view().phase,
-        AgentPhase::NeverRan
-    );
-
-    // Back ON: state resumes from the next live event, cleanly.
-    app.set_agent_setting(AgentKind::Claude, AgentSetting::Status, true).await;
-    post(addr, &path, r#"{"hook_event_name":"UserPromptSubmit","at_ms":3000}"#).await;
-    assert_eq!(
-        app.tree.lock().await.pane(pane).unwrap().status.view().phase,
-        AgentPhase::Running
-    );
-}
-
-#[tokio::test]
-async fn resume_toggle_gates_session_ids_both_ways() {
-    let (app, addr) = served_app().await;
-    let pane = first_pane(&app).await;
-    let secret = app.hook_secret(pane).await;
-    let path = format!("/hooks/{pane}/{secret}");
-
-    // ON: id is stored.
     post(addr, &path, r#"{"hook_event_name":"UserPromptSubmit","session_id":"sid-1","at_ms":1000}"#).await;
     assert_eq!(
         app.tree.lock().await.pane(pane).unwrap().session_ref.as_deref(),
         Some("sid-1")
     );
-
-    // OFF: existing ids are cleared (memory and DB) and new ones refused.
-    app.set_agent_setting(AgentKind::Claude, AgentSetting::Resume, false).await;
-    assert!(app.tree.lock().await.pane(pane).unwrap().session_ref.is_none());
-    post(addr, &path, r#"{"hook_event_name":"UserPromptSubmit","session_id":"sid-2","at_ms":2000}"#).await;
-    assert!(app.tree.lock().await.pane(pane).unwrap().session_ref.is_none());
 }
 
 #[tokio::test]
 async fn resume_types_the_command_into_a_respawned_pane() {
-    // The full launch path: an agent pane with a stored session id, resume ON,
-    // respawn — the resolver must type `claude --resume <id>` into the PTY.
+    // The full launch path: an agent pane with a stored session id, respawned
+    // and shown — `claude --resume <id>` must be typed into the PTY.
     // Proven by watching the PTY echo the injected input.
     use beebox_core::pty::PtyEvent;
     let (app, addr) = served_app().await;
@@ -280,6 +225,8 @@ async fn resume_types_the_command_into_a_respawned_pane() {
     let mut rx = app.ptys.subscribe();
     app.mark_exited(pane).await;
     app.ensure_running(pane).await.unwrap();
+    // Typed when a client first shows the pane, not at spawn.
+    app.resume_on_show(pane).await;
 
     let mut seen = String::new();
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -296,17 +243,11 @@ async fn resume_types_the_command_into_a_respawned_pane() {
             Ok(Err(_)) | Err(_) => panic!("pty gone:\n{seen}"),
         }
     }
-
-    // And with the toggle OFF the id is gone, so a respawn opens a plain
-    // shell — no resume, no error, no dialog.
-    app.set_agent_setting(AgentKind::Claude, AgentSetting::Resume, false).await;
-    assert!(app.tree.lock().await.pane(pane).unwrap().session_ref.is_none());
 }
 
 #[tokio::test]
 async fn codex_events_flow_through_the_same_pipeline() {
     let (app, addr) = served_app().await;
-    app.set_agent_setting(AgentKind::Codex, AgentSetting::Status, true).await;
     let pane = first_pane(&app).await;
     let secret = app.hook_secret(pane).await;
     let path = format!("/hooks/{pane}/{secret}");

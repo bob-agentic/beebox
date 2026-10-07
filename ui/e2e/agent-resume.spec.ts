@@ -26,23 +26,13 @@ async function visibleText(page: Page): Promise<string> {
   });
 }
 
-test('a daemon restart resumes the agent session, and only with the toggle on', async ({
+test('a daemon restart resumes the agent session', async ({
   page,
 }) => {
   test.setTimeout(120_000);
   const p = port++;
   daemon = await startDaemon(p, { keepHome: true });
   await ready(page);
-
-  // Enable resume for Claude through the real dialog.
-  await page.keyboard.press('Meta+k');
-  await page.locator('.nav .agents-nav').click();
-  const row = page.locator(
-    '.agent-row[data-setting="resume"][data-agent="claude"] input',
-  );
-  await row.click();
-  await expect(row).toBeChecked();
-  await page.locator('.mask').click({ position: { x: 5, y: 5 } });
 
   // An agent session happened in this pane (fired exactly as the adapter
   // does, from inside the pane's own shell).

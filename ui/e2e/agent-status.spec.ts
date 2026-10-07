@@ -24,27 +24,6 @@ async function ready(page: Page) {
   await page.waitForTimeout(1200);
 }
 
-/** Flips one Agents toggle through the real settings dialog — the same path
-    a user takes, which also covers the dialog itself. */
-async function setAgentToggle(
-  page: Page,
-  setting: 'status' | 'resume',
-  agent: string,
-  on: boolean,
-) {
-  await page.keyboard.press('Meta+k');
-  await page.locator('.nav .agents-nav').click();
-  const row = page.locator(
-    `.agent-row[data-setting="${setting}"][data-agent="${agent}"] input`,
-  );
-  await expect(row).toBeVisible({ timeout: 10_000 });
-  if ((await row.isChecked()) !== on) await row.click();
-  // The daemon echoes the snapshot; wait for the checkbox to settle.
-  await expect(row).toBeChecked({ checked: on });
-  await page.locator('.mask').click({ position: { x: 5, y: 5 } });
-  await expect(page.locator('.modal')).toHaveCount(0);
-}
-
 /** Fires one hook event from inside the focused pane's shell — the same
     trust path the real adapters use. */
 async function fireHook(page: Page, json: string) {
@@ -59,7 +38,6 @@ async function fireHook(page: Page, json: string) {
 
 test('hook events drive the pane, tab and workspace dots', async ({ page }) => {
   await ready(page);
-  await setAgentToggle(page, 'status', 'claude', true);
 
   // Before any agent event there is no dot at all.
   await expect(page.locator('.pane-head .ast')).toHaveCount(0);
@@ -104,7 +82,6 @@ test('a failing tool turns the dot red, and the next prompt clears it', async ({
   page,
 }) => {
   await ready(page);
-  await setAgentToggle(page, 'status', 'claude', true);
 
   await fireHook(page, '{"hook_event_name":"UserPromptSubmit","prompt":"run the tests"}');
   await fireHook(
@@ -128,7 +105,6 @@ test('a failing tool turns the dot red, and the next prompt clears it', async ({
 
 test('the first prompt becomes the tab title until renamed', async ({ page }) => {
   await ready(page);
-  await setAgentToggle(page, 'status', 'claude', true);
 
   await fireHook(
     page,
@@ -153,48 +129,8 @@ test('the first prompt becomes the tab title until renamed', async ({ page }) =>
   await expect(page.locator('.tab .label')).toHaveText('my tab');
 });
 
-test('with Notifications off the dot never appears; toggling off hides it at once', async ({
-  page,
-}) => {
-  await ready(page);
-
-  // Default is OFF: a hook event must not paint anything.
-  await fireHook(page, '{"hook_event_name":"UserPromptSubmit","prompt":"quiet"}');
-  await page.waitForTimeout(800);
-  await expect(page.locator('.pane-head .ast')).toHaveCount(0);
-
-  // ON: the next event paints.
-  await setAgentToggle(page, 'status', 'claude', true);
-  await fireHook(page, '{"hook_event_name":"UserPromptSubmit","prompt":"loud"}');
-  await expect(page.locator('.pane-head .ast.running')).toHaveCount(1, {
-    timeout: 10_000,
-  });
-
-  // OFF again: the dot disappears immediately, no stale dot.
-  await setAgentToggle(page, 'status', 'claude', false);
-  await expect(page.locator('.pane-head .ast')).toHaveCount(0, { timeout: 10_000 });
-});
-
-test('reset turns all toggles off', async ({ page }) => {
-  await ready(page);
-  await setAgentToggle(page, 'status', 'claude', true);
-  await setAgentToggle(page, 'resume', 'codex', true);
-
-  await page.keyboard.press('Meta+k');
-  await page.locator('.nav .agents-nav').click();
-  await page.locator('.reset-agents').click();
-  for (const sel of [
-    '.agent-row[data-setting="status"][data-agent="claude"] input',
-    '.agent-row[data-setting="resume"][data-agent="codex"] input',
-  ]) {
-    await expect(page.locator(sel)).toBeChecked({ checked: false });
-  }
-  await page.locator('.mask').click({ position: { x: 5, y: 5 } });
-});
-
 test('right-click resets a manual tab title back to auto', async ({ page }) => {
   await ready(page);
-  await setAgentToggle(page, 'status', 'claude', true);
 
   await fireHook(
     page,
@@ -217,7 +153,6 @@ test('an unread completion in another pane keeps the tab dot solid', async ({
   page,
 }) => {
   await ready(page);
-  await setAgentToggle(page, 'status', 'claude', true);
 
   // Split: two panes in the tab.
   await page.keyboard.press('Meta+d');

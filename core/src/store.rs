@@ -136,11 +136,9 @@ impl Store {
             INSERT INTO id_seq (next)
                 SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM id_seq);
 
-            -- Daemon-owned settings (the Agents toggles). Missing key = false.
-            CREATE TABLE IF NOT EXISTS settings (
-                key   TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
+            -- Held the Agents toggles. Status and resume are simply on now,
+            -- and what was stored there means nothing.
+            DROP TABLE IF EXISTS settings;
             "#,
         )?;
 
@@ -430,72 +428,6 @@ impl Store {
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
-
-    // ---- agent settings -----------------------------------------------
-
-    /// Keys follow the handover doc: `agent.status.claude`, `agent.resume.codex`, …
-    fn setting_key(setting: crate::proto::AgentSetting, agent: crate::proto::AgentKind) -> String {
-        let s = match setting {
-            crate::proto::AgentSetting::Status => "status",
-            crate::proto::AgentSetting::Resume => "resume",
-        };
-        format!("agent.{s}.{}", crate::agent::agent_kind_str(agent))
-    }
-
-    pub fn load_agent_settings(&self) -> Result<crate::proto::AgentSettings> {
-        use crate::proto::{AgentKind, AgentSetting};
-        let mut out = crate::proto::AgentSettings::default();
-        let mut stmt = self
-            .db
-            .prepare("SELECT key, value FROM settings WHERE key LIKE 'agent.%'")?;
-        let rows: Vec<(String, String)> = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<rusqlite::Result<_>>()?;
-        for (k, v) in rows {
-            let on = v == "true";
-            for agent in [AgentKind::Claude, AgentKind::Opencode, AgentKind::Codex] {
-                for setting in [AgentSetting::Status, AgentSetting::Resume] {
-                    if k == Self::setting_key(setting, agent) {
-                        out.set(agent, setting, on);
-                    }
-                }
-            }
-        }
-        Ok(out)
-    }
-
-    /// Writes one toggle. When a resume toggle goes OFF, the same transaction
-    /// clears every stored session id for that agent — a later crash cannot
-    /// leave ids behind that the setting says must not exist.
-    pub fn put_agent_setting(
-        &self,
-        setting: crate::proto::AgentSetting,
-        agent: crate::proto::AgentKind,
-        on: bool,
-    ) -> Result<()> {
-        let tx = self.db.unchecked_transaction()?;
-        tx.execute(
-            "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
-            params![Self::setting_key(setting, agent), if on { "true" } else { "false" }],
-        )?;
-        if setting == crate::proto::AgentSetting::Resume && !on {
-            tx.execute(
-                "UPDATE panes SET session_ref = NULL WHERE agent = ?1",
-                params![crate::agent::agent_kind_str(agent)],
-            )?;
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// The Reset button: all six off, every stored resume id gone.
-    pub fn reset_agent_settings(&self) -> Result<()> {
-        let tx = self.db.unchecked_transaction()?;
-        tx.execute("DELETE FROM settings WHERE key LIKE 'agent.%'", [])?;
-        tx.execute("UPDATE panes SET session_ref = NULL", [])?;
-        tx.commit()?;
-        Ok(())
-    }
 }
 
 fn scope_parts(s: &Scope) -> (&'static str, Option<u64>) {
@@ -667,72 +599,9 @@ mod tests {
     }
 
     #[test]
-    fn agent_settings_default_off_and_toggle_independently() {
-        use crate::proto::{AgentKind, AgentSetting};
-        let s = Store::in_memory().unwrap();
-        let d = s.load_agent_settings().unwrap();
-        assert_eq!(d, crate::proto::AgentSettings::default(), "all six default OFF");
-
-        s.put_agent_setting(AgentSetting::Status, AgentKind::Claude, true).unwrap();
-        s.put_agent_setting(AgentSetting::Resume, AgentKind::Codex, true).unwrap();
-        let l = s.load_agent_settings().unwrap();
-        assert!(l.status_claude && l.resume_codex);
-        assert!(!l.status_codex && !l.status_opencode && !l.resume_claude && !l.resume_opencode);
-    }
-
-    #[test]
-    fn resume_off_clears_that_agents_session_refs_only() {
-        use crate::proto::{AgentKind, AgentSetting};
-        let s = Store::in_memory().unwrap();
-        let mut t = SessionTree::default();
-        let ws = t.open_workspace("/r".into(), "r".into());
-        let tab = t.open_tab(ws).unwrap();
-        let a = t.first_pane(tab).unwrap();
-        let b = t.split(a, Dir::Vertical).unwrap();
-        {
-            let p = t.pane_mut(a).unwrap();
-            p.agent = Some(AgentKind::Claude);
-            p.session_ref = Some("claude-id".into());
-        }
-        {
-            let p = t.pane_mut(b).unwrap();
-            p.agent = Some(AgentKind::Codex);
-            p.session_ref = Some("codex-id".into());
-        }
-        s.save_tree(&t).unwrap();
-
-        s.put_agent_setting(AgentSetting::Resume, AgentKind::Claude, false).unwrap();
-        let after = s.load_tree().unwrap();
-        let panes = &after.workspaces[0].tabs[0].panes;
-        let by_id = |id: u64| panes.iter().find(|p| p.id == id).unwrap();
-        assert!(by_id(a).session_ref.is_none(), "claude id cleared");
-        assert_eq!(by_id(b).session_ref.as_deref(), Some("codex-id"), "codex untouched");
-    }
-
-    #[test]
-    fn reset_clears_all_settings_and_all_session_refs() {
-        use crate::proto::{AgentKind, AgentSetting};
-        let s = Store::in_memory().unwrap();
-        s.put_agent_setting(AgentSetting::Status, AgentKind::Claude, true).unwrap();
-        s.put_agent_setting(AgentSetting::Resume, AgentKind::Codex, true).unwrap();
-
-        let mut t = SessionTree::default();
-        let ws = t.open_workspace("/r".into(), "r".into());
-        let tab = t.open_tab(ws).unwrap();
-        let pane = t.first_pane(tab).unwrap();
-        t.pane_mut(pane).unwrap().agent = Some(AgentKind::Claude);
-        t.pane_mut(pane).unwrap().session_ref = Some("sid".into());
-        s.save_tree(&t).unwrap();
-
-        s.reset_agent_settings().unwrap();
-        assert_eq!(s.load_agent_settings().unwrap(), crate::proto::AgentSettings::default());
-        assert!(s.load_tree().unwrap().workspaces[0].tabs[0].panes[0].session_ref.is_none());
-    }
-
-    #[test]
     fn a_pre_m3_database_still_loads() {
-        // Simulate a database created before the session_title column and the
-        // settings table existed, with the old display-string agent values.
+        // Simulate a database created before the session_title column existed,
+        // with the old display-string agent values.
         let db = Connection::open_in_memory().unwrap();
         db.execute_batch(
             r#"
@@ -762,7 +631,23 @@ mod tests {
         // A tab written before the column existed is simply one that was
         // never set aside.
         assert_eq!(t.workspaces[0].tabs[0].shelf, None);
-        assert_eq!(s.load_agent_settings().unwrap(), crate::proto::AgentSettings::default());
+    }
+
+    #[test]
+    fn the_old_agent_toggles_are_dropped() {
+        // A database from when status and resume could be switched off: what
+        // it stored is ignored, and the table goes.
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO settings VALUES ('agent.status.claude', 'false');",
+        )
+        .unwrap();
+        Store::init(&db).unwrap();
+        let left: i64 = db
+            .query_row("SELECT count(*) FROM sqlite_master WHERE name = 'settings'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 0);
     }
 
     #[test]

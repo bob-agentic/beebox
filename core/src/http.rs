@@ -401,13 +401,6 @@ async fn serve(
     }
     if grant.host {
         let _ = tx.send(Out::Peers { peers: app.peers().await }).await;
-        // Agents toggles are the owner's; a share never sees or sets them.
-        let _ = tx
-            .send(Out::AgentSettings {
-                settings: app.agent_settings().await,
-                codex_hooks: app.codex_hooks_state().to_string(),
-            })
-            .await;
         let _ = tx.send(Out::WebServer { exposed: app.is_exposed() }).await;
     }
 
@@ -515,13 +508,6 @@ async fn serve(
                         crate::app::AgentDelta::Cwd { pane, path, git } => {
                             if !app.visible(&grant).await.contains(&pane) { continue }
                             Out::Cwd { pane, path, git }
-                        }
-                        crate::app::AgentDelta::Settings { settings } => {
-                            if !grant.host { continue }
-                            Out::AgentSettings {
-                                settings,
-                                codex_hooks: app.codex_hooks_state().to_string(),
-                            }
                         }
                     };
                     if tx.send(frame).await.is_err() {

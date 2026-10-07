@@ -12,7 +12,7 @@ use anyhow::{anyhow, Result};
 use tokio::sync::{broadcast, Mutex};
 
 use crate::proto::{
-    AgentEvent, AgentKind, AgentSetting, AgentSettings, AgentStatusView, Caps, In, Out, PaneId,
+    AgentEvent, AgentStatusView, Caps, In, Out, PaneId,
     CloseReason, Peer, PtyId, SessionId, Shelf, TabId, TreeView, WsId,
 };
 use crate::pty::{Registry, Spawn};
@@ -41,8 +41,6 @@ pub struct TreeChanged;
 pub enum AgentDelta {
     Status { pane: PaneId, status: AgentStatusView },
     SessionTitle { pane: PaneId, text: String },
-    /// Settings changed. Owner connections re-send the snapshot.
-    Settings { settings: AgentSettings },
     /// The pane's shell moved somewhere else (or its git state changed).
     Cwd { pane: PaneId, path: String, git: Option<crate::proto::GitInfo> },
 }
@@ -86,13 +84,6 @@ pub struct App {
     /// shim). `None` when installation failed — panes then spawn without
     /// agent wiring, which is the fail-open the handover requires.
     adapter_assets: Option<crate::agent_adapters::AdapterAssets>,
-    /// The six Agents toggles, mirroring the settings table. All default OFF.
-    agent_settings: Mutex<AgentSettings>,
-    /// Codex hooks readiness, probed once at startup: "stable", "legacy" or
-    /// "missing". The UI derives its badge from this instead of a hard-coded
-    /// BETA tag — the handover is explicit that stale capability hints are a
-    /// bug, not a feature.
-    codex_hooks: std::sync::OnceLock<String>,
     /// Whether non-loopback clients are served. The daemon may listen on
     /// 0.0.0.0 so sharing needs no restart, but until the owner opens this,
     /// reaching the port from the network gets nothing. Loopback is always
@@ -114,7 +105,6 @@ pub struct App {
 
 struct PendingResume {
     pty: PtyId,
-    agent: AgentKind,
     cmd: String,
     /// When the shell was spawned.
     at: tokio::time::Instant,
@@ -145,7 +135,6 @@ impl App {
         adapter_assets: Option<crate::agent_adapters::AdapterAssets>,
     ) -> Arc<Self> {
         let tree = store.load_tree().expect("read state.db");
-        let agent_settings = store.load_agent_settings().expect("read state.db");
         let (changed, _) = broadcast::channel(64);
         let (agent_tx, _) = broadcast::channel(256);
         Arc::new(Self {
@@ -159,8 +148,6 @@ impl App {
             agent_tx,
             hook_port: std::sync::atomic::AtomicU16::new(0),
             adapter_assets,
-            agent_settings: Mutex::new(agent_settings),
-            codex_hooks: std::sync::OnceLock::new(),
             exposed: std::sync::atomic::AtomicBool::new(false),
             conns: Mutex::new(HashMap::new()),
             next_session: Mutex::new(0),
@@ -320,7 +307,7 @@ impl App {
         let resume = if p.cmd.is_empty() {
             match (p.agent, &p.session_ref) {
                 (Some(agent), Some(id)) => {
-                    crate::agent::resume_command(agent, id).map(|cmd| (agent, cmd))
+                    crate::agent::resume_command(agent, id)
                 }
                 _ => None,
             }
@@ -332,9 +319,9 @@ impl App {
         // Typed when the pane is first shown, not now (`resume_on_show`).
         let mut pending = self.pending_resume.lock().await;
         match resume {
-            Some((agent, cmd)) => {
+            Some(cmd) => {
                 let at = tokio::time::Instant::now();
-                pending.insert(pane, PendingResume { pty, agent, cmd, at });
+                pending.insert(pane, PendingResume { pty, cmd, at });
             }
             None => {
                 pending.remove(&pane);
@@ -416,8 +403,8 @@ impl App {
     /// the next restart still resumes when it finally is.
     pub async fn resume_on_show(&self, pane: PaneId) {
         let Some(r) = self.pending_resume.lock().await.remove(&pane) else { return };
-        // Restarted since, or the toggle went off while it waited.
-        if self.pty_of(pane).await != Some(r.pty) || !self.agent_settings.lock().await.resume(r.agent) {
+        // Restarted since: the session is the new process's to resume.
+        if self.pty_of(pane).await != Some(r.pty) {
             return;
         }
         let ptys = Arc::clone(&self.ptys);
@@ -666,12 +653,6 @@ impl App {
             }
             In::Revoke { token } => self.revoke(&token).await,
             In::RevokeAll => self.revoke_all().await,
-            In::SetAgentSetting { agent, setting, on } => {
-                self.set_agent_setting(agent, setting, on).await;
-            }
-            In::ResetAgentSettings => {
-                self.reset_agent_settings().await;
-            }
             In::SetWebServer { exposed } => {
                 self.set_exposed(exposed).await;
             }
@@ -926,113 +907,6 @@ impl App {
         self.agent_tx.subscribe()
     }
 
-    pub async fn agent_settings(&self) -> AgentSettings {
-        *self.agent_settings.lock().await
-    }
-
-    /// Codex hooks readiness, probed lazily and cached. `codex features list`
-    /// is the ground truth on a modern CLI; a codex without that subcommand
-    /// is the legacy feature-flag era; no codex at all is "missing".
-    pub fn codex_hooks_state(&self) -> &str {
-        self.codex_hooks.get_or_init(|| {
-            let out = std::process::Command::new("codex")
-                .args(["features", "list"])
-                .output();
-            match out {
-                Ok(o) if o.status.success() => {
-                    let text = String::from_utf8_lossy(&o.stdout);
-                    let stable = text.lines().any(|l| {
-                        let mut it = l.split_whitespace();
-                        it.next() == Some("hooks")
-                            && l.contains("stable")
-                            && l.trim_end().ends_with("true")
-                    });
-                    if stable { "stable".into() } else { "legacy".into() }
-                }
-                Ok(_) => "legacy".into(),
-                Err(_) => "missing".into(),
-            }
-        })
-    }
-
-    /// Flips one toggle. DB first (single transaction, which also clears the
-    /// agent's session ids when a resume toggle goes off), then memory, then
-    /// the broadcast. Status-off additionally wipes that agent's live dots so
-    /// clients hide them immediately — not on the next event (mux0's known
-    /// stale-dot bug).
-    pub async fn set_agent_setting(&self, agent: AgentKind, setting: AgentSetting, on: bool) {
-        self.store
-            .lock()
-            .await
-            .put_agent_setting(setting, agent, on)
-            .expect("write state.db");
-        let snapshot = {
-            let mut s = self.agent_settings.lock().await;
-            s.set(agent, setting, on);
-            *s
-        };
-
-        if !on {
-            match setting {
-                AgentSetting::Status => self.clear_agent_status(Some(agent)).await,
-                AgentSetting::Resume => self.clear_session_refs(Some(agent)).await,
-            }
-        }
-        let _ = self.agent_tx.send(AgentDelta::Settings { settings: snapshot });
-    }
-
-    /// The Reset button: six toggles off, all resume ids gone, all dots gone.
-    pub async fn reset_agent_settings(&self) {
-        self.store.lock().await.reset_agent_settings().expect("write state.db");
-        *self.agent_settings.lock().await = AgentSettings::default();
-        self.clear_agent_status(None).await;
-        self.clear_session_refs(None).await;
-        let _ = self
-            .agent_tx
-            .send(AgentDelta::Settings { settings: AgentSettings::default() });
-    }
-
-    /// Resets live agent status for one agent (or all), broadcasting the
-    /// now-empty views.
-    async fn clear_agent_status(&self, agent: Option<AgentKind>) {
-        let mut deltas = Vec::new();
-        {
-            let mut tree = self.tree.lock().await;
-            for w in &mut tree.workspaces {
-                for t in &mut w.tabs {
-                    for p in &mut t.panes {
-                        let hit = agent.is_none() || p.agent == agent;
-                        if hit && p.status.view().phase != crate::proto::AgentPhase::NeverRan {
-                            p.status = crate::agent::AgentState::default();
-                            deltas.push(AgentDelta::Status {
-                                pane: p.id,
-                                status: p.status.view().clone(),
-                            });
-                        }
-                    }
-                }
-            }
-        }
-        for d in deltas {
-            let _ = self.agent_tx.send(d);
-        }
-    }
-
-    /// Drops in-memory session ids (the DB rows were cleared in the settings
-    /// transaction) so the next save cannot resurrect them.
-    async fn clear_session_refs(&self, agent: Option<AgentKind>) {
-        let mut tree = self.tree.lock().await;
-        for w in &mut tree.workspaces {
-            for t in &mut w.tabs {
-                for p in &mut t.panes {
-                    if agent.is_none() || p.agent == agent {
-                        p.session_ref = None;
-                    }
-                }
-            }
-        }
-    }
-
     /// Applies one normalized hook event to a pane. This is the only write
     /// path into agent state; the state machine decides what the event means
     /// and whether it is stale.
@@ -1041,12 +915,6 @@ impl App {
     /// across restarts, the phase does not — a restarted daemon has no idea
     /// what the agent is doing until its next hook.
     pub async fn apply_agent_event(&self, pane: PaneId, ev: AgentEvent) {
-        let settings = *self.agent_settings.lock().await;
-        let status_on = settings.status(ev.agent);
-        let resume_on = settings.resume(ev.agent);
-
-        // Whatever the toggles say: an image pasted into the session should
-        // open whether or not its status or resume are wanted.
         if let Some(id) = &ev.session_id {
             self.images.note_session(pane, ev.agent, id, ev.at_ms);
         }
@@ -1057,23 +925,17 @@ impl App {
             let mut tree = self.tree.lock().await;
             let Some(p) = tree.pane_mut(pane) else { return };
 
-            // Status is gated per agent. With the toggle off the event is
-            // not even applied, so re-enabling starts clean from the next
-            // live event — exactly what the spec asks.
-            if status_on && p.status.apply(&ev) {
+            if p.status.apply(&ev) {
                 deltas.push(AgentDelta::Status { pane, status: p.status.view().clone() });
             }
             if p.agent != Some(ev.agent) {
                 p.agent = Some(ev.agent);
                 dirty = true;
             }
-            // Resume gate: session ids are only stored while the toggle is
-            // on. The read side re-checks at launch, so old rows cannot
-            // sneak past either way.
-            //
-            // Newest wins: hooks race each other to the daemon, and a late one
-            // from the session just left must not put its id back.
-            if resume_on && ev.at_ms >= p.session_ref_at {
+            // The session id, for resuming it after a restart. Newest wins:
+            // hooks race each other to the daemon, and a late one from the
+            // session just left must not put its id back.
+            if ev.at_ms >= p.session_ref_at {
                 if let Some(id) = &ev.session_id {
                     p.session_ref_at = ev.at_ms;
                     if p.session_ref.as_deref() != Some(id.as_str()) {
@@ -1220,7 +1082,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::{AgentEventKind, Dir, Shelf};
+    use crate::proto::{AgentEventKind, AgentKind, Dir, Shelf};
     use crate::share::Scope;
 
     /// A ready app with one workspace open, as most tests assume. `bootstrap`
@@ -1903,7 +1765,6 @@ mod tests {
     #[tokio::test]
     async fn a_late_hook_cannot_put_back_the_session_just_left() {
         let a = app().await;
-        a.set_agent_setting(AgentKind::Claude, AgentSetting::Resume, true).await;
         let pane = a.tree.lock().await.workspaces[0].tabs[0].panes[0].id;
         let ev = |id: &str, at_ms| AgentEvent {
             agent: AgentKind::Claude,

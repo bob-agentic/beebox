@@ -1,18 +1,9 @@
 <script lang="ts">
   import { FONTS, LINE_HEIGHTS, SCROLLBACKS, SIZES, THEMES, settings } from '../settings.svelte';
-  import { store } from '../state.svelte';
-  import type { AgentKind, AgentSetting } from '../proto';
 
   let { onclose }: { onclose: () => void } = $props();
 
   const s = $derived(settings.current);
-
-  // Two-pane layout: sections on the left, one section's controls on the
-  // right. Agents only exists for the owner — a shared page gets Appearance
-  // alone and no section list ceremony for a single entry.
-  type Section = 'appearance' | 'agents';
-  let section = $state<Section>('appearance');
-  const showAgents = $derived(store.caps.host && store.agentSettings !== null);
 
   // 600 themes need finding, not scrolling.
   let query = $state('');
@@ -38,21 +29,6 @@
     if (!on) return;
     el.scrollTop = on.offsetTop - el.clientHeight / 2 + on.offsetHeight / 2;
   }
-
-  // The Agents toggles are daemon-owned and owner-only. OpenCode is not part
-  // of this product's scope, so it gets no row — the daemon still knows the
-  // key, the UI just never offers it.
-  const AGENT_ROWS: { agent: AgentKind; label: string }[] = [
-    { agent: 'claude', label: 'Claude Code' },
-    { agent: 'codex', label: 'Codex' },
-  ];
-  function agentToggle(agent: AgentKind, setting: AgentSetting, on: boolean) {
-    store.send({ t: 'set_agent_setting', agent, setting, on });
-  }
-  const ag = $derived(store.agentSettings);
-  const codexBadge = $derived(
-    store.codexHooks === 'legacy' ? 'BETA' : store.codexHooks === 'missing' ? 'NOT FOUND' : '',
-  );
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -61,20 +37,12 @@
   <div class="modal">
     <nav class="nav">
       <div class="nav-title">Settings</div>
-      <button class:on={section === 'appearance'} onclick={() => (section = 'appearance')}>
-        Appearance
-      </button>
-      {#if showAgents}
-        <button class="agents-nav" class:on={section === 'agents'} onclick={() => (section = 'agents')}>
-          Agents
-        </button>
-      {/if}
+      <button class="on">Appearance</button>
       <div class="nav-spacer"></div>
       <button class="done" onclick={onclose}>Done</button>
     </nav>
 
     <div class="body">
-      {#if section === 'appearance'}
         <h3>Appearance</h3>
         <div class="sub">Stored in this browser — your phone can differ from your desk</div>
 
@@ -191,50 +159,6 @@
         <div class="acts">
           <button class="g" onclick={() => settings.reset()}>Reset appearance</button>
         </div>
-      {:else if ag}
-        <h3>Agents</h3>
-        <div class="sub">Stored by the daemon — applies to every device</div>
-
-        <div class="grp">Notifications</div>
-        <div class="grp-hint">
-          Show live status dots (running, needs input, finished) for this agent's sessions.
-        </div>
-        {#each AGENT_ROWS as r (r.agent)}
-          <label class="row agent-row" data-setting="status" data-agent={r.agent}>
-            <span class="lbl wide"
-              >{r.label}
-              {#if r.agent === 'codex' && codexBadge}<span class="badge">{codexBadge}</span
-                >{/if}</span
-            >
-            <input
-              type="checkbox"
-              checked={ag[`status_${r.agent}`]}
-              onchange={(e) => agentToggle(r.agent, 'status', e.currentTarget.checked)}
-            />
-          </label>
-        {/each}
-
-        <div class="grp">Resume on Launch</div>
-        <div class="grp-hint">
-          Reopen this agent's last session automatically when BeeBox restarts.
-        </div>
-        {#each AGENT_ROWS as r (r.agent)}
-          <label class="row agent-row" data-setting="resume" data-agent={r.agent}>
-            <span class="lbl wide">{r.label}</span>
-            <input
-              type="checkbox"
-              checked={ag[`resume_${r.agent}`]}
-              onchange={(e) => agentToggle(r.agent, 'resume', e.currentTarget.checked)}
-            />
-          </label>
-        {/each}
-
-        <div class="acts">
-          <button class="g reset-agents" onclick={() => store.send({ t: 'reset_agent_settings' })}>
-            Restore defaults
-          </button>
-        </div>
-      {/if}
     </div>
   </div>
 </div>
@@ -334,11 +258,6 @@
     color: var(--dim);
     width: 84px;
     flex: 0 0 84px;
-  }
-  .lbl.wide {
-    width: 140px;
-    flex-basis: 140px;
-    color: var(--fg);
   }
   /* Flat, theme-matched controls: the platform's 3D chrome clashes with the
      rest of the panel. `appearance: none` needs its own arrow. */
@@ -507,28 +426,6 @@
   }
   .g:hover {
     color: var(--fg);
-  }
-
-  .grp {
-    margin: 14px 0 2px;
-    font-size: 10.5px;
-    text-transform: uppercase;
-    letter-spacing: 0.6px;
-    color: var(--faint);
-  }
-  .grp-hint {
-    font-size: 11px;
-    color: var(--faint);
-    margin-bottom: 8px;
-  }
-  .badge {
-    margin-left: 6px;
-    font-size: 8.5px;
-    padding: 1px 4px;
-    border-radius: 3px;
-    background: #3d331f;
-    color: #fbbf24;
-    font-weight: 700;
   }
 
   @media (max-width: 760px) {

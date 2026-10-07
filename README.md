@@ -125,7 +125,6 @@ it's dead. To give someone access, send a **share link**, not this URL.
 - **Agent status.** Claude Code and Codex report through hooks: a status dot per
   pane (rolled up to its tab and workspace), the tool being run, a summary when
   it finishes, automatic tab titles, and sessions resumed after a restart.
-  Toggle them under Settings → Agents.
 - **Sharing by link or QR code.** Four scopes — All / Workspace / Tab / Pane. A
   link belongs to the first device that opens it; every paired device is listed
   under Connections until you disconnect it. A scanned code lets the phone set

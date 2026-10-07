@@ -97,56 +97,6 @@ pub enum AgentEventKind {
     SessionEnd,
 }
 
-/// Daemon-owned agent settings: six independent toggles, all defaulting to
-/// OFF (matching mux0). `status` gates whether hook events drive the dots;
-/// `resume` gates whether session ids are persisted and replayed on launch.
-/// These are owner-level, not browser-local — Appearance stays in
-/// localStorage, this crosses the wire.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentSettings {
-    pub status_claude: bool,
-    pub status_opencode: bool,
-    pub status_codex: bool,
-    pub resume_claude: bool,
-    pub resume_opencode: bool,
-    pub resume_codex: bool,
-}
-
-impl AgentSettings {
-    pub fn status(&self, agent: AgentKind) -> bool {
-        match agent {
-            AgentKind::Claude => self.status_claude,
-            AgentKind::Opencode => self.status_opencode,
-            AgentKind::Codex => self.status_codex,
-        }
-    }
-    pub fn resume(&self, agent: AgentKind) -> bool {
-        match agent {
-            AgentKind::Claude => self.resume_claude,
-            AgentKind::Opencode => self.resume_opencode,
-            AgentKind::Codex => self.resume_codex,
-        }
-    }
-    pub fn set(&mut self, agent: AgentKind, setting: AgentSetting, on: bool) {
-        let slot = match (setting, agent) {
-            (AgentSetting::Status, AgentKind::Claude) => &mut self.status_claude,
-            (AgentSetting::Status, AgentKind::Opencode) => &mut self.status_opencode,
-            (AgentSetting::Status, AgentKind::Codex) => &mut self.status_codex,
-            (AgentSetting::Resume, AgentKind::Claude) => &mut self.resume_claude,
-            (AgentSetting::Resume, AgentKind::Opencode) => &mut self.resume_opencode,
-            (AgentSetting::Resume, AgentKind::Codex) => &mut self.resume_codex,
-        };
-        *slot = on;
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum AgentSetting {
-    Status,
-    Resume,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Dir {
@@ -352,14 +302,6 @@ pub enum Out {
         pane: PaneId,
         text: String,
     },
-    /// Daemon-owned agent settings snapshot. Sent to owner connections on
-    /// connect and after every change, so two windows stay in step.
-    /// `codex_hooks` is probed at startup: `stable` (modern Codex, no badge),
-    /// `legacy` (old feature-flag era, show BETA), or `missing` (no codex).
-    AgentSettings {
-        settings: AgentSettings,
-        codex_hooks: String,
-    },
     /// Whether non-loopback clients are allowed in. The daemon always serves
     /// loopback (the terminal itself rides on HTTP); this gates everyone
     /// else. Owner-only, toggled from the status bar.
@@ -516,15 +458,6 @@ pub enum In {
         scope: GrantScope,
         writable: bool,
     },
-    /// Owner-only. Flips one of the six agent toggles.
-    SetAgentSetting {
-        agent: AgentKind,
-        setting: AgentSetting,
-        on: bool,
-    },
-    /// Owner-only. Turns all six toggles off and clears every stored resume
-    /// session id.
-    ResetAgentSettings,
     /// Owner-only. Opens (or closes) the port to non-loopback clients.
     SetWebServer {
         exposed: bool,

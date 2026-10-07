@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use beebox_core::app::App;
-use beebox_core::proto::{AgentKind, AgentPhase, AgentSetting};
+use beebox_core::proto::{AgentKind, AgentPhase};
 use beebox_core::pty::PtyEvent;
 use beebox_core::store::Store;
 
@@ -81,8 +81,6 @@ async fn served(home: &Path) -> (Arc<App>, u16) {
         let ws = t.open_workspace("/tmp".into(), "tmp".into());
         t.open_tab(ws).unwrap();
     }
-    app.set_agent_setting(AgentKind::Codex, AgentSetting::Status, true).await;
-    app.set_agent_setting(AgentKind::Codex, AgentSetting::Resume, true).await;
     let router = beebox_core::http::router(app.clone(), None);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
