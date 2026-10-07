@@ -123,7 +123,9 @@
     if (!peer) return;
     store.announced.add(peer.token);
     joined = { title: `${peer.device} connected`, device: peer.device, detail };
-    joinedTimer = setTimeout(finish, 3000);
+    // Long enough to be seen by someone still looking at the phone that just
+    // scanned it, which is where the eye is when this appears.
+    joinedTimer = setTimeout(finish, 6000);
   });
 
   /** Ends the dialog after a pairing: now, on a click, or when the time is up. */

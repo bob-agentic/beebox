@@ -558,7 +558,8 @@ class Store {
   announcePairing(title: string, detail: string) {
     if (this.pairedTimer) clearTimeout(this.pairedTimer);
     this.paired = { id: (this.paired?.id ?? 0) + 1, title, detail };
-    this.pairedTimer = setTimeout(() => (this.paired = null), 4500);
+    // Eight seconds: it comes as a phone joins, while the eye is still on it.
+    this.pairedTimer = setTimeout(() => (this.paired = null), 8000);
   }
 
   /** The image open in the viewer. `url` is null while it loads, and stays
