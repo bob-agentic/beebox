@@ -73,6 +73,71 @@ interface Opener {
   hoverFile(o: { path: string | null }): Promise<void>;
 }
 
+/** How long an answer about a path is trusted before it is asked again — as
+ *  VS Code's terminal does. */
+export const RESOLVE_TTL_MS = 10_000;
+
+/** Which paths exist, remembered. While an agent is thinking its TUI redraws
+ *  the rows around the cursor several times a second, and xterm drops the
+ *  hovered link on every redraw and asks again. Answered from here the link
+ *  is back in the same frame; asked of the shell each time, it flickered.
+ *  A stale answer is still given at once and refreshed behind it, so expiry
+ *  never shows either. */
+export class ResolveCache {
+  private known = new Map<string, { real: string | null; at: number }>();
+  /** Questions already on their way, so a second asker waits for the same
+   *  answer instead of asking again — or giving up on the path. */
+  private pending = new Map<string, Promise<void>>();
+
+  constructor(
+    private resolve: Opener['resolvePaths'],
+    private now: () => number = Date.now,
+  ) {}
+
+  private static key(cwd: string, path: string) {
+    return `${cwd}\0${path}`;
+  }
+
+  /** Every answer if all are known — stale ones too — or null. Stale ones
+   *  are refreshed behind the answer; a failed refresh keeps the old one. */
+  peek(cwd: string, paths: string[]): (string | null)[] | null {
+    const hits = paths.map((p) => this.known.get(ResolveCache.key(cwd, p)));
+    if (hits.some((h) => h === undefined)) return null;
+    const stale = paths.filter((_, i) => this.now() - hits[i]!.at >= RESOLVE_TTL_MS);
+    if (stale.length) this.ask(cwd, stale).catch(() => {});
+    return hits.map((h) => h!.real);
+  }
+
+  /** Asks the shell about whatever is not known yet, then answers all. */
+  async get(cwd: string, paths: string[]): Promise<(string | null)[]> {
+    const missing = paths.filter((p) => !this.known.has(ResolveCache.key(cwd, p)));
+    if (missing.length) await this.ask(cwd, missing);
+    return paths.map((p) => this.known.get(ResolveCache.key(cwd, p))?.real ?? null);
+  }
+
+  private ask(cwd: string, paths: string[]): Promise<void> {
+    const waits: Promise<void>[] = [];
+    const todo = [...new Set(paths)].filter((p) => {
+      const already = this.pending.get(ResolveCache.key(cwd, p));
+      if (already) waits.push(already);
+      return !already;
+    });
+    if (todo.length) {
+      const asked = this.resolve({ paths: todo, cwd })
+        .then((real) => {
+          // Bounded: a long session prints thousands of distinct paths.
+          if (this.known.size > 2000) this.known.clear();
+          const at = this.now();
+          todo.forEach((p, i) => this.known.set(ResolveCache.key(cwd, p), { real: real[i] ?? null, at }));
+        })
+        .finally(() => todo.forEach((p) => this.pending.delete(ResolveCache.key(cwd, p))));
+      todo.forEach((p) => this.pending.set(ResolveCache.key(cwd, p), asked));
+      waits.push(asked);
+    }
+    return Promise.all(waits).then(() => {});
+  }
+}
+
 /** Links over the file paths in a row, for `registerLinkProvider`. A path
  *  wrapped onto the next row is not followed there. */
 export function fileLinkProvider(
@@ -80,6 +145,26 @@ export function fileLinkProvider(
   opener: Opener,
   cwd: () => string,
 ): ILinkProvider {
+  const cache = new ResolveCache((o) => opener.resolvePaths(o));
+  // The file under the mouse, as last told to the shell. A redraw drops the
+  // link and hands it straight back; telling the shell "none" and then the
+  // same file again each time would be noise, so a leave waits a tick to see
+  // whether the same link comes back.
+  let hovered: string | null = null;
+  let leaving: ReturnType<typeof setTimeout> | null = null;
+  const hover = (path: string) => {
+    if (leaving) clearTimeout(leaving);
+    leaving = null;
+    if (hovered !== path) void opener.hoverFile({ path: (hovered = path) });
+  };
+  const leave = () => {
+    if (leaving) clearTimeout(leaving);
+    leaving = setTimeout(() => {
+      leaving = null;
+      if (hovered !== null) void opener.hoverFile({ path: (hovered = null) });
+    }, 0);
+  };
+
   return {
     provideLinks(y, done) {
       const line = rowText(term, y - 1);
@@ -87,30 +172,34 @@ export function fileLinkProvider(
       const { text, cellAt } = line;
       const found = findPaths(text);
       if (!found.length) return done(undefined);
-      opener.resolvePaths({ paths: found.map((m) => m.path), cwd: cwd() }).then(
-        (real) =>
-          done(
-            found.flatMap((m, i): ILink[] => {
-              const path = real[i];
-              if (!path) return [];
-              return [
-                {
-                  // xterm's cells are 1-based and its range inclusive.
-                  range: {
-                    start: { x: cellAt[m.start] + 1, y },
-                    end: { x: cellAt[m.end - 1] + 1, y },
-                  },
-                  text: text.slice(m.start, m.end),
-                  activate(e) {
-                    // A plain click belongs to selecting text.
-                    if (e.metaKey) void opener.openFile({ path, line: m.line, col: m.col });
-                  },
-                  hover: () => void opener.hoverFile({ path }),
-                  leave: () => void opener.hoverFile({ path: null }),
-                },
-              ];
-            }),
-          ),
+      const links = (real: (string | null)[]) =>
+        found.flatMap((m, i): ILink[] => {
+          const path = real[i];
+          if (!path) return [];
+          return [
+            {
+              // xterm's cells are 1-based and its range inclusive.
+              range: {
+                start: { x: cellAt[m.start] + 1, y },
+                end: { x: cellAt[m.end - 1] + 1, y },
+              },
+              text: text.slice(m.start, m.end),
+              activate(e) {
+                // A plain click belongs to selecting text.
+                if (e.metaKey) void opener.openFile({ path, line: m.line, col: m.col });
+              },
+              hover: () => hover(path),
+              leave,
+            },
+          ];
+        });
+      const dir = cwd();
+      const paths = found.map((m) => m.path);
+      // Synchronous when known: that is what keeps a redraw from showing.
+      const known = cache.peek(dir, paths);
+      if (known) return done(links(known));
+      cache.get(dir, paths).then(
+        (real) => done(links(real)),
         () => done(undefined),
       );
     },

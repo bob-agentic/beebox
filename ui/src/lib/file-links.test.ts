@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { findPaths } from './file-links';
+import { findPaths, ResolveCache, RESOLVE_TTL_MS } from './file-links';
 
 const paths = (s: string) => findPaths(s).map((m) => [m.path, m.line, m.col]);
 
@@ -59,5 +59,82 @@ describe('findPaths', () => {
 
   it('leaves out words, numbers and URLs', () => {
     expect(paths('done in 0.2.0 — 93% of https://x.dev/a.js')).toEqual([]);
+  });
+});
+
+describe('ResolveCache', () => {
+  function setup() {
+    let t = 0;
+    const asked: string[][] = [];
+    const cache = new ResolveCache(
+      async ({ paths }) => {
+        asked.push(paths);
+        return paths.map((p) => (p === 'gone.ts' ? null : `/real/${p}`));
+      },
+      () => t,
+    );
+    return { cache, asked, tick: (ms: number) => (t += ms) };
+  }
+
+  it('asks once, then answers on the spot', async () => {
+    const { cache, asked } = setup();
+    expect(cache.peek('/w', ['a.ts', 'gone.ts'])).toBeNull();
+    expect(await cache.get('/w', ['a.ts', 'gone.ts'])).toEqual(['/real/a.ts', null]);
+    // "Does not exist" is remembered as well.
+    expect(cache.peek('/w', ['a.ts', 'gone.ts'])).toEqual(['/real/a.ts', null]);
+    expect(asked).toEqual([['a.ts', 'gone.ts']]);
+  });
+
+  it('only asks about what it does not know, per folder', async () => {
+    const { cache, asked } = setup();
+    await cache.get('/w', ['a.ts']);
+    await cache.get('/w', ['a.ts', 'b.ts']);
+    await cache.get('/other', ['a.ts']);
+    expect(asked).toEqual([['a.ts'], ['b.ts'], ['a.ts']]);
+  });
+
+  it('answers a stale entry at once and refreshes it behind', async () => {
+    const { cache, asked, tick } = setup();
+    await cache.get('/w', ['a.ts']);
+    tick(RESOLVE_TTL_MS);
+    expect(cache.peek('/w', ['a.ts'])).toEqual(['/real/a.ts']);
+    expect(cache.peek('/w', ['a.ts'])).toEqual(['/real/a.ts']);
+    await Promise.resolve();
+    expect(asked).toEqual([['a.ts'], ['a.ts']]);
+  });
+});
+
+describe('ResolveCache, asked twice at once', () => {
+  it('shares one question between askers', async () => {
+    let answer!: (v: (string | null)[]) => void;
+    let asked = 0;
+    const cache = new ResolveCache(() => {
+      asked++;
+      return new Promise((r) => (answer = r));
+    });
+    const one = cache.get('/w', ['a.ts']);
+    const two = cache.get('/w', ['a.ts', 'a.ts']);
+    answer(['/real/a.ts']);
+    expect(await one).toEqual(['/real/a.ts']);
+    expect(await two).toEqual(['/real/a.ts', '/real/a.ts']);
+    expect(asked).toBe(1);
+  });
+
+  it('keeps the old answer when a refresh fails', async () => {
+    let t = 0;
+    let fail = false;
+    const cache = new ResolveCache(
+      async ({ paths }) => {
+        if (fail) throw new Error('shell gone');
+        return paths.map((p) => `/real/${p}`);
+      },
+      () => t,
+    );
+    await cache.get('/w', ['a.ts']);
+    fail = true;
+    t += RESOLVE_TTL_MS;
+    expect(cache.peek('/w', ['a.ts'])).toEqual(['/real/a.ts']);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(cache.peek('/w', ['a.ts'])).toEqual(['/real/a.ts']);
   });
 });
