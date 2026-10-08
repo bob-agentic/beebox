@@ -695,9 +695,10 @@ impl App {
     /// the one each client was sent live. No broadcast for it: they already
     /// have it, from `Out::Title`.
     ///
-    /// A clean exit closes the pane, as it does in any terminal — you typed
-    /// `exit`, so the window goes. A failure leaves it, with its output and a
-    /// Restart button, because that is the moment you most want to read it.
+    /// A shell that ends on its own closes its pane, whatever its status, as
+    /// in iTerm2. Keeping failures open read `exit` after a failed command —
+    /// zsh exits with that command's status — as a crash, and left a dead
+    /// pane you could not type into.
     pub async fn watch_ptys(self: Arc<Self>) {
         let mut rx = self.ptys.subscribe();
         loop {
@@ -713,10 +714,9 @@ impl App {
                     if self.pty_of(pane).await != Some(pty) {
                         continue;
                     }
+                    tracing::debug!("pane {pane} exited with {code}");
                     self.mark_exited(pane).await;
-                    if code == 0 {
-                        self.close_pane_inner(pane).await;
-                    }
+                    self.close_pane_inner(pane).await;
                 }
                 Ok(crate::pty::PtyEvent::Output { .. }) => {}
                 // Lag can drop an exit as well as output. Unlikely — this loop
@@ -2275,77 +2275,54 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_clean_exit_closes_its_pane() {
-        // What `exit` does in any terminal: the window goes with the shell.
+    async fn a_shell_ending_closes_its_pane_whatever_its_status() {
         // End to end through the watcher, so the exit status is the child's
-        // own rather than something the test supplied.
+        // own rather than something the test supplied. `exit 3` is what zsh
+        // does on `exit` after a failed command; a signal is a real crash.
+        // All of them close, as in iTerm2.
         let a = app().await;
-        let owner = a.owner_grant().await;
         let ws = a.tree.lock().await.workspaces[0].id;
-        // A second tab, so closing this pane cannot take the workspace with it.
-        a.handle_host(&owner, In::OpenTab { ws }).await.unwrap();
-        let (doomed_tab, pane) = {
-            let t = a.tree.lock().await;
-            let tab = &t.workspaces[0].tabs[1];
-            (tab.id, tab.panes[0].id)
-        };
-
         let watcher = tokio::spawn(a.clone().watch_ptys());
-        let pty = a
-            .ptys
-            .spawn(crate::pty::Spawn {
-                pane,
-                cmd: vec!["sh".into(), "-c".into(), "exit 0".into()],
-                cwd: "/tmp".into(),
-                cols: 80,
-                rows: 24,
-                env: vec![],
-                scrollback_bytes: 1 << 16,
-            })
-            .unwrap();
-        a.tree.lock().await.pane_mut(pane).unwrap().pty = Some(pty);
+        let mut doomed = Vec::new();
+        for how in ["exit 0", "exit 3", "kill -9 $$"] {
+            // Opened in the tree alone: the test's own `sh` is the pane's
+            // process, with no login shell started for it first.
+            let (tab, pane) = {
+                let mut t = a.tree.lock().await;
+                let tab = t.open_tab(ws).unwrap();
+                (tab, t.first_pane(tab).unwrap())
+            };
+            let pty = a
+                .ptys
+                .spawn(crate::pty::Spawn {
+                    pane,
+                    cmd: vec!["sh".into(), "-c".into(), format!("sleep 0.2; {how}")],
+                    cwd: "/tmp".into(),
+                    cols: 80,
+                    rows: 24,
+                    env: vec![],
+                    scrollback_bytes: 1 << 16,
+                })
+                .unwrap();
+            a.tree.lock().await.pane_mut(pane).unwrap().pty = Some(pty);
+            doomed.push((how, tab, pane));
+        }
 
-        for _ in 0..40 {
+        for _ in 0..80 {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            if a.tree.lock().await.tab(doomed_tab).is_none() {
+            let t = a.tree.lock().await;
+            if doomed.iter().all(|(_, tab, _)| t.tab(*tab).is_none()) {
                 break;
             }
         }
         watcher.abort();
 
         let t = a.tree.lock().await;
-        assert!(t.pane(pane).is_none(), "a clean exit closes the pane");
-        assert!(t.tab(doomed_tab).is_none(), "and the tab it was alone in");
+        for (how, tab, pane) in doomed {
+            assert!(t.pane(pane).is_none(), "`{how}` closes the pane");
+            assert!(t.tab(tab).is_none(), "and the tab it was alone in");
+        }
         assert_eq!(t.workspaces.len(), 1, "the workspace still has its first tab");
-    }
-
-    #[tokio::test]
-    async fn a_failed_exit_leaves_the_pane_to_be_read() {
-        // The output is the reason you are looking, so a non-zero status keeps
-        // the pane and its Restart button.
-        let a = app().await;
-        let pane = {
-            let t = a.tree.lock().await;
-            t.workspaces[0].tabs[0].panes[0].id
-        };
-
-        let watcher = tokio::spawn(a.clone().watch_ptys());
-        a.ptys
-            .spawn(crate::pty::Spawn {
-                pane,
-                cmd: vec!["sh".into(), "-c".into(), "exit 3".into()],
-                cwd: "/tmp".into(),
-                cols: 80,
-                rows: 24,
-                env: vec![],
-                scrollback_bytes: 1 << 16,
-            })
-            .unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(900)).await;
-        watcher.abort();
-
-        let t = a.tree.lock().await;
-        assert!(t.pane(pane).is_some(), "a failure leaves the pane in place");
     }
 
     #[tokio::test]

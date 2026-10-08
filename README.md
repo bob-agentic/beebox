@@ -4,7 +4,7 @@
 
 **A web terminal built for running many agent CLIs in parallel.**
 
-`v0.2.21`
+`v0.2.22`
 
 </div>
 
@@ -169,8 +169,8 @@ it's dead. To give someone access, send a **share link**, not this URL.
   right-click either to reveal it in Finder. Links appear only over paths that
   exist (macOS app). Web links open in the browser — ⌘-click in the macOS app,
   a plain click elsewhere.
-- **Panes close when their shell does.** `exit` closes the pane, as in iTerm2. A
-  non-zero exit leaves it open with its output and a Restart button.
+- **Panes close when their shell does.** `exit` or `⌃D` closes the pane, as in
+  iTerm2 — whatever the last command returned.
 - **607 themes**, from Ghostty's set, with the window chrome derived from each.
 - **Phones.** A key bar for what a phone keyboard lacks (Esc, Tab, Ctrl, Alt,
   arrows), no autocorrect in the terminal, and a sidebar that gets out of the way.
