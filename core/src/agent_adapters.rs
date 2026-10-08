@@ -11,6 +11,7 @@
 //!   claude-settings.json  hooks overlay passed via `claude --settings`
 //!   claude-plugin/        the `beebox` skill, via `claude --plugin-dir`
 //!   codex-context.json    what Codex's SessionStart hook tells it
+//!   codex-hooks           merges BeeBox's Codex hooks with the user's own
 //!   claude-wrapper.zsh    the wrapper function
 //!   zdot/.zshenv          ZDOTDIR shim, stage 1
 //!   zdot/.zprofile        ZDOTDIR shim, login stage (Homebrew's PATH)
@@ -423,16 +424,32 @@ overlay="${overlay:h}/codex-overlay"
 mkdir -p "$overlay"
 
 sync_back() {
-  # Anything that is now a regular file was written by Codex via rename(2);
-  # copy it home. hooks.json is ours and stays ours.
-  local item name
+  # Anything that is now a regular file was written by Codex via rename(2).
+  # Newer than the user's copy: it goes home. Older: the user changed theirs
+  # since (another terminal, say), and theirs wins. Either way the overlay
+  # points at the user's file again, so nothing here goes stale. hooks.json
+  # is ours and stays ours. Databases are left as they were: one in use can
+  # be neither copied nor swapped for a link safely.
+  local item name home
   for item in "$overlay"/*(N); do
     [ -f "$item" ] || continue
     [ -L "$item" ] && continue
     name="${item:t}"
-    [ "$name" = "hooks.json" ] && continue
-    mkdir -p "$user_home"
-    cp -f "$item" "$user_home/$name" 2>/dev/null || true
+    case "$name" in
+      hooks.json|hooks.json.*) continue ;;
+      *.sqlite|*.sqlite-wal|*.sqlite-shm)
+        mkdir -p "$user_home" 2>/dev/null || continue
+        cp -f "$item" "$user_home/$name" 2>/dev/null || true
+        continue ;;
+    esac
+    home="$user_home/$name"
+    mkdir -p "$user_home" 2>/dev/null || continue
+    # A tie goes to the overlay: losing a login or a trust approval made in
+    # Codex is the worse mistake.
+    if [ ! -e "$home" ] || ! [ "$home" -nt "$item" ]; then
+      cp -f "$item" "$home" 2>/dev/null || continue
+    fi
+    ln -sfn "$home" "$item"
   done
 }
 
@@ -453,22 +470,18 @@ if [ ! -e "$overlay/config.toml" ] && [ ! -L "$overlay/config.toml" ]; then
   ln -sfn "$user_home/config.toml" "$overlay/config.toml"
 fi
 
-# Our hooks.json. Rewritten every launch so an upgraded send path lands, but
-# the *content* is stable for a given install — Codex trust keys on
-# path+command, and churn there would mean re-approving in /hooks each time.
+# Our hooks first, then the user's own: Codex reads one hooks.json, so theirs
+# would otherwise never run in a BeeBox pane. Rebuilt every launch, so an edit
+# to ~/.codex/hooks.json lands next time. Ours keep their exact text and stay
+# first in each event — Codex keys hook trust on path, event, position and
+# content, so approvals already given survive. The user's need approving once
+# under this path in /hooks; until then Codex skips them, as before.
 send="$BEEBOX_AGENT_HOOKS_DIR/send"
-cat > "$overlay/hooks.json" <<EOF
-{
-  "hooks": {
-    "SessionStart":      [{"hooks": [{"type": "command", "command": "\"$send\" codex SessionStart", "timeout": 3}]}],
-    "UserPromptSubmit":  [{"hooks": [{"type": "command", "command": "\"$send\" codex UserPromptSubmit", "timeout": 3}]}],
-    "PreToolUse":        [{"hooks": [{"type": "command", "command": "\"$send\" codex PreToolUse", "timeout": 3}]}],
-    "PostToolUse":       [{"hooks": [{"type": "command", "command": "\"$send\" codex PostToolUse", "timeout": 3}]}],
-    "PermissionRequest": [{"hooks": [{"type": "command", "command": "\"$send\" codex PermissionRequest", "timeout": 3}]}],
-    "Stop":              [{"hooks": [{"type": "command", "command": "\"$send\" codex Stop", "timeout": 3}]}]
-  }
-}
-EOF
+# Its own temp file per launch: panes started together (a batch of delegated
+# tasks) would otherwise rename each other's half-written file into place.
+python3 "$BEEBOX_AGENT_HOOKS_DIR/codex-hooks" "$send" "$user_home/hooks.json" > "$overlay/hooks.json.$$" \
+  && mv -f "$overlay/hooks.json.$$" "$overlay/hooks.json" \
+  || rm -f "$overlay/hooks.json.$$"
 
 export CODEX_HOME="$overlay"
 trap sync_back EXIT INT TERM
@@ -478,6 +491,38 @@ trap sync_back EXIT INT TERM
 code=0
 "$real" "$@" || code=$?
 exit "$code"
+"#;
+
+/// Builds the overlay's hooks.json: BeeBox's hooks, then the user's own from
+/// `~/.codex/hooks.json`. BeeBox's entries are the same entries, in the same
+/// place, as before the user's were merged in — Codex's trust in them carries
+/// over (checked against a real Codex). A broken or missing user file just
+/// contributes nothing.
+const CODEX_HOOKS: &str = r#"import json, sys
+
+send, user_file = sys.argv[1], sys.argv[2]
+EVENTS = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "Stop"]
+
+def ours(event):
+    return {"hooks": [{"type": "command", "command": f'"{send}" codex {event}', "timeout": 3}]}
+
+try:
+    with open(user_file) as f:
+        user = json.load(f).get("hooks") or {}
+    if not isinstance(user, dict):
+        user = {}
+except Exception:
+    user = {}
+
+def foreign(group):
+    # A copy of ours in the user's file would fire twice.
+    return not any(send in str(h.get("command", "")) for h in group.get("hooks", []) if isinstance(h, dict))
+
+merged = {e: [ours(e)] for e in EVENTS}
+for event, groups in user.items():
+    if isinstance(groups, list):
+        merged.setdefault(event, []).extend(g for g in groups if isinstance(g, dict) and foreign(g))
+print(json.dumps({"hooks": merged}, indent=2, ensure_ascii=False))
 "#;
 
 /// The hooks overlay handed to `claude --settings`. Commands resolve the
@@ -549,6 +594,7 @@ pub fn install(home: &Path) -> Result<AdapterAssets> {
     std::fs::set_permissions(bin.join("beebox"), std::fs::Permissions::from_mode(0o755))?;
     std::fs::write(hooks_dir.join("claude-wrapper.zsh"), CLAUDE_WRAPPER)?;
     std::fs::write(hooks_dir.join("codex-wrapper.zsh"), CODEX_WRAPPER)?;
+    std::fs::write(hooks_dir.join("codex-hooks"), CODEX_HOOKS)?;
     let codex_run = hooks_dir.join("codex-run");
     std::fs::write(&codex_run, CODEX_RUN)?;
     std::fs::set_permissions(&codex_run, std::fs::Permissions::from_mode(0o755))?;
@@ -678,6 +724,97 @@ mod tests {
         .unwrap();
         assert_eq!(ctx["hookSpecificOutput"]["hookEventName"], "SessionStart");
         assert!(CLAUDE_WRAPPER.contains("--plugin-dir \"$BEEBOX_AGENT_HOOKS_DIR/claude-plugin\""));
+    }
+
+    #[test]
+    fn codex_hooks_keep_ours_first_and_add_the_users() {
+        let dir = tmp();
+        let a = install(&dir.0).unwrap();
+        let send = a.hooks_dir.join("send").to_string_lossy().into_owned();
+        let merge = |user: &str| -> serde_json::Value {
+            let f = dir.0.join("user-hooks.json");
+            std::fs::write(&f, user).unwrap();
+            let out = std::process::Command::new("python3")
+                .arg(a.hooks_dir.join("codex-hooks"))
+                .arg(&send)
+                .arg(&f)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            serde_json::from_slice(&out.stdout).unwrap()
+        };
+
+        // Ours, exactly as Codex trusted them: same command, type, timeout.
+        let ours = |v: &serde_json::Value, event: &str| v["hooks"][event][0]["hooks"][0].clone();
+        let alone = merge("not json");
+        for event in ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "Stop"] {
+            assert_eq!(
+                ours(&alone, event),
+                serde_json::json!({"type": "command", "command": format!("\"{send}\" codex {event}"), "timeout": 3}),
+            );
+            assert_eq!(alone["hooks"][event].as_array().unwrap().len(), 1, "a broken user file adds nothing");
+        }
+
+        let user = serde_json::json!({"hooks": {
+            "Stop": [{"hooks": [{"type": "command", "command": "notify-me"}]}],
+            "PostCompact": [{"hooks": [{"type": "command", "command": "log-it"}]}],
+            // A copy of ours must not fire twice.
+            "PreToolUse": [{"hooks": [{"type": "command", "command": format!("\"{send}\" codex PreToolUse")}]}],
+        }});
+        let v = merge(&user.to_string());
+        assert_eq!(v["hooks"]["Stop"][1]["hooks"][0]["command"], "notify-me", "theirs come after ours");
+        assert_eq!(ours(&v, "Stop")["command"], format!("\"{send}\" codex Stop"));
+        assert_eq!(v["hooks"]["PostCompact"][0]["hooks"][0]["command"], "log-it", "events we do not use are kept");
+        assert_eq!(v["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
+
+        // Odd shapes contribute nothing rather than breaking ours.
+        for odd in [r#"{}"#, r#"{"hooks": []}"#, r#"{"hooks": {"Stop": "x", "PreToolUse": [1, "y"]}}"#] {
+            let v = merge(odd);
+            assert_eq!(v["hooks"]["Stop"].as_array().unwrap().len(), 1, "{odd}");
+            assert_eq!(v["hooks"]["PreToolUse"].as_array().unwrap().len(), 1, "{odd}");
+        }
+        assert!(CODEX_RUN.contains("codex-hooks\" \"$send\" \"$user_home/hooks.json\" > \"$overlay/hooks.json.$$\""));
+    }
+
+    #[test]
+    fn codex_config_written_in_beebox_goes_home_unless_home_is_newer() {
+        // Codex saves config by rename(2), which turns the overlay's symlink
+        // into a file of its own. A fake `codex` does exactly that; for the
+        // second case the user's real file is edited afterwards, as another
+        // terminal would.
+        for (case, expect) in [("codex", "from-codex"), ("then-user", "from-user")] {
+            let dir = tmp();
+            let a = install(&dir.0).unwrap();
+            let home = dir.0.join("user-codex");
+            std::fs::create_dir_all(&home).unwrap();
+            std::fs::write(home.join("config.toml"), "original").unwrap();
+            let fake = dir.0.join("fake-codex");
+            std::fs::write(
+                &fake,
+                r#"#!/bin/sh
+printf from-codex > "$CODEX_HOME/config.toml.tmp" && mv -f "$CODEX_HOME/config.toml.tmp" "$CODEX_HOME/config.toml"
+if [ "$1" = then-user ]; then sleep 1.1; printf from-user > "$USER_CODEX/config.toml"; fi
+"#,
+            )
+            .unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+            let out = std::process::Command::new(a.hooks_dir.join("codex-run"))
+                .arg(case)
+                .env("BEEBOX_AGENT_HOOKS_DIR", &a.hooks_dir)
+                .env("BEEBOX_USER_CODEX_HOME", &home)
+                .env("BEEBOX_REAL_CODEX", &fake)
+                .env("USER_CODEX", &home)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{case}: {}", String::from_utf8_lossy(&out.stderr));
+
+            assert_eq!(std::fs::read_to_string(home.join("config.toml")).unwrap(), expect, "{case}");
+            let overlay = dir.0.join("codex-overlay/config.toml");
+            assert!(overlay.symlink_metadata().unwrap().file_type().is_symlink(), "{case}: linked again");
+            assert_eq!(std::fs::read_to_string(&overlay).unwrap(), expect, "{case}: and reads the user's file");
+        }
     }
 
     #[test]

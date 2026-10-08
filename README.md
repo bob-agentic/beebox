@@ -126,7 +126,8 @@ it's dead. To give someone access, send a **share link**, not this URL.
   pane (rolled up to its tab and workspace), the tool being run, a summary when
   it finishes, automatic tab titles, and sessions resumed after a restart — each
   as its pane is first shown, so dozens of agent tabs do not all start at once.
-  Always on; there is nothing to switch on.
+  Always on; there is nothing to switch on. Your own hooks keep running beside
+  BeeBox's — Codex asks once to trust those from `~/.codex/hooks.json` in BeeBox.
 - **Agents open their own tabs.** Inside a BeeBox terminal, a `beebox` command
   opens workspaces and tabs, starting a command in them (`beebox tab new --
   claude --name FV-510 "…"`), so the Claude or Codex you are talking to can hand
