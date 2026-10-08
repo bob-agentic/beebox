@@ -4,7 +4,7 @@
 
 **A web terminal built for running many agent CLIs in parallel.**
 
-`v0.2.20`
+`v0.2.21`
 
 </div>
 
@@ -127,6 +127,25 @@ it's dead. To give someone access, send a **share link**, not this URL.
   it finishes, automatic tab titles, and sessions resumed after a restart — each
   as its pane is first shown, so dozens of agent tabs do not all start at once.
   Always on; there is nothing to switch on.
+- **Agents open their own tabs.** Inside a BeeBox terminal, a `beebox` command
+  opens workspaces and tabs, starting a command in them (`beebox tab new --
+  claude --name FV-510 "…"`), so the Claude or Codex you are talking to can hand
+  tasks to new sessions you can watch and type into. Claude learns of it through
+  a skill BeeBox loads only in its own terminals; Codex through its session
+  hook. Your own CLAUDE.md and AGENTS.md are left alone. Sessions talk back
+  through the agent's own messaging (Claude's SendMessage, `codex queue`) —
+  BeeBox opens the tabs and stays out of the conversation. Ask for a worktree
+  and the agent makes one; ask for nothing and it opens a tab beside you. What
+  it opens stays behind what you are looking at. A terminal someone can type in
+  through a Workspace, Tab or Pane link refuses it, since they would not see
+  what it opened; agents ask with `beebox check` before touching git.
+  `beebox --help` has the rest.
+- **Worktrees under their repository.** A workspace on a linked git worktree
+  sits under its repository's workspace in the sidebar, foldable, with each
+  worktree's status dot. Closing one deletes the worktree — after you type its
+  name, told how many uncommitted files go with it; the branch stays. A worktree
+  removed with `git` closes its workspace by itself. Branches in the sidebar are
+  the real ones, refreshed only while a BeeBox window has focus.
 - **The images you pasted into an agent.** Click `[Image #N]` in a Claude Code
   or Codex pane — or tap it on a phone — to see the image. `←`/`→` step through
   the session's images; below each is the question it was sent with, and
@@ -247,8 +266,9 @@ core/src/
   modes.rs          mode sniffing (not a VT parser)
   store.rs          SQLite
   app.rs            state and mutation ops
-  http.rs           axum: /ws, /a /w /t /p, /hooks
-  agent*.rs         agent hooks and adapters (Claude Code, Codex)
+  http.rs           axum: /ws, /a /w /t /p, /hooks, /cli
+  cwd.rs            cwd and git polling, workspace worktree detection
+  agent*.rs         agent hooks and adapters (Claude Code, Codex), the `beebox` command and skill
   images.rs         [Image #N]: indexing agent transcripts for pasted images
 ui/src/
   lib/proto.ts           TS mirror of proto.rs
@@ -257,6 +277,7 @@ ui/src/
   lib/file-links.ts      file paths in terminal output
   lib/image-links.ts     [Image #N] links, phone taps, the message an image was sent with
   lib/partial-line.ts    zsh's no-final-newline `%`, kept right at any width
+  lib/ws-groups.ts       worktrees nested under their repository
   lib/components/        Sidebar, TabBar, SplitTree, Pane, dialogs
 mac/
   Sources/BeeBoxShell/   Swift WKWebView shell: the window, the menu, the daemon as a child

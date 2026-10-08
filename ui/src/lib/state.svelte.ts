@@ -26,6 +26,8 @@ import type {
   WsId,
 } from './proto';
 
+export type WorktreeInfo = { ws: WsId; path: string; branch: string; dirty: number };
+
 /** How long the status bar says who just joined. */
 export const PAIRED_MS = 5000;
 
@@ -101,7 +103,11 @@ class Store {
     // Asked afresh on each event rather than taken from its name: WKWebView
     // sends `focus` when the web view takes first responder, even in a window
     // that is not in front.
-    const syncFocus = () => (this.windowFocused = document.hasFocus());
+    const syncFocus = () => {
+      this.windowFocused = document.hasFocus();
+      // The daemon polls git only while some window is looking.
+      this.send({ t: 'attention', on: this.windowFocused });
+    };
     addEventListener('focus', syncFocus);
     addEventListener('blur', syncFocus);
     // In the desktop shell the daemon's address comes from the injected port
@@ -174,11 +180,23 @@ class Store {
         this.connected = up;
         // A new connection sends nothing until asked. What is on screen stays
         // there until the replay replaces it.
-        if (up) for (const pane of this.terms.keys()) this.send({ t: 'replay', pane });
-        // A request the old socket took is never answered.
-        else for (const [req, done] of this.imageReqs) {
-          this.imageReqs.delete(req);
-          done(null);
+        if (up) {
+          for (const pane of this.terms.keys()) this.send({ t: 'replay', pane });
+          this.send({ t: 'attention', on: document.hasFocus() });
+        } else {
+          // A request the old socket took is never answered.
+          for (const [req, done] of this.imageReqs) {
+            this.imageReqs.delete(req);
+            done(null);
+          }
+          for (const [ws, done] of this.worktreeDone) {
+            this.worktreeDone.delete(ws);
+            done('BeeBox disconnected before answering — check whether the worktree is still there.');
+          }
+          for (const [ws, done] of this.worktreeReqs) {
+            this.worktreeReqs.delete(ws);
+            done(null);
+          }
         }
       },
     );
@@ -186,6 +204,28 @@ class Store {
 
   send(msg: In) {
     this.conn?.send(msg);
+  }
+
+  private worktreeReqs = new Map<WsId, (info: WorktreeInfo | null) => void>();
+  private worktreeDone = new Map<WsId, (error: string | null) => void>();
+
+  /** What deleting a worktree would lose, asked of the daemon fresh — the
+      uncommitted count is the thing the confirmation is for. Null if the
+      connection dropped before the answer came. */
+  worktreeInfo(ws: WsId): Promise<WorktreeInfo | null> {
+    return new Promise((done) => {
+      this.worktreeReqs.set(ws, done);
+      this.send({ t: 'worktree_info', ws });
+    });
+  }
+
+  /** Closes a worktree's workspace and deletes its folder. Resolves with
+      git's complaint if it refused, null once it is gone. */
+  removeWorktree(ws: WsId): Promise<string | null> {
+    return new Promise((done) => {
+      this.worktreeDone.set(ws, done);
+      this.send({ t: 'remove_worktree', ws });
+    });
   }
 
   private handle(msg: Out) {
@@ -311,6 +351,16 @@ class Store {
         break;
       case 'pong':
         break;
+      case 'worktree_info': {
+        this.worktreeReqs.get(msg.ws)?.(msg);
+        this.worktreeReqs.delete(msg.ws);
+        break;
+      }
+      case 'worktree_removed': {
+        this.worktreeDone.get(msg.ws)?.(msg.error);
+        this.worktreeDone.delete(msg.ws);
+        break;
+      }
       case 'image': {
         const done = this.imageReqs.get(msg.req);
         this.imageReqs.delete(msg.req);

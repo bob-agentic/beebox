@@ -55,6 +55,9 @@ pub struct Conn {
     /// The grant it came in on; `owner` for the owner's own windows.
     token: String,
     addr: String,
+    /// Its window has focus. Until the client says otherwise it is assumed
+    /// to, so an older or silent client never starves the pollers.
+    attention: bool,
     /// Closes the socket, saying why if it should not come back.
     close: Option<tokio::sync::oneshot::Sender<Option<CloseReason>>>,
 }
@@ -75,6 +78,10 @@ pub struct App {
     /// some 80 MB each, for tabs nobody had opened yet.
     pending_resume: Mutex<HashMap<PaneId, PendingResume>>,
     changed: broadcast::Sender<TreeChanged>,
+    /// Whether any window is looking. Git is only asked while one is: what
+    /// the sidebar and pane footers show matters to someone watching, and
+    /// sixteen workspaces and seventy panes polled for nobody is just load.
+    attention: tokio::sync::watch::Sender<bool>,
     /// Agent status/title deltas, fanned out to every socket.
     agent_tx: broadcast::Sender<AgentDelta>,
     /// Where the hook endpoint is reachable from processes on this machine.
@@ -145,6 +152,7 @@ impl App {
             hook_secrets: Mutex::new(HashMap::new()),
             pending_resume: Mutex::new(HashMap::new()),
             changed,
+            attention: tokio::sync::watch::channel(false).0,
             agent_tx,
             hook_port: std::sync::atomic::AtomicU16::new(0),
             adapter_assets,
@@ -256,6 +264,10 @@ impl App {
             p.cmd.clone()
         };
 
+        let cwd = p.cwd.clone();
+        // Once only: a re-run of this pane is a fresh shell, not a second go.
+        let run = tree.pane_mut(pane).and_then(|p| p.run.take());
+
         // Rotate the hook secret on every spawn: a hook fired by the previous
         // process must not be able to paint status onto the new one.
         let secret = Self::mint_secret();
@@ -265,23 +277,39 @@ impl App {
         // by construction — the hook route refuses anything else anyway.
         let mut env = Vec::new();
         let port = self.hook_port.load(std::sync::atomic::Ordering::Relaxed);
+        // The shim types `run` at the first prompt. Without it (another shell,
+        // or no adapter assets) it is typed in from here instead, below.
+        let mut typed = run.clone();
         if port != 0 {
             env.push(("BEEBOX_PANE_ID".to_string(), pane.to_string()));
             env.push((
                 "BEEBOX_HOOK_URL".to_string(),
                 format!("http://127.0.0.1:{port}/hooks/{pane}/{secret}"),
             ));
+            // The `beebox` command's way in. The same secret: it proves the
+            // caller runs inside this pane, which is all the CLI trusts.
+            env.push((
+                "BEEBOX_CLI_URL".to_string(),
+                format!("http://127.0.0.1:{port}/cli/{pane}/{secret}"),
+            ));
             // The zsh shim and hook sender only make sense when there is a
             // hook endpoint to talk to.
             if let Some(assets) = &self.adapter_assets {
-                env.extend(crate::agent_adapters::pane_env(assets, &self.shell));
+                let shim = crate::agent_adapters::pane_env(assets, &self.shell);
+                if let Some(run) = &run {
+                    if shim.iter().any(|(k, _)| k == "ZDOTDIR") {
+                        env.push(("BEEBOX_RUN".to_string(), run.clone()));
+                        typed = None;
+                    }
+                }
+                env.extend(shim);
             }
         }
 
         let spec = Spawn {
             pane,
             cmd,
-            cwd: p.cwd.clone(),
+            cwd,
             cols,
             rows,
             env,
@@ -326,6 +354,15 @@ impl App {
             None => {
                 pending.remove(&pane);
             }
+        }
+        drop(pending);
+        // No shim to hand it to: typed after the same beat a resume waits.
+        if let Some(cmd) = typed {
+            let ptys = Arc::clone(&self.ptys);
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+                let _ = ptys.write(pty, format!("{cmd}\r").as_bytes());
+            });
         }
         Ok(pty)
     }
@@ -567,37 +604,23 @@ impl App {
                 self.commit().await;
             }
             In::OpenWorkspace { path } => {
-                // An empty path means "just give me a workspace": the user's
-                // home directory. Keeps first-run and ⌘N prompt-free.
-                let path = if path.trim().is_empty() {
-                    std::env::var("HOME").unwrap_or_else(|_| "/".into())
-                } else {
-                    path
+                self.open_workspace_at(path, None, None, true).await?;
+            }
+            In::WorktreeInfo { ws } => {
+                let Some((path, git)) = self.workspace_git(ws).await else {
+                    return Ok(Vec::new());
                 };
-                let base = std::path::Path::new(&path)
-                    .file_name()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| path.clone());
-
-                // ⌘N opens another workspace on the same folder, so the names
-                // would collide. Number the repeats, as a browser does.
-                let taken = {
-                    let tree = self.tree.lock().await;
-                    tree.workspaces
-                        .iter()
-                        .filter(|w| w.name == base || w.name.starts_with(&format!("{base} ")))
-                        .count()
+                let dirty = {
+                    let path = path.clone();
+                    tokio::task::spawn_blocking(move || crate::cwd::dirty_count(&path))
+                        .await
+                        .unwrap_or(0)
                 };
-                let name = if taken == 0 {
-                    base
-                } else {
-                    format!("{base} {}", taken + 1)
-                };
-                let ws = self.tree.lock().await.open_workspace(path, name);
-                let tab = self.tree.lock().await.open_tab(ws)?;
-                let pane = self.tree.lock().await.first_pane(tab).unwrap();
-                self.ensure_running(pane).await?;
-                self.commit().await;
+                return Ok(vec![Out::WorktreeInfo { ws, path, branch: git.branch, dirty }]);
+            }
+            In::RemoveWorktree { ws } => {
+                let error = self.remove_worktree(ws).await.err().map(|e| e.to_string());
+                return Ok(vec![Out::WorktreeRemoved { ws, error }]);
             }
             In::RenameWorkspace { ws, name } => {
                 if let Some(w) = self.tree.lock().await.workspaces.iter_mut().find(|w| w.id == ws) {
@@ -642,15 +665,7 @@ impl App {
                 drop(tree);
                 self.commit().await;
             }
-            In::CloseWorkspace { ws } => {
-                let panes = self.tree.lock().await.close_workspace(ws);
-                for pane in panes {
-                    if let Some(pty) = self.pty_of(pane).await {
-                        self.ptys.kill(pty);
-                    }
-                }
-                self.commit().await;
-            }
+            In::CloseWorkspace { ws } => self.close_workspace_now(ws).await,
             In::Revoke { token } => self.revoke(&token).await,
             In::RevokeAll => self.revoke_all().await,
             In::SetWebServer { exposed } => {
@@ -660,6 +675,7 @@ impl App {
             In::Input { .. }
             | In::Viewport { .. }
             | In::Ping
+            | In::Attention { .. }
             | In::Replay { .. }
             | In::Release { .. }
             | In::Image { .. }
@@ -1012,15 +1028,35 @@ impl App {
             *n
         };
         let (close, closed) = tokio::sync::oneshot::channel();
-        let conn = Conn { token: grant.token.clone(), addr, close: Some(close) };
+        let conn = Conn { token: grant.token.clone(), addr, attention: true, close: Some(close) };
         self.conns.lock().await.insert(session, conn);
+        self.recount_attention().await;
         let _ = self.changed.send(TreeChanged);
         (session, closed)
     }
 
     pub async fn remove_conn(&self, session: SessionId) {
         self.conns.lock().await.remove(&session);
+        self.recount_attention().await;
         let _ = self.changed.send(TreeChanged);
+    }
+
+    /// A window gained or lost focus.
+    pub async fn set_attention(&self, session: SessionId, on: bool) {
+        if let Some(c) = self.conns.lock().await.get_mut(&session) {
+            c.attention = on;
+        }
+        self.recount_attention().await;
+    }
+
+    async fn recount_attention(&self) {
+        let any = self.conns.lock().await.values().any(|c| c.attention);
+        self.attention.send_if_modified(|was| std::mem::replace(was, any) != any);
+    }
+
+    /// Follows whether anyone is looking; see `attention`.
+    pub fn attention(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.attention.subscribe()
     }
 
     /// Deletes a link and closes whatever is attached through it. A link
@@ -1048,6 +1084,7 @@ impl App {
         }
         conns.retain(|_, c| c.close.is_some());
         drop(conns);
+        self.recount_attention().await;
         let _ = self.changed.send(TreeChanged);
     }
 
@@ -1076,6 +1113,326 @@ impl App {
             .iter()
             .find(|w| w.tabs.iter().any(|t| t.id == tab))
             .map(|w| w.id)
+    }
+
+    /// Opens a folder as a workspace with one tab, running `run` in it if
+    /// given. `name` overrides the folder name.
+    async fn open_workspace_at(
+        &self,
+        path: String,
+        name: Option<String>,
+        run: Option<String>,
+        // Whether it comes to the front. The `beebox` command opens behind
+        // whatever you are looking at.
+        front: bool,
+    ) -> Result<(WsId, TabId, PaneId)> {
+        // An empty path means "just give me a workspace": the user's
+        // home directory. Keeps first-run and ⌘N prompt-free.
+        let path = if path.trim().is_empty() {
+            std::env::var("HOME").unwrap_or_else(|_| "/".into())
+        } else {
+            path
+        };
+        let base = match name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+            Some(n) => n.to_string(),
+            None => std::path::Path::new(&path)
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.clone()),
+        };
+
+        // ⌘N opens another workspace on the same folder, so the names
+        // would collide. Number the repeats, as a browser does.
+        let taken = {
+            let tree = self.tree.lock().await;
+            tree.workspaces
+                .iter()
+                .filter(|w| w.name == base || w.name.starts_with(&format!("{base} ")))
+                .count()
+        };
+        let name = if taken == 0 {
+            base
+        } else {
+            format!("{base} {}", taken + 1)
+        };
+        // Asked before the first frame goes out, so a worktree appears under
+        // its repository at once rather than jumping there on the next poll.
+        let git = {
+            let path = path.clone();
+            tokio::task::spawn_blocking(move || crate::cwd::ws_git(&path)).await.ok().flatten()
+        };
+        let (ws, tab, pane) = {
+            let mut tree = self.tree.lock().await;
+            let was = (tree.active_ws, tree.active_tab);
+            let ws = tree.open_workspace(path, name);
+            if let Some(w) = tree.workspaces.iter_mut().find(|w| w.id == ws) {
+                w.git = git;
+            }
+            let tab = tree.open_tab(ws)?;
+            let pane = tree.first_pane(tab).ok_or_else(|| anyhow!("tab {tab} has no pane"))?;
+            if let Some(p) = tree.pane_mut(pane) {
+                p.run = run;
+            }
+            if !front {
+                (tree.active_ws, tree.active_tab) = was;
+            }
+            (ws, tab, pane)
+        };
+        self.ensure_running(pane).await?;
+        self.commit().await;
+        Ok((ws, tab, pane))
+    }
+
+    async fn close_workspace_now(&self, ws: WsId) {
+        let panes = self.tree.lock().await.close_workspace(ws);
+        for pane in panes {
+            self.images.forget_pane(pane);
+            if let Some(pty) = self.pty_of(pane).await {
+                self.ptys.kill(pty);
+            }
+        }
+        self.commit().await;
+    }
+
+    async fn workspace_git(&self, ws: WsId) -> Option<(String, crate::session::WsGit)> {
+        let tree = self.tree.lock().await;
+        let w = tree.workspaces.iter().find(|w| w.id == ws)?;
+        Some((w.path.clone(), w.git.clone()?))
+    }
+
+    /// Closes a worktree's workspace and deletes the folder. The branch is
+    /// left for git to deal with.
+    async fn remove_worktree(&self, ws: WsId) -> Result<()> {
+        let path = {
+            let tree = self.tree.lock().await;
+            tree.workspaces
+                .iter()
+                .find(|w| w.id == ws)
+                .map(|w| w.path.clone())
+                .ok_or_else(|| anyhow!("no workspace {ws}"))?
+        };
+        // Asked of git now, not taken from the poller's last look: deleting a
+        // folder is not something to do on a stale answer, and the repository's
+        // own checkout must never come down this path.
+        let git = {
+            let path = path.clone();
+            tokio::task::spawn_blocking(move || crate::cwd::ws_git(&path)).await.ok().flatten()
+        }
+        .filter(|g| g.linked)
+        .ok_or_else(|| anyhow!("{path} is not a linked git worktree"))?;
+
+        // Processes first, so nothing is still writing into the folder.
+        self.close_workspace_now(ws).await;
+        let out = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("git")
+                .args(["worktree", "remove", "--force", &path])
+                .current_dir(&git.common_dir)
+                .output()
+        })
+        .await??;
+        if !out.status.success() {
+            return Err(anyhow!("{}", String::from_utf8_lossy(&out.stderr).trim()));
+        }
+        Ok(())
+    }
+
+    /// The workspace poller's report, one sweep at a time: one tree frame for
+    /// all of it, not one per workspace that changed.
+    ///
+    /// A linked worktree whose folder has gone was removed with git, and takes
+    /// its workspace with it — that is how an agent cleaning up after itself
+    /// is reflected here. Only worktrees: an ordinary folder that vanished may
+    /// be a disk not mounted yet.
+    pub async fn apply_ws_git(&self, sweep: Vec<(WsId, Option<crate::session::WsGit>, bool)>) {
+        let mut changed = false;
+        let mut gone = Vec::new();
+        {
+            let mut tree = self.tree.lock().await;
+            for (ws, git, exists) in sweep {
+                let Some(w) = tree.workspaces.iter_mut().find(|w| w.id == ws) else { continue };
+                if !exists {
+                    if w.git.as_ref().is_some_and(|g| g.linked) {
+                        gone.push(ws);
+                    }
+                } else if w.git != git {
+                    w.git = git;
+                    changed = true;
+                }
+            }
+        }
+        for ws in gone {
+            // Commits and announces.
+            self.close_workspace_now(ws).await;
+        }
+        if changed {
+            let _ = self.changed.send(TreeChanged);
+        }
+    }
+
+    /// Whether the `beebox` command may restructure from this pane. It speaks
+    /// for whoever typed in it, and the daemon cannot tell who that was — so
+    /// what matters is who else *can* type here. A read-only viewer cannot, and
+    /// a writable whole-machine link sees wherever the result lands. A
+    /// writable narrower link refuses: a worktree it opened is another
+    /// workspace, outside what that link shows.
+    async fn cli_allowed(&self, pane: PaneId) -> bool {
+        let grants = self.store.lock().await.grants().unwrap_or_default();
+        let tree = self.tree.lock().await;
+        // The cheap test first: most links are read-only or whole-machine,
+        // and those never need the tree walked.
+        !grants
+            .iter()
+            .filter(|g| g.writable && g.scope != Scope::All)
+            .any(|g| visible_panes(&g.scope, &tree).contains(&pane))
+    }
+
+    /// One `beebox` command, from the process in `pane`. Answers JSON.
+    ///
+    /// What it opens does not come to the front: the person at the screen is
+    /// typing somewhere, usually in the conversation that asked for it.
+    pub async fn cli(&self, pane: PaneId, req: CliReq) -> std::result::Result<serde_json::Value, CliError> {
+        let allowed = self.cli_allowed(pane).await;
+        // Answered either way, and says nothing else: what an agent asks
+        // before it touches git, so a refusal leaves nothing behind.
+        if matches!(req, CliReq::Check) {
+            return Ok(serde_json::json!({ "allowed": allowed }));
+        }
+        if !allowed {
+            return Err(CliError::Refused);
+        }
+        let dir = |path: &str| -> std::result::Result<String, CliError> {
+            let p = std::path::Path::new(path);
+            if !p.is_absolute() || !p.is_dir() {
+                return Err(CliError::Bad(format!("no such directory: {path}")));
+            }
+            let path = path.trim_end_matches('/');
+            Ok(if path.is_empty() { "/".into() } else { path.into() })
+        };
+        match req {
+            CliReq::WorkspaceOpen { path, name, run } => {
+                let path = dir(&path)?;
+                let (ws, tab, new) =
+                    self.open_workspace_at(path.clone(), name, run, false).await.map_err(CliError::other)?;
+                let worktree = self.workspace_git(ws).await.is_some_and(|(_, g)| g.linked);
+                Ok(serde_json::json!({ "ws": ws, "tab": tab, "pane": new, "path": path, "worktree": worktree }))
+            }
+            CliReq::TabNew { ws, name, cwd, run } => {
+                let ws = match ws {
+                    Some(ws) => ws,
+                    None => {
+                        let tab = self.tree.lock().await.tab_of(pane);
+                        match tab {
+                            Some(t) => self.workspace_of_tab(t).await,
+                            None => None,
+                        }
+                        .ok_or_else(|| CliError::Bad("this terminal has no workspace".into()))?
+                    }
+                };
+                let cwd = cwd.as_deref().map(dir).transpose()?;
+                let (tab, new) = {
+                    let mut tree = self.tree.lock().await;
+                    let was = (tree.active_ws, tree.active_tab);
+                    let tab = tree.open_tab(ws).map_err(|_| CliError::Bad(format!("no workspace {ws}")))?;
+                    let new = tree.first_pane(tab).ok_or_else(|| CliError::Bad(format!("tab {tab} has no pane")))?;
+                    if let Some(t) = tree.tab_mut(tab) {
+                        t.title = name.unwrap_or_default().trim().to_string();
+                    }
+                    if let Some(p) = tree.pane_mut(new) {
+                        if let Some(cwd) = cwd {
+                            p.cwd = cwd;
+                        }
+                        p.run = run;
+                    }
+                    (tree.active_ws, tree.active_tab) = was;
+                    // Opening put the new tab at the head of this workspace's
+                    // history; the one in front goes back there, or closing it
+                    // later would land on a tab nobody chose.
+                    if let (Some(front), Some(w)) =
+                        (was.1, tree.workspaces.iter_mut().find(|w| w.id == ws))
+                    {
+                        if w.tabs.iter().any(|t| t.id == front) {
+                            w.touch_tab(front);
+                        }
+                    }
+                    (tab, new)
+                };
+                self.ensure_running(new).await.map_err(CliError::other)?;
+                self.commit().await;
+                Ok(serde_json::json!({ "ws": ws, "tab": tab, "pane": new }))
+            }
+            CliReq::WorkspaceClose { ws } => {
+                if !self.tree.lock().await.workspaces.iter().any(|w| w.id == ws) {
+                    return Err(CliError::Bad(format!("no workspace {ws}")));
+                }
+                self.close_workspace_now(ws).await;
+                Ok(serde_json::json!({ "ws": ws, "closed": true }))
+            }
+            CliReq::Check => unreachable!("answered above"),
+            CliReq::List => {
+                let tree = self.tree.lock().await;
+                let tab = tree.tab_of(pane);
+                let me_ws = tree
+                    .workspaces
+                    .iter()
+                    .find(|w| w.tabs.iter().any(|t| Some(t.id) == tab))
+                    .map(|w| w.id);
+                let workspaces: Vec<_> = tree
+                    .workspaces
+                    .iter()
+                    .map(|w| {
+                        serde_json::json!({
+                            "id": w.id,
+                            "name": w.name,
+                            "path": w.path,
+                            "branch": w.git.as_ref().map(|g| g.branch.as_str()),
+                            "worktree": w.git.as_ref().is_some_and(|g| g.linked),
+                            "repo": w.git.as_ref().map(|g| g.common_dir.as_str()),
+                            "tabs": w.tabs.iter().map(|t| serde_json::json!({
+                                "id": t.id,
+                                "title": t.title,
+                                "panes": t.panes.iter().map(|p| serde_json::json!({
+                                    "id": p.id,
+                                    "agent": p.agent,
+                                    "session": p.session_ref,
+                                    "status": p.status.view().phase,
+                                    "cwd": p.cwd,
+                                })).collect::<Vec<_>>(),
+                            })).collect::<Vec<_>>(),
+                        })
+                    })
+                    .collect();
+                Ok(serde_json::json!({
+                    "self": { "ws": me_ws, "tab": tab, "pane": pane },
+                    "workspaces": workspaces,
+                }))
+            }
+        }
+    }
+}
+
+/// What the `beebox` command can ask. Paths arrive absolute — the command
+/// resolves them against its own working directory before sending.
+#[derive(Debug, serde::Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum CliReq {
+    WorkspaceOpen { path: String, name: Option<String>, run: Option<String> },
+    TabNew { ws: Option<WsId>, name: Option<String>, cwd: Option<String>, run: Option<String> },
+    WorkspaceClose { ws: WsId },
+    List,
+    /// Whether the rest is allowed from this pane.
+    Check,
+}
+
+#[derive(Debug)]
+pub enum CliError {
+    /// A writable link narrower than the whole machine reaches the pane.
+    Refused,
+    Bad(String),
+}
+
+impl CliError {
+    fn other(e: anyhow::Error) -> Self {
+        CliError::Bad(e.to_string())
     }
 }
 
@@ -2068,5 +2425,236 @@ mod tests {
         assert!(kept.pty.is_none(), "its output is still to be read");
         assert!(t.pane(never).unwrap().pty.is_some());
         assert!(changed.try_recv().is_ok(), "clients hear of the new pty");
+    }
+
+    /// A scratch git repository with one linked worktree, cleaned up on drop.
+    struct Repo {
+        root: std::path::PathBuf,
+    }
+    impl Repo {
+        fn new() -> Self {
+            static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let root = std::env::temp_dir().join(format!(
+                "beebox-wt-{}-{}",
+                std::process::id(),
+                N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            let main = root.join("repo");
+            std::fs::create_dir_all(&main).unwrap();
+            let git = |dir: &std::path::Path, args: &[&str]| {
+                let ok = std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(dir)
+                    .env("GIT_AUTHOR_NAME", "t")
+                    .env("GIT_AUTHOR_EMAIL", "t@t")
+                    .env("GIT_COMMITTER_NAME", "t")
+                    .env("GIT_COMMITTER_EMAIL", "t@t")
+                    .output()
+                    .unwrap()
+                    .status
+                    .success();
+                assert!(ok, "git {args:?}");
+            };
+            git(&main, &["init", "-q"]);
+            git(&main, &["commit", "-q", "--allow-empty", "-m", "init"]);
+            git(&main, &["worktree", "add", "-q", "../repo.worktrees/FV-1", "-b", "FV-1"]);
+            Repo { root }
+        }
+        fn main(&self) -> String {
+            // Canonical: on macOS the temp dir is a symlink, and git reports
+            // the real path.
+            std::fs::canonicalize(self.root.join("repo")).unwrap().to_string_lossy().into_owned()
+        }
+        fn worktree_path(&self) -> std::path::PathBuf {
+            self.root.join("repo.worktrees/FV-1")
+        }
+        fn worktree(&self) -> String {
+            std::fs::canonicalize(self.root.join("repo.worktrees/FV-1")).unwrap().to_string_lossy().into_owned()
+        }
+    }
+    impl Drop for Repo {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn first_pane_id(a: &SessionTree) -> PaneId {
+        a.workspaces[0].tabs[0].panes[0].id
+    }
+
+    #[tokio::test]
+    async fn cli_opens_a_worktree_behind_what_you_are_looking_at() {
+        let a = app().await;
+        let me = first_pane_id(&*a.tree.lock().await);
+        let front = { let t = a.tree.lock().await; (t.active_ws, t.active_tab) };
+        let repo = Repo::new();
+
+        let out = a
+            .cli(me, CliReq::WorkspaceOpen {
+                path: repo.worktree(),
+                name: None,
+                run: Some("claude --name FV-1 'go'".into()),
+            })
+            .await
+            .unwrap();
+        assert_eq!(out["worktree"], true);
+        let t = a.tree.lock().await;
+        assert_eq!((t.active_ws, t.active_tab), front, "the new workspace stays behind");
+        let w = t.workspaces.iter().find(|w| w.id == out["ws"].as_u64().unwrap()).unwrap();
+        assert_eq!(w.name, "FV-1");
+        let g = w.git.as_ref().unwrap();
+        assert!(g.linked);
+        assert_eq!(g.branch, "FV-1");
+        let p = &w.tabs[0].panes[0];
+        assert!(p.pty.is_some());
+        assert!(p.run.is_none(), "the command is handed to the shell once, at spawn");
+    }
+
+    #[tokio::test]
+    async fn a_worktree_and_its_repository_share_a_common_dir() {
+        let repo = Repo::new();
+        let main = crate::cwd::ws_git(&repo.main()).unwrap();
+        let wt = crate::cwd::ws_git(&repo.worktree()).unwrap();
+        assert!(!main.linked);
+        assert!(wt.linked);
+        assert_eq!(main.common_dir, wt.common_dir);
+        assert!(crate::cwd::ws_git("/").is_none(), "outside a repository");
+    }
+
+    #[tokio::test]
+    async fn cli_tab_opens_beside_you_without_moving_you() {
+        let a = app().await;
+        let (me, ws, tab) = {
+            let t = a.tree.lock().await;
+            (first_pane_id(&t), t.workspaces[0].id, t.workspaces[0].tabs[0].id)
+        };
+        let out = a
+            .cli(me, CliReq::TabNew { ws: None, name: Some(" FV-2 ".into()), cwd: None, run: None })
+            .await
+            .unwrap();
+        assert_eq!(out["ws"], ws);
+        let t = a.tree.lock().await;
+        assert_eq!(t.active_tab, Some(tab));
+        let w = &t.workspaces[0];
+        assert_eq!(w.tabs.len(), 2);
+        assert_eq!(w.tabs[1].title, "FV-2");
+        assert_eq!(w.active_tab(), Some(tab), "the tab in front heads the history");
+    }
+
+    #[tokio::test]
+    async fn cli_rejects_paths_that_are_not_directories() {
+        let a = app().await;
+        let me = first_pane_id(&*a.tree.lock().await);
+        for path in ["relative/dir", "/no/such/dir/anywhere"] {
+            let r = a.cli(me, CliReq::WorkspaceOpen { path: path.into(), name: None, run: None }).await;
+            assert!(matches!(r, Err(CliError::Bad(_))), "{path}");
+        }
+        assert_eq!(a.tree.lock().await.workspaces.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn cli_refuses_only_where_someone_narrower_can_type() {
+        let a = app().await;
+        let (me, tab, ws) = {
+            let t = a.tree.lock().await;
+            (first_pane_id(&t), t.workspaces[0].tabs[0].id, t.workspaces[0].id)
+        };
+        let put = |token: &str, scope: Scope, writable: bool| {
+            Grant { token: token.into(), scope, writable, host: false }
+        };
+        assert_eq!(a.cli(me, CliReq::Check).await.unwrap()["allowed"], true, "not shared");
+        // Viewers who cannot type, and a typist who sees everything.
+        for (token, scope, writable) in [
+            ("aw", Scope::All, true),
+            ("ar", Scope::All, false),
+            ("wr", Scope::Workspace(ws), false),
+            ("tr", Scope::Tab(tab), false),
+            ("pr", Scope::Pane(me), false),
+        ] {
+            a.store.lock().await.put_grant(&put(token, scope, writable)).unwrap();
+        }
+        assert!(a.cli(me, CliReq::List).await.is_ok());
+
+        // A typist who sees less than all of it.
+        for (token, scope) in [("ww", Scope::Workspace(ws)), ("tw", Scope::Tab(tab)), ("pw", Scope::Pane(me))] {
+            a.store.lock().await.put_grant(&put(token, scope, true)).unwrap();
+            assert!(matches!(a.cli(me, CliReq::List).await, Err(CliError::Refused)), "{token}");
+            assert_eq!(a.cli(me, CliReq::Check).await.unwrap()["allowed"], false, "check answers, refused or not");
+            a.revoke(token).await;
+            assert_eq!(a.cli(me, CliReq::Check).await.unwrap()["allowed"], true, "revoking {token} lifts it");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_removed_worktree_takes_its_workspace_with_it() {
+        let a = app().await;
+        let me = first_pane_id(&*a.tree.lock().await);
+        let repo = Repo::new();
+        let out = a
+            .cli(me, CliReq::WorkspaceOpen { path: repo.worktree(), name: None, run: None })
+            .await
+            .unwrap();
+        let ws = out["ws"].as_u64().unwrap();
+
+        // An ordinary folder going missing is not enough: it may be a disk.
+        let plain = a.tree.lock().await.workspaces[0].id;
+        a.apply_ws_git(vec![(plain, None, false)]).await;
+        assert!(a.tree.lock().await.workspaces.iter().any(|w| w.id == plain));
+
+        a.apply_ws_git(vec![(ws, None, false)]).await;
+        assert!(!a.tree.lock().await.workspaces.iter().any(|w| w.id == ws));
+    }
+
+    #[tokio::test]
+    async fn removing_a_worktree_deletes_the_folder_and_keeps_the_branch() {
+        let a = app().await;
+        let owner = a.owner_grant().await;
+        let repo = Repo::new();
+        a.handle_host(&owner, In::OpenWorkspace { path: repo.worktree() }).await.unwrap();
+        let ws = a.tree.lock().await.workspaces.last().unwrap().id;
+
+        let out = a.handle_host(&owner, In::RemoveWorktree { ws }).await.unwrap();
+        assert!(matches!(&out[..], [Out::WorktreeRemoved { error: None, .. }]), "{out:?}");
+        assert!(!std::path::Path::new(&repo.worktree_path()).exists());
+        assert!(!a.tree.lock().await.workspaces.iter().any(|w| w.id == ws));
+        let branches = std::process::Command::new("git")
+            .args(["branch", "--list", "FV-1"])
+            .current_dir(repo.main())
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&branches.stdout).contains("FV-1"));
+    }
+
+    #[tokio::test]
+    async fn the_repository_itself_is_never_removed() {
+        let a = app().await;
+        let owner = a.owner_grant().await;
+        let repo = Repo::new();
+        a.handle_host(&owner, In::OpenWorkspace { path: repo.main() }).await.unwrap();
+        let ws = a.tree.lock().await.workspaces.last().unwrap().id;
+
+        let out = a.handle_host(&owner, In::RemoveWorktree { ws }).await.unwrap();
+        assert!(matches!(&out[..], [Out::WorktreeRemoved { error: Some(_), .. }]));
+        assert!(std::path::Path::new(&repo.main()).is_dir());
+        assert!(a.tree.lock().await.workspaces.iter().any(|w| w.id == ws), "nothing was closed");
+    }
+
+    #[tokio::test]
+    async fn git_is_polled_only_while_some_window_has_focus() {
+        let a = App::new(Store::in_memory().unwrap(), 100);
+        let looking = a.attention();
+        assert!(!*looking.borrow(), "nobody connected, nobody looking");
+        let owner = a.owner_grant().await;
+        let (one, _c1) = a.add_conn(&owner, "127.0.0.1".into()).await;
+        let (two, _c2) = a.add_conn(&owner, "127.0.0.1".into()).await;
+        assert!(*looking.borrow(), "a new window counts until it says otherwise");
+        a.set_attention(one, false).await;
+        assert!(*looking.borrow(), "the other window still has focus");
+        a.set_attention(two, false).await;
+        assert!(!*looking.borrow());
+        a.set_attention(one, true).await;
+        assert!(*looking.borrow());
+        a.remove_conn(one).await;
+        assert!(!*looking.borrow(), "the focused window went away");
     }
 }

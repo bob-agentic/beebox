@@ -199,7 +199,13 @@ pub struct WorkspaceView {
     pub id: WsId,
     pub name: String,
     pub path: String,
+    /// Empty outside a git repository.
     pub branch: String,
+    /// A linked worktree: shown under the workspace whose `repo` is the same,
+    /// and closed by deleting it.
+    pub worktree: bool,
+    /// The repository's common git dir, shared by all its worktrees.
+    pub repo: Option<String>,
     pub tabs: Vec<TabView>,
 }
 
@@ -351,6 +357,20 @@ pub enum Out {
     Closed {
         reason: CloseReason,
     },
+    /// Answer to `WorktreeInfo`: what deleting it would cost.
+    WorktreeInfo {
+        ws: WsId,
+        path: String,
+        branch: String,
+        /// Uncommitted files, untracked included — lost with the folder.
+        dirty: u32,
+    },
+    /// Answer to `RemoveWorktree`. The workspace is gone either way; `error`
+    /// says git refused to delete the folder, which then is still on disk.
+    WorktreeRemoved {
+        ws: WsId,
+        error: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -373,6 +393,11 @@ pub enum In {
         rows: u16,
     },
     Ping,
+    /// This window gained or lost focus. Git polling runs only while some
+    /// window has it.
+    Attention {
+        on: bool,
+    },
     /// Send this pane's history, and its output from then on. A client asks
     /// as it makes the pane a terminal, which it only does once it is shown.
     /// Always answered, with nothing if there is nothing.
@@ -425,6 +450,15 @@ pub enum In {
         path: String,
     },
     CloseWorkspace {
+        ws: WsId,
+    },
+    /// Asks what deleting a worktree workspace would lose, for its dialog.
+    WorktreeInfo {
+        ws: WsId,
+    },
+    /// Closes a linked-worktree workspace and deletes its folder
+    /// (`git worktree remove --force`). The branch stays.
+    RemoveWorktree {
         ws: WsId,
     },
     /// Double-click a title to rename, as mux0 does. Empty clears it back to

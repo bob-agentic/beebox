@@ -7,7 +7,10 @@
 //! ```text
 //! hooks/
 //!   send                  POSTs stdin to $BEEBOX_HOOK_URL; 500ms cap; exit 0
+//!   bin/beebox            the `beebox` command (workspaces and tabs)
 //!   claude-settings.json  hooks overlay passed via `claude --settings`
+//!   claude-plugin/        the `beebox` skill, via `claude --plugin-dir`
+//!   codex-context.json    what Codex's SessionStart hook tells it
 //!   claude-wrapper.zsh    the wrapper function
 //!   zdot/.zshenv          ZDOTDIR shim, stage 1
 //!   zdot/.zprofile        ZDOTDIR shim, login stage (Homebrew's PATH)
@@ -68,7 +71,192 @@ print(json.dumps(body))
 printf '%s' "$payload" | curl -s -o /dev/null --max-time 0.5 \
   -H 'Content-Type: application/json' --data-binary @- \
   "$BEEBOX_HOOK_URL" 2>/dev/null || true
+# Codex reads a SessionStart hook's stdout as context: how it learns that
+# `beebox` exists, without its hook command — which trust is keyed on — changing.
+if [ "$1" = codex ] && [ "$2" = SessionStart ] && [ -f "$BEEBOX_AGENT_HOOKS_DIR/codex-context.json" ]; then
+  cat "$BEEBOX_AGENT_HOOKS_DIR/codex-context.json"
+fi
 exit 0
+"#;
+
+/// The `beebox` command. On PATH only inside a BeeBox zsh pane (the shim puts
+/// `hooks/bin` there), and useless outside one anyway: it speaks for the pane
+/// it runs in, with that pane's credentials from the environment.
+///
+/// Structure only — open, list, close. It never reads or types into another
+/// terminal; agents talk to each other through their own channels.
+const BEEBOX_CLI: &str = r#"#!/usr/bin/env python3
+"""beebox — open BeeBox workspaces and tabs from inside a BeeBox terminal.
+
+  beebox check                     may this terminal use the rest? (exit 0/1)
+  beebox workspace open PATH [--name N] [-- CMD...]
+  beebox tab new [--ws ID] [--name N] [--cwd DIR] [-- CMD...]
+                                   (default ws: this terminal's)
+  beebox workspace close ID        ends its processes; deletes nothing
+  beebox list [--json]             workspaces/tabs/panes, agent session ids;
+                                   "self" is this terminal
+
+Output is one JSON line. CMD is typed at the new terminal's first prompt
+(aliases work, the shell stays after). New tabs/workspaces open in the
+background. A git worktree shows under its repository; `git worktree remove`
+closes its workspace.
+
+Delegating:
+  1. beebox check. Refused: stop, tell the user, run nothing (no git).
+  2. Default: beebox tab new --name N -- claude --name N "BRIEF"
+     (Codex: -- codex "BRIEF").
+  3. Worktree only if the user asks, only in a git repo (never git init):
+     git worktree add MAIN.worktrees/BRANCH -b BRANCH
+     (MAIN = first line of `git worktree list`), copy .env etc., then
+     beebox workspace open THAT_PATH -- claude --name BRANCH "BRIEF".
+     It branches from HEAD; uncommitted work stays behind — say so.
+  4. BRIEF: goal, acceptance criteria, key files, and "questions or done:
+     message <you>, conclusions only". Later: Claude SendMessage <name>;
+     Codex `codex queue --thread <session> --message ...`.
+  5. Merging, removing worktrees, deleting branches: ask the user.
+"""
+import json, os, shlex, sys, urllib.error, urllib.request
+
+def die(msg, code=1):
+    print(f"beebox: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+def call(body):
+    url = os.environ.get("BEEBOX_CLI_URL")
+    if not url:
+        die("not inside a BeeBox terminal")
+    req = urllib.request.Request(url, data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        try:
+            msg = json.load(e).get("error") or f"HTTP {e.code}"
+        except Exception:
+            msg = f"HTTP {e.code}"
+        if e.code == 403 and "stale" in msg:
+            msg = "BeeBox is not reachable (restart this terminal if BeeBox was restarted)"
+        die(msg)
+    except (urllib.error.URLError, OSError):
+        die("BeeBox is not reachable (restart this terminal if BeeBox was restarted)")
+
+def split_cmd(argv):
+    if "--" in argv:
+        i = argv.index("--")
+        return argv[:i], (shlex.join(argv[i + 1:]) or None)
+    return argv, None
+
+def take(args, flag):
+    if flag in args:
+        i = args.index(flag)
+        if i + 1 >= len(args):
+            die(f"{flag} needs a value", 2)
+        v = args[i + 1]
+        del args[i:i + 2]
+        return v
+    return None
+
+def absdir(p):
+    return os.path.abspath(os.path.expanduser(p))
+
+def show_tree(t):
+    me = t.get("self", {})
+    for w in t["workspaces"]:
+        kind = " (worktree)" if w.get("worktree") else ""
+        branch = f" [{w['branch']}]" if w.get("branch") else ""
+        print(f"workspace {w['id']}  {w['name']}{branch}{kind}  {w['path']}")
+        for tab in w["tabs"]:
+            print(f"  tab {tab['id']}  {tab['title'] or '-'}")
+            for p in tab["panes"]:
+                here = "  <- you" if p["id"] == me.get("pane") else ""
+                agent = p.get("agent") or "shell"
+                sess = f" session={p['session']}" if p.get("session") else ""
+                print(f"    pane {p['id']}  {agent} {p.get('status') or ''}{sess}  {p['cwd']}{here}")
+
+def main(argv):
+    argv, cmd = split_cmd(argv)
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__.strip())
+        return
+    if argv[:2] == ["workspace", "open"]:
+        rest = argv[2:]
+        name = take(rest, "--name")
+        if len(rest) != 1:
+            die("usage: beebox workspace open <path> [--name NAME] [-- CMD...]", 2)
+        out = call({"op": "workspace_open", "path": absdir(rest[0]), "name": name, "run": cmd})
+    elif argv[:2] == ["tab", "new"]:
+        rest = argv[2:]
+        ws, name, cwd = take(rest, "--ws"), take(rest, "--name"), take(rest, "--cwd")
+        if rest:
+            die("usage: beebox tab new [--ws ID] [--name TITLE] [--cwd DIR] [-- CMD...]", 2)
+        if ws is not None and not ws.isdigit():
+            die(f"--ws takes a workspace id, got {ws!r}", 2)
+        out = call({"op": "tab_new", "ws": int(ws) if ws else None, "name": name,
+                    "cwd": absdir(cwd) if cwd else None, "run": cmd})
+    elif argv[:2] == ["workspace", "close"]:
+        if len(argv) != 3 or not argv[2].isdigit():
+            die("usage: beebox workspace close <ID>", 2)
+        out = call({"op": "workspace_close", "ws": int(argv[2])})
+    elif argv == ["check"]:
+        out = call({"op": "check"})
+        if not out.get("allowed"):
+            die("refused — someone can type in this terminal through a Workspace/Tab/Pane "
+                "link, and would not see what it opens")
+    elif argv[0] == "list":
+        out = call({"op": "list"})
+        if "--json" not in argv:
+            show_tree(out)
+            return
+    else:
+        die(f"unknown command: {' '.join(argv)} (see beebox --help)", 2)
+    print(json.dumps(out, ensure_ascii=False))
+
+main(sys.argv[1:])
+"#;
+
+/// What a Codex session in a BeeBox pane is told on start, via the
+/// SessionStart hook's `additionalContext`. Codex has no flag for an extra
+/// skills directory, and its hook trust is keyed on the command string — so
+/// the hook command stays exactly as it was and only the sender's output
+/// changes.
+const CODEX_CONTEXT: &str = "In BeeBox. Delegate: `beebox check` first (refused: stop, tell the user), then \
+`beebox tab new -- codex \"<brief>\"`; a worktree only if asked. Message a session: \
+`codex queue --thread <session from beebox list> --message ...`. Details: `beebox --help`.";
+
+/// The Claude plugin's one skill. Loaded with `--plugin-dir` by the wrapper,
+/// so it exists only in BeeBox panes; until used it costs Claude the
+/// description line and nothing else.
+const CLAUDE_SKILL: &str = r#"---
+name: beebox
+description: Delegate tasks to new visible Claude sessions — BeeBox tabs, or git worktrees on request. Use when the user wants work handed off or run in parallel, or a BeeBox tab/workspace opened.
+---
+
+1. `beebox check`. Refused: stop, tell the user, run nothing else (no git).
+2. Your name: ListAgents → "This session is <name>".
+3. Per task:
+   - Default: `beebox tab new --name <n> -- claude --name <n> "<brief>"`.
+   - Worktree only if asked, only in a git repo (never `git init`):
+     `git worktree add <main>.worktrees/<branch> -b <branch>` (<main> = first
+     line of `git worktree list`, or the project's convention); copy .env etc.,
+     avoid port/DB clashes; then
+     `beebox workspace open <path> -- claude --name <branch> "<brief>"`.
+     It branches from HEAD; uncommitted changes stay behind — tell the user.
+   - Tabs in one workspace editing the same files: mention it once.
+4. Brief: goal, acceptance criteria, key files; end with "Questions or done →
+   SendMessage <your name>, conclusions only."
+5. Coordinate only via SendMessage; never read or type into other terminals.
+6. Merge (into the branch it started from), worktree removal, branch
+   deletion: ask first.
+
+Reference: `beebox --help`.
+"#;
+
+const CLAUDE_PLUGIN_JSON: &str = r#"{
+  "name": "beebox",
+  "version": "1.0.0",
+  "description": "BeeBox terminal: open workspaces and tabs, run work in parallel"
+}
 "#;
 
 /// The wrapper function. Defined after the user's own rc, so their aliases
@@ -104,7 +292,10 @@ claude() {
       ;;
   esac
 
-  "$real" --settings "$BEEBOX_AGENT_HOOKS_DIR/claude-settings.json" "$@"
+  # The plugin carries one skill, the `beebox` command's — so Claude knows of
+  # it here and nowhere else.
+  "$real" --settings "$BEEBOX_AGENT_HOOKS_DIR/claude-settings.json" \
+    --plugin-dir "$BEEBOX_AGENT_HOOKS_DIR/claude-plugin" "$@"
 }
 "#;
 
@@ -155,6 +346,27 @@ if [ -n "$BEEBOX_AGENT_HOOKS_DIR" ] && [ -f "$BEEBOX_AGENT_HOOKS_DIR/claude-wrap
 fi
 if [ -n "$BEEBOX_AGENT_HOOKS_DIR" ] && [ -f "$BEEBOX_AGENT_HOOKS_DIR/codex-wrapper.zsh" ]; then
   . "$BEEBOX_AGENT_HOOKS_DIR/codex-wrapper.zsh"
+fi
+# After the user's PATH, so `beebox` cannot shadow anything of theirs.
+if [ -n "$BEEBOX_AGENT_HOOKS_DIR" ] && [ -d "$BEEBOX_AGENT_HOOKS_DIR/bin" ]; then
+  path+=("$BEEBOX_AGENT_HOOKS_DIR/bin")
+fi
+# A command this pane was opened to run (`beebox tab new -- <cmd>`): typed at
+# the first prompt as if by hand, so it goes through aliases and the wrappers
+# above, lands in history, and leaves the shell behind when it exits. Read and
+# unset at once, so a shell started inside this one does not run it again.
+if [ -n "$BEEBOX_RUN" ]; then
+  _beebox_run="$BEEBOX_RUN"
+  unset BEEBOX_RUN
+  _beebox_run_once() {
+    add-zle-hook-widget -d line-init _beebox_run_once
+    BUFFER="$_beebox_run"
+    unset _beebox_run
+    zle accept-line
+  }
+  autoload -Uz add-zle-hook-widget
+  zle -N _beebox_run_once
+  add-zle-hook-widget line-init _beebox_run_once
 fi
 unset _beebox_shim
 "#;
@@ -316,6 +528,25 @@ pub fn install(home: &Path) -> Result<AdapterAssets> {
     std::fs::set_permissions(&send, std::fs::Permissions::from_mode(0o755))?;
 
     std::fs::write(hooks_dir.join("claude-settings.json"), claude_settings())?;
+    std::fs::write(
+        hooks_dir.join("codex-context.json"),
+        serde_json::json!({
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "additionalContext": CODEX_CONTEXT,
+            }
+        })
+        .to_string(),
+    )?;
+    let plugin = hooks_dir.join("claude-plugin");
+    std::fs::create_dir_all(plugin.join(".claude-plugin"))?;
+    std::fs::create_dir_all(plugin.join("skills/beebox"))?;
+    std::fs::write(plugin.join(".claude-plugin/plugin.json"), CLAUDE_PLUGIN_JSON)?;
+    std::fs::write(plugin.join("skills/beebox/SKILL.md"), CLAUDE_SKILL)?;
+    let bin = hooks_dir.join("bin");
+    std::fs::create_dir_all(&bin)?;
+    std::fs::write(bin.join("beebox"), BEEBOX_CLI)?;
+    std::fs::set_permissions(bin.join("beebox"), std::fs::Permissions::from_mode(0o755))?;
     std::fs::write(hooks_dir.join("claude-wrapper.zsh"), CLAUDE_WRAPPER)?;
     std::fs::write(hooks_dir.join("codex-wrapper.zsh"), CODEX_WRAPPER)?;
     let codex_run = hooks_dir.join("codex-run");
@@ -365,13 +596,14 @@ mod tests {
         }
     }
     fn tmp() -> Tmp {
+        // A counter, not the clock: macOS time has microsecond resolution, so
+        // tests starting together got one directory and deleted it under
+        // each other.
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let p = std::env::temp_dir().join(format!(
-            "beebox-adapters-{}-{:x}",
+            "beebox-adapters-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&p).unwrap();
         Tmp(p)
@@ -408,6 +640,56 @@ mod tests {
         ] {
             assert!(hooks.contains_key(ev), "{ev} not hooked");
         }
+    }
+
+    #[test]
+    fn the_beebox_command_and_its_introductions_are_installed() {
+        let dir = tmp();
+        let a = install(&dir.0).unwrap();
+        let cli = a.hooks_dir.join("bin/beebox");
+        use std::os::unix::fs::PermissionsExt;
+        assert_ne!(std::fs::metadata(&cli).unwrap().permissions().mode() & 0o111, 0);
+
+        // Runs, explains itself, and outside a pane says so instead of
+        // failing somewhere in urllib.
+        let help = std::process::Command::new(&cli).arg("--help").output().unwrap();
+        assert!(help.status.success(), "{}", String::from_utf8_lossy(&help.stderr));
+        assert!(String::from_utf8_lossy(&help.stdout).contains("beebox workspace open"));
+        let outside = std::process::Command::new(&cli)
+            .arg("list")
+            .env_remove("BEEBOX_CLI_URL")
+            .output()
+            .unwrap();
+        assert_eq!(outside.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&outside.stderr).contains("not inside a BeeBox terminal"));
+
+        // Claude learns of it through a plugin skill, Codex through context
+        // its SessionStart hook prints.
+        let skill = std::fs::read_to_string(a.hooks_dir.join("claude-plugin/skills/beebox/SKILL.md")).unwrap();
+        assert!(skill.starts_with("---\nname: beebox\n"));
+        let manifest: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(a.hooks_dir.join("claude-plugin/.claude-plugin/plugin.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(manifest["name"], "beebox");
+        let ctx: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(a.hooks_dir.join("codex-context.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(ctx["hookSpecificOutput"]["hookEventName"], "SessionStart");
+        assert!(CLAUDE_WRAPPER.contains("--plugin-dir \"$BEEBOX_AGENT_HOOKS_DIR/claude-plugin\""));
+    }
+
+    #[test]
+    fn a_pane_command_is_typed_once_and_not_inherited() {
+        // Read and unset before anything else can see it: a shell started
+        // inside the pane must not run the command a second time.
+        let read = ZSHRC.find("_beebox_run=\"$BEEBOX_RUN\"").unwrap();
+        let unset = ZSHRC.find("unset BEEBOX_RUN").unwrap();
+        assert!(read < unset);
+        // After the user's own rc, so their aliases and the wrappers apply.
+        assert!(ZSHRC.find("$ZDOTDIR/.zshrc").unwrap() < read);
+        assert!(ZSHRC.contains("add-zle-hook-widget -d line-init _beebox_run_once"));
     }
 
     #[test]

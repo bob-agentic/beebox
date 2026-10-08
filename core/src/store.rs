@@ -315,6 +315,7 @@ impl Store {
                             cmd: cmd.split_whitespace().map(str::to_string).collect(),
                             session_ref: r.get(4)?,
                             session_ref_at: 0,
+                            run: None,
                         })
                     })?
                     .collect::<rusqlite::Result<_>>()?;
@@ -380,6 +381,23 @@ impl Store {
             // row here — its grant is made fresh from the key.
             host: false,
         }))
+    }
+
+    /// Every link, paired or not. One query: the `beebox` command asks on
+    /// every call.
+    pub fn grants(&self) -> Result<Vec<Grant>> {
+        let mut stmt = self.db.prepare("SELECT token, scope_kind, scope_id, writable FROM grants")?;
+        let rows = stmt.query_map([], |r| {
+            let kind: String = r.get(1)?;
+            let id: Option<i64> = r.get(2)?;
+            Ok(Grant {
+                token: r.get(0)?,
+                scope: scope_from(&kind, id.map(from_db)),
+                writable: r.get::<_, i64>(3)? != 0,
+                host: false,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     pub fn delete_grant(&self, token: &str) -> Result<()> {

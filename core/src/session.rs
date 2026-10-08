@@ -51,6 +51,10 @@ pub struct Pane {
     /// When the event that set `session_ref` happened. Hooks can land out of
     /// order, and an older one must not put back the id it carried.
     pub session_ref_at: i64,
+    /// A command line to type at the shell's first prompt, as if by hand — what
+    /// `beebox tab new -- <cmd>` asked for. Taken at spawn and never persisted:
+    /// after a restart the agent comes back through its own resume instead.
+    pub run: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -80,12 +84,25 @@ impl Tab {
     }
 }
 
+/// A workspace folder's place in git. Worktrees of one repository share a
+/// `common_dir`; that is what puts them under the repository in the sidebar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WsGit {
+    pub branch: String,
+    pub common_dir: String,
+    /// A linked worktree (`git worktree add`), as against the repository's own
+    /// checkout. Only these may be deleted from BeeBox.
+    pub linked: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct Workspace {
     pub id: WsId,
     pub name: String,
     pub path: String,
-    pub branch: String,
+    /// What git says about the folder, refreshed by the poller. `None` until
+    /// the first look, and for a folder outside any repository.
+    pub git: Option<WsGit>,
     /// Tabs in the order they were last looked at, most recent first.
     ///
     /// The head is the tab currently in front, so activating this workspace
@@ -111,7 +128,7 @@ impl Workspace {
             id,
             name,
             path,
-            branch: String::new(),
+            git: None,
             recent: tabs.first().map(|t| t.id).into_iter().collect(),
             tabs,
         }
@@ -211,7 +228,7 @@ impl SessionTree {
             id,
             name,
             path,
-            branch: String::new(),
+            git: None,
             recent: Vec::new(),
             tabs: Vec::new(),
         });
@@ -262,6 +279,7 @@ impl SessionTree {
             cmd: Vec::new(),
             session_ref: None,
             session_ref_at: 0,
+            run: None,
         };
         w.tabs.push(Tab {
             id: tab_id,
@@ -350,6 +368,7 @@ impl SessionTree {
             cmd: Vec::new(),
             session_ref: None,
             session_ref_at: 0,
+            run: None,
         };
         tab.panes.push(new_pane);
         insert_beside(&mut tab.layout, pane, new_id, dir);
@@ -507,7 +526,9 @@ impl SessionTree {
                     id: w.id,
                     name: w.name.clone(),
                     path: w.path.clone(),
-                    branch: w.branch.clone(),
+                    branch: w.git.as_ref().map(|g| g.branch.clone()).unwrap_or_default(),
+                    worktree: w.git.as_ref().is_some_and(|g| g.linked),
+                    repo: w.git.as_ref().map(|g| g.common_dir.clone()),
                     tabs,
                 })
             })

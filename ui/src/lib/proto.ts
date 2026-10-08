@@ -78,7 +78,12 @@ export interface WorkspaceView {
   id: WsId;
   name: string;
   path: string;
+  /** Empty outside a git repository. */
   branch: string;
+  /** A linked git worktree: shown under its repository, closed by deleting it. */
+  worktree: boolean;
+  /** The repository's common git dir, shared by every worktree of it. */
+  repo: string | null;
   tabs: TabView[];
 }
 
@@ -133,7 +138,9 @@ export type Out =
   | { t: 'grant'; url: string; hosts: string[] }
   | { t: 'pong' }
   | { t: 'image'; req: number; mime: string; data: Uint8Array }
-  | { t: 'closed'; reason: CloseReason };
+  | { t: 'closed'; reason: CloseReason }
+  | { t: 'worktree_info'; ws: WsId; path: string; branch: string; dirty: number }
+  | { t: 'worktree_removed'; ws: WsId; error: string | null };
 
 export type GrantScope =
   | { kind: 'all' }
@@ -145,6 +152,7 @@ export type In =
   | { t: 'input'; pane: PaneId; data: Uint8Array }
   | { t: 'viewport'; pane: PaneId; cols: number; rows: number }
   | { t: 'ping' }
+  | { t: 'attention'; on: boolean }
   | { t: 'replay'; pane: PaneId }
   | { t: 'release'; pane: PaneId }
   | { t: 'image'; pane: PaneId; n: number; row: string; req: number }
@@ -157,6 +165,8 @@ export type In =
   | { t: 'activate'; ws: WsId; tab: TabId | null }
   | { t: 'open_workspace'; path: string }
   | { t: 'close_workspace'; ws: WsId }
+  | { t: 'worktree_info'; ws: WsId }
+  | { t: 'remove_worktree'; ws: WsId }
   | { t: 'rename_workspace'; ws: WsId; name: string }
   | { t: 'rename_tab'; tab: TabId; title: string }
   | { t: 'shelve_tab'; tab: TabId; shelf: Shelf | null }

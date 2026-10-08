@@ -89,6 +89,7 @@ pub fn router(app: Arc<App>, ui: Option<std::path::PathBuf>) -> Router {
                 crate::hooks::MAX_BODY_BYTES,
             )),
         )
+        .route("/cli/{pane}/{secret}", post(cli))
         .route("/{prefix}/{token}", share)
         .route("/", index)
         .fallback(|| async { not_found() });
@@ -560,6 +561,10 @@ async fn serve(
                         shown.remove(&pane);
                         continue;
                     }
+                    In::Attention { on } => {
+                        app.set_attention(session, on).await;
+                        continue;
+                    }
                     // Off the loop: a transcript read the first time can take
                     // a moment, and output must not wait on it.
                     In::Image { pane, n, row, req } => {
@@ -680,8 +685,15 @@ async fn handle(
 
         other => {
             // Everything else is owner-only and checked inside.
-            if let Err(e) = app.handle_host(grant, other).await {
-                tracing::debug!("owner action refused: {e}");
+            match app.handle_host(grant, other).await {
+                Ok(frames) => {
+                    for f in frames {
+                        if tx.send(f).await.is_err() {
+                            return Break(());
+                        }
+                    }
+                }
+                Err(e) => tracing::debug!("owner action refused: {e}"),
             }
         }
     }
@@ -737,6 +749,41 @@ async fn hook(
         app.apply_agent_event(pane, ev).await;
     }
     StatusCode::NO_CONTENT.into_response()
+}
+
+/// The `beebox` command. Gated exactly like a hook — loopback, then the
+/// pane's own secret — because it is the same thing: a process inside a pane
+/// speaking for that pane. Answers JSON either way, `{"error": …}` on failure,
+/// so the command can print one line and exit non-zero.
+async fn cli(
+    State(app): State<Arc<App>>,
+    Path((pane, secret)): Path<(PaneId, String)>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    body: axum::body::Bytes,
+) -> Response {
+    if !addr.ip().is_loopback() {
+        return not_found();
+    }
+    let fail = |code: StatusCode, msg: String| {
+        (code, axum::Json(serde_json::json!({ "error": msg }))).into_response()
+    };
+    if !app.check_hook_secret(pane, &secret).await {
+        return fail(StatusCode::FORBIDDEN, "this terminal's credentials are stale".into());
+    }
+    let req = match serde_json::from_slice::<crate::app::CliReq>(&body) {
+        Ok(r) => r,
+        Err(e) => return fail(StatusCode::BAD_REQUEST, format!("bad request: {e}")),
+    };
+    match app.cli(pane, req).await {
+        Ok(v) => axum::Json(v).into_response(),
+        Err(crate::app::CliError::Refused) => fail(
+            StatusCode::FORBIDDEN,
+            "refused — someone can type in this terminal through a Workspace/Tab/Pane \
+             link, and would not see what it opens"
+                .into(),
+        ),
+        Err(crate::app::CliError::Bad(msg)) => fail(StatusCode::BAD_REQUEST, msg),
+    }
 }
 
 fn random_token() -> String {

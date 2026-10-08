@@ -79,6 +79,7 @@ async fn main() -> Result<()> {
 
     // The pane footer's cwd/git follows the shell wherever it goes.
     tokio::spawn(beebox_core::cwd::poll_forever(app.clone()));
+    tokio::spawn(beebox_core::cwd::poll_workspaces(app.clone()));
     // A pane whose shell exited cleanly closes itself, and a pane's title is
     // kept in the tree. One watcher for the whole daemon; doing it per
     // connection would repeat the work per viewer.
