@@ -1,5 +1,6 @@
 <script lang="ts">
   import { FONTS, LINE_HEIGHTS, SCROLLBACKS, SIZES, THEMES, settings } from '../settings.svelte';
+  import { shareBase } from '../share-links';
 
   let { onclose }: { onclose: () => void } = $props();
 
@@ -8,6 +9,11 @@
   // 600 themes need finding, not scrolling.
   let query = $state('');
   let mode = $state<'all' | 'dark' | 'light'>('all');
+  /** Which section the rail is showing. */
+  let section = $state<'appearance' | 'share'>('appearance');
+
+  /** The normalized share domain, for the sample link under the input. */
+  const linkBase = $derived(shareBase(s.shareHost));
 
   const matches = $derived.by(() => {
     const q = query.trim().toLowerCase();
@@ -37,12 +43,16 @@
   <div class="modal">
     <nav class="nav">
       <div class="nav-title">Settings</div>
-      <button class="on">Appearance</button>
+      <button class:on={section === 'appearance'} onclick={() => (section = 'appearance')}>
+        Appearance
+      </button>
+      <button class:on={section === 'share'} onclick={() => (section = 'share')}>Sharing</button>
       <div class="nav-spacer"></div>
       <button class="done" onclick={onclose}>Done</button>
     </nav>
 
     <div class="body">
+      {#if section === 'appearance'}
         <h3>Appearance</h3>
         <div class="sub">Stored in this browser — your phone can differ from your desk</div>
 
@@ -159,6 +169,32 @@
         <div class="acts">
           <button class="g" onclick={() => settings.reset()}>Reset appearance</button>
         </div>
+      {:else}
+        <h3>Sharing</h3>
+        <div class="sub">Where the Share dialog's links point</div>
+
+        <label class="row">
+          <span class="lbl">Domain</span>
+          <input
+            class="text"
+            type="text"
+            spellcheck="false"
+            autocomplete="off"
+            placeholder="example.com"
+            value={s.shareHost}
+            oninput={(e) => settings.update({ shareHost: e.currentTarget.value })}
+          />
+        </label>
+        {#if linkBase}
+          <p class="like">{linkBase}/t/…</p>
+        {/if}
+        <p class="note full">
+          A tunnel or reverse proxy in front of this machine. With one set,
+          share links use it instead of the machine's LAN addresses — a phone
+          on another network scans the code and connects as-is. Leave empty to
+          list local addresses again.
+        </p>
+      {/if}
     </div>
   </div>
 </div>
@@ -284,6 +320,27 @@
     width: 14px;
     height: 14px;
   }
+  .text {
+    flex: 1;
+    min-width: 0;
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 5px 9px;
+    font-size: 12px;
+  }
+  .text:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  /* The line under the Domain input: what a link will look like once the
+     value is normalized. Lines up with the input's left edge. */
+  .like {
+    margin: -4px 0 0 94px;
+    font: 11px ui-monospace, Menlo, monospace;
+    color: var(--dim);
+  }
 
   /* Sits under the control it explains, indented to line up with it. */
   .note {
@@ -291,6 +348,11 @@
     font-size: 10.5px;
     line-height: 1.5;
     color: var(--faint);
+  }
+  /* The share section's note explains the whole setting rather than one
+     control, so it spans the pane instead of hanging under the field. */
+  .note.full {
+    margin-left: 0;
   }
   .theme-head {
     display: flex;

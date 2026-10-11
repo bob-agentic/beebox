@@ -4,6 +4,8 @@
   import { cubicOut } from 'svelte/easing';
   import { store } from '../state.svelte';
   import { writeClipboard } from '../clipboard';
+  import { settings } from '../settings.svelte';
+  import { shareLinks } from '../share-links';
   import { countdown, type Timer } from '../countdown';
   import Countdown from './Countdown.svelte';
   import Icon from './Icon.svelte';
@@ -75,26 +77,19 @@
     made = null;
   }
 
-  // Every reachable base URL, dev-server style: what the daemon enumerated
-  // from its interfaces, with this page's own origin first when it is not
-  // loopback (that one is known to work — the page came over it).
-  const urls = $derived.by(() => {
-    if (!store.share) return [];
-    const path = store.share.url;
-    const list = store.share.hosts.map((h) => `${h}${path}`);
-    if (!/^https?:\/\/(localhost|127\.)/.test(location.origin)) {
-      const own = `${location.origin}${path}`;
-      if (!list.includes(own)) list.unshift(own);
-    }
-    const plain = list.length ? list : [`${location.origin}${path}`];
-    // Two forms of the same link. The code carries the `beebox://` one, which
-    // the phone's own camera hands to the app; the app knows it is a phone and
-    // takes the terminal's size accordingly, so nothing needs to say so here.
-    return plain.map((http) => ({
-      http,
-      app: http.replace(/^https?:\/\//, 'beebox://'),
-    }));
-  });
+  // Every reachable URL for the token — a dev server's banner, or the one
+  // share domain when the setting names a tunnel in front of this machine
+  // (see `shareLinks`).
+  const urls = $derived.by(() =>
+    store.share
+      ? shareLinks({
+          path: store.share.url,
+          hosts: store.share.hosts,
+          origin: location.origin,
+          shareHost: settings.current.shareHost,
+        })
+      : [],
+  );
 
   /** The code for whichever link is being shown, as an SVG string.
    *
