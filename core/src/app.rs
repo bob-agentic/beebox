@@ -12,7 +12,7 @@ use anyhow::{anyhow, Result};
 use tokio::sync::{broadcast, Mutex};
 
 use crate::proto::{
-    AgentEvent, AgentStatusView, Caps, In, Out, PaneId,
+    AgentEvent, AgentKind, AgentStatusView, Caps, In, Out, PaneId,
     CloseReason, Peer, PtyId, SessionId, Shelf, TabId, TreeView, WsId,
 };
 use crate::pty::{Registry, Spawn};
@@ -1367,8 +1367,57 @@ impl App {
                 self.close_workspace_now(ws).await;
                 Ok(serde_json::json!({ "ws": ws, "closed": true }))
             }
+            CliReq::TabShelve { tab, shelf } => {
+                {
+                    let tree = self.tree.lock().await;
+                    let t = tree.tab(tab).ok_or_else(|| CliError::Bad(format!("no tab {tab}")))?;
+                    if shelf == Some(Shelf::Freezer) {
+                        // The freezer ends every process in the tab, the one
+                        // asking included, before it could hear the answer.
+                        if tree.tab_of(pane) == Some(tab) {
+                            return Err(CliError::Bad(
+                                "that is this terminal's own tab; freezing it would end this session".into(),
+                            ));
+                        }
+                        if !t.can_freeze() {
+                            return Err(CliError::Bad(format!(
+                                "tab {tab} has no Claude or Codex session to resume, so it cannot be \
+                                 frozen; archive or later keep it running"
+                            )));
+                        }
+                    }
+                }
+                self.shelve_tab(tab, shelf).await.map_err(CliError::other)?;
+                Ok(serde_json::json!({ "tab": tab, "shelf": shelf }))
+            }
             CliReq::Check => unreachable!("answered above"),
             CliReq::List => {
+                // When each tab's conversation last moved: the newest of its
+                // agents' transcripts. Read here rather than kept, so it is
+                // right after a restart too. A few file stats, paths cached.
+                let sessions: Vec<(TabId, Vec<(AgentKind, String)>)> = {
+                    let tree = self.tree.lock().await;
+                    tree.workspaces
+                        .iter()
+                        .flat_map(|w| &w.tabs)
+                        .map(|t| {
+                            let s = t
+                                .panes
+                                .iter()
+                                .flat_map(|p| {
+                                    self.images.sessions_of(p.id, p.agent.zip(p.session_ref.clone()))
+                                })
+                                .collect();
+                            (t.id, s)
+                        })
+                        .collect()
+                };
+                let last_active: HashMap<TabId, i64> = sessions
+                    .into_iter()
+                    .filter_map(|(tab, s)| {
+                        s.iter().filter_map(|(a, id)| self.images.transcript_at(*a, id)).max().map(|at| (tab, at))
+                    })
+                    .collect();
                 let tree = self.tree.lock().await;
                 let tab = tree.tab_of(pane);
                 let me_ws = tree
@@ -1390,6 +1439,9 @@ impl App {
                             "tabs": w.tabs.iter().map(|t| serde_json::json!({
                                 "id": t.id,
                                 "title": t.title,
+                                "shelf": t.shelf,
+                                "can_freeze": t.can_freeze(),
+                                "last_active": last_active.get(&t.id),
                                 "panes": t.panes.iter().map(|p| serde_json::json!({
                                     "id": p.id,
                                     "agent": p.agent,
@@ -1418,6 +1470,8 @@ pub enum CliReq {
     WorkspaceOpen { path: String, name: Option<String>, run: Option<String> },
     TabNew { ws: Option<WsId>, name: Option<String>, cwd: Option<String>, run: Option<String> },
     WorkspaceClose { ws: WsId },
+    /// Files a tab on a shelf, or `None` to put it back on the strip.
+    TabShelve { tab: TabId, shelf: Option<Shelf> },
     List,
     /// Whether the rest is allowed from this pane.
     Check,
@@ -2527,6 +2581,51 @@ mod tests {
             assert!(matches!(r, Err(CliError::Bad(_))), "{path}");
         }
         assert_eq!(a.tree.lock().await.workspaces.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn cli_files_tabs_but_never_freezes_what_cannot_come_back() {
+        let a = app().await;
+        let (agent, _) = agent_tab(&a).await;
+        let first = first_pane_id(&*a.tree.lock().await);
+        let tab_new = || CliReq::TabNew { ws: None, name: None, cwd: None, run: None };
+        // Asking from a second tab, as an agent in another tab would.
+        let me = a.cli(first, tab_new()).await.unwrap()["pane"].as_u64().unwrap();
+        let mine = a.tree.lock().await.tab_of(me).unwrap();
+        let shell = a.cli(me, tab_new()).await.unwrap()["tab"].as_u64().unwrap();
+        let shelf_of = |t: TabId| {
+            let a = a.clone();
+            async move { a.tree.lock().await.tab(t).unwrap().shelf }
+        };
+        let bad = |r: std::result::Result<serde_json::Value, CliError>| match r {
+            Err(CliError::Bad(m)) => m,
+            other => panic!("expected an error, got {other:?}"),
+        };
+
+        let list = a.cli(me, CliReq::List).await.unwrap();
+        let tabs = list["workspaces"][0]["tabs"].as_array().unwrap();
+        let row = tabs.iter().find(|t| t["id"] == agent).unwrap();
+        assert_eq!(row["can_freeze"], true);
+        assert_eq!(row["shelf"], serde_json::Value::Null);
+        assert!(row.get("last_active").is_some(), "always present, null without a transcript");
+        assert_eq!(tabs.iter().find(|t| t["id"] == shell).unwrap()["can_freeze"], false);
+
+        let m = bad(a.cli(me, CliReq::TabShelve { tab: mine, shelf: Some(Shelf::Freezer) }).await);
+        assert!(m.contains("own tab"), "{m}");
+        let m = bad(a.cli(me, CliReq::TabShelve { tab: shell, shelf: Some(Shelf::Freezer) }).await);
+        assert!(m.contains("cannot be frozen"), "{m}");
+        assert_eq!(shelf_of(shell).await, None, "a refusal changes nothing");
+        assert!(bad(a.cli(me, CliReq::TabShelve { tab: 9999, shelf: None }).await).contains("no tab"));
+
+        a.cli(me, CliReq::TabShelve { tab: shell, shelf: Some(Shelf::Archive) }).await.unwrap();
+        assert_eq!(shelf_of(shell).await, Some(Shelf::Archive), "archive takes any tab");
+        a.cli(me, CliReq::TabShelve { tab: agent, shelf: Some(Shelf::Freezer) }).await.unwrap();
+        assert_eq!(shelf_of(agent).await, Some(Shelf::Freezer));
+        let list = a.cli(me, CliReq::List).await.unwrap();
+        let row = list["workspaces"][0]["tabs"].as_array().unwrap().iter().find(|t| t["id"] == agent).cloned().unwrap();
+        assert_eq!(row["shelf"], "freezer", "list says where each tab is filed");
+        a.cli(me, CliReq::TabShelve { tab: agent, shelf: None }).await.unwrap();
+        assert_eq!(shelf_of(agent).await, None, "and strip puts it back");
     }
 
     #[tokio::test]

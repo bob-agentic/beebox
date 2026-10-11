@@ -84,18 +84,20 @@ exit 0
 /// `hooks/bin` there), and useless outside one anyway: it speaks for the pane
 /// it runs in, with that pane's credentials from the environment.
 ///
-/// Structure only — open, list, close. It never reads or types into another
-/// terminal; agents talk to each other through their own channels.
+/// Structure only — open, list, close, shelve. It never reads or types into
+/// another terminal; agents talk to each other through their own channels.
 const BEEBOX_CLI: &str = r#"#!/usr/bin/env python3
-"""beebox — open BeeBox workspaces and tabs from inside a BeeBox terminal.
+"""beebox — open and file BeeBox workspaces and tabs from inside a BeeBox terminal.
 
   beebox check                     may this terminal use the rest? (exit 0/1)
   beebox workspace open PATH [--name N] [-- CMD...]
   beebox tab new [--ws ID] [--name N] [--cwd DIR] [-- CMD...]
                                    (default ws: this terminal's)
   beebox workspace close ID        ends its processes; deletes nothing
-  beebox list [--json]             workspaces/tabs/panes, agent session ids;
-                                   "self" is this terminal
+  beebox tab shelve ID SHELF       SHELF: freezer | archive | later | strip
+  beebox list [--here] [--json]    workspaces/tabs/panes, agent session ids;
+                                   "self" is this terminal; --here: only its
+                                   workspace
 
 Output is one JSON line. CMD is typed at the new terminal's first prompt
 (aliases work, the shell stays after). New tabs/workspaces open in the
@@ -115,8 +117,15 @@ Delegating:
      message <you>, conclusions only". Later: Claude SendMessage <name>;
      Codex `codex queue --thread <session> --message ...`.
   5. Merging, removing worktrees, deleting branches: ask the user.
+
+Shelves (per workspace; the tab is kept, only where it is filed changes):
+  freezer  ends the tab's processes to free memory; taking it out (strip)
+           resumes its Claude/Codex session. Only tabs with can_freeze.
+  archive  done with, still running.   later  not started yet, still running.
+  In `list --json`, last_active is when the tab's Claude/Codex conversation
+  last changed (ms since epoch; null: no agent session).
 """
-import json, os, shlex, sys, urllib.error, urllib.request
+import json, os, shlex, sys, time, urllib.error, urllib.request
 
 def die(msg, code=1):
     print(f"beebox: {msg}", file=sys.stderr)
@@ -161,6 +170,17 @@ def take(args, flag):
 def absdir(p):
     return os.path.abspath(os.path.expanduser(p))
 
+def idle(ms):
+    if ms is None:
+        return ""
+    s = max(0, time.time() - ms / 1000)
+    for unit, n in (("d", 86400), ("h", 3600), ("m", 60)):
+        if s >= n:
+            return f"  idle {int(s // n)}{unit}"
+    return "  idle <1m"
+
+SHELVES = {"freezer", "archive", "later", "strip"}
+
 def show_tree(t):
     me = t.get("self", {})
     for w in t["workspaces"]:
@@ -168,7 +188,8 @@ def show_tree(t):
         branch = f" [{w['branch']}]" if w.get("branch") else ""
         print(f"workspace {w['id']}  {w['name']}{branch}{kind}  {w['path']}")
         for tab in w["tabs"]:
-            print(f"  tab {tab['id']}  {tab['title'] or '-'}")
+            shelf = f" [{tab['shelf']}]" if tab.get("shelf") else ""
+            print(f"  tab {tab['id']}  {tab['title'] or '-'}{shelf}{idle(tab.get('last_active'))}")
             for p in tab["panes"]:
                 here = "  <- you" if p["id"] == me.get("pane") else ""
                 agent = p.get("agent") or "shell"
@@ -195,6 +216,11 @@ def main(argv):
             die(f"--ws takes a workspace id, got {ws!r}", 2)
         out = call({"op": "tab_new", "ws": int(ws) if ws else None, "name": name,
                     "cwd": absdir(cwd) if cwd else None, "run": cmd})
+    elif argv[:2] == ["tab", "shelve"]:
+        if len(argv) != 4 or not argv[2].isdigit() or argv[3] not in SHELVES:
+            die("usage: beebox tab shelve <ID> freezer|archive|later|strip", 2)
+        out = call({"op": "tab_shelve", "tab": int(argv[2]),
+                    "shelf": None if argv[3] == "strip" else argv[3]})
     elif argv[:2] == ["workspace", "close"]:
         if len(argv) != 3 or not argv[2].isdigit():
             die("usage: beebox workspace close <ID>", 2)
@@ -205,7 +231,11 @@ def main(argv):
             die("refused — someone can type in this terminal through a Workspace/Tab/Pane "
                 "link, and would not see what it opens")
     elif argv[0] == "list":
+        if set(argv[1:]) - {"--json", "--here"}:
+            die("usage: beebox list [--here] [--json]", 2)
         out = call({"op": "list"})
+        if "--here" in argv:
+            out["workspaces"] = [w for w in out["workspaces"] if w["id"] == out["self"].get("ws")]
         if "--json" not in argv:
             show_tree(out)
             return
@@ -223,14 +253,15 @@ main(sys.argv[1:])
 /// changes.
 const CODEX_CONTEXT: &str = "In BeeBox. Delegate: `beebox check` first (refused: stop, tell the user), then \
 `beebox tab new -- codex \"<brief>\"`; a worktree only if asked. Message a session: \
-`codex queue --thread <session from beebox list> --message ...`. Details: `beebox --help`.";
+`codex queue --thread <session from beebox list> --message ...`. File tabs away (freezer frees memory): \
+`beebox tab shelve`. Details: `beebox --help`.";
 
 /// The Claude plugin's one skill. Loaded with `--plugin-dir` by the wrapper,
 /// so it exists only in BeeBox panes; until used it costs Claude the
 /// description line and nothing else.
 const CLAUDE_SKILL: &str = r#"---
 name: beebox
-description: Delegate tasks to new visible Claude sessions — BeeBox tabs, or git worktrees on request. Use when the user wants work handed off or run in parallel, or a BeeBox tab/workspace opened.
+description: Delegate tasks to new visible Claude sessions — BeeBox tabs, or git worktrees on request — and file tabs away (freezer/archive/later). Use when the user wants work handed off or run in parallel, a BeeBox tab/workspace opened, or tabs tidied up, e.g. idle ones frozen.
 ---
 
 1. `beebox check`. Refused: stop, tell the user, run nothing else (no git).
