@@ -8,6 +8,7 @@
   import { cubicOut } from 'svelte/easing';
   import { store } from '../state.svelte';
   import { sortable } from '../dragsort.svelte';
+  import { hovercard, tildify, type CardContent } from '../hovercard.svelte';
   import { rollupWithUnread } from '../agent-status';
   import type { WorkspaceView } from '../proto';
   import StatusIcon from './StatusIcon.svelte';
@@ -142,6 +143,20 @@
     };
   }
 
+  /** What a row's hover card says: the name it may be truncating, and where
+      it lives. A worktree also names the repository it belongs to. */
+  function wsCard(ws: WorkspaceView, parent: WorkspaceView | null): CardContent | null {
+    if (editing === ws.id) return null;
+    return {
+      title: ws.name,
+      rows: [
+        ...(parent ? [{ k: 'Worktree of', v: parent.name }] : []),
+        ...(ws.branch ? [{ k: 'Branch', v: `⎇ ${ws.branch}`, mono: true }] : []),
+        { k: 'Path', v: tildify(ws.path), mono: true },
+      ],
+    };
+  }
+
   function focusInput(el: HTMLInputElement) {
     el.focus();
     el.select();
@@ -186,7 +201,7 @@
           class:active={ws.id === store.activeWs?.id ||
             (!open && !folded && g.kids.some((k) => k.id === store.activeWs?.id))}
           class:born={born.has(ws.id)}
-          title={folded ? ws.name : undefined}
+          use:hovercard={{ content: () => wsCard(ws, null), side: 'right', ignore: '.x, .caret, .sum', menu: () => store.caps.host }}
           onclick={() => store.activate(ws.id, null)}
           oncontextmenu={(e) => openMenu(e, ws)}
         >
@@ -232,7 +247,6 @@
               {:else}
                 <span
                   class="name"
-                  title={ws.path}
                   ondblclick={(e) => {
                     if (!store.caps.host) return;
                     e.stopPropagation();
@@ -280,7 +294,7 @@
                 class="wt"
                 class:active={k.id === store.activeWs?.id}
                 class:born={born.has(k.id)}
-                title={folded ? k.name : k.path}
+                use:hovercard={{ content: () => wsCard(k, ws), side: 'right', ignore: '.x', menu: () => store.caps.host }}
                 use:sortable={{
                   id: k.id,
                   axis: 'y',

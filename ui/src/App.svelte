@@ -14,6 +14,7 @@
   import KeyBar from './lib/components/KeyBar.svelte';
   import Countdown from './lib/components/Countdown.svelte';
   import ImageViewer from './lib/components/ImageViewer.svelte';
+  import HoverCard from './lib/components/HoverCard.svelte';
 
   let dialog = $state<'share' | 'conns' | 'settings' | 'openws' | null>(null);
 
@@ -530,6 +531,7 @@
 {/if}
 
 <ImageViewer />
+<HoverCard />
 
 {#if dialog === 'share'}
   <ShareDialog onclose={() => (dialog = null)} />

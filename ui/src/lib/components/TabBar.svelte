@@ -1,9 +1,10 @@
 <script lang="ts">
   import { store } from '../state.svelte';
   import { sortable } from '../dragsort.svelte';
+  import { hovercard, tildify, type CardContent } from '../hovercard.svelte';
   import { agentBadge, rollupWithUnread } from '../agent-status';
   import { tabLabel as label } from '../labels';
-  import type { Shelf, TabId, TabView } from '../proto';
+  import type { Shelf, TabId, TabView, WorkspaceView } from '../proto';
   import StatusIcon from './StatusIcon.svelte';
   import Icon from './Icon.svelte';
 
@@ -11,6 +12,29 @@
     // readRev makes this re-derive when a pane is marked read in this browser.
     void store.readRev;
     return rollupWithUnread(tab.panes);
+  }
+
+  /** A worktree is named with its repository, as the sidebar nests it. */
+  function wsName(w: WorkspaceView): string {
+    const home = w.worktree && store.tree.workspaces.find((p) => !p.worktree && p.repo === w.repo);
+    return home ? `${home.name} › ${w.name}` : w.name;
+  }
+
+  /** The full label the strip may be truncating, and where the tab is
+      working: the focused pane's folder if it is in this tab, else the
+      first pane's. */
+  function tabCard(tab: TabView): CardContent | null {
+    if (editing === tab.id) return null;
+    const pane = tab.panes.find((p) => p.id === store.focused) ?? tab.panes[0];
+    return {
+      title: labels.get(tab.id) ?? label(tab),
+      rows: [
+        ...(ws ? [{ k: 'Workspace', v: wsName(ws) }] : []),
+        ...(pane ? [{ k: 'cwd', v: tildify(pane.cwd), mono: true }] : []),
+        // Said here rather than in a second tooltip on the label.
+        ...(tab.title && store.caps.host ? [{ k: 'Renamed', v: 'right-click the name to reset' }] : []),
+      ],
+    };
   }
 
   function agent(tab: TabView): string {
@@ -235,6 +259,7 @@
         drop: (id, el) =>
           shelve(id, (el?.dataset.shelf as Shelf | undefined) ?? 'archive'),
       }}
+      use:hovercard={{ content: () => tabCard(tab), side: 'below', ignore: '.x, .mark', menu: () => store.caps.host && !!tab.title }}
       class:active={tab.id === store.activeTab?.id}
       onclick={() => ws && store.activate(ws.id, tab.id)}
       onauxclick={(e) => {
@@ -280,7 +305,6 @@
             e.preventDefault();
             store.send({ t: 'rename_tab', tab: tab.id, title: '' });
           }}
-          title={tab.title ? 'Right-click: reset to auto title' : ''}
           >{labels.get(tab.id) ?? label(tab)}</span
         >
       {/if}
