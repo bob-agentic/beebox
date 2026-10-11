@@ -10,12 +10,12 @@ const local = {
 
 describe('shareLinks', () => {
   it('lists the daemon hosts, adding the origin only when it is not loopback', () => {
-    expect(shareLinks(local).map((l) => l.http)).toEqual(['http://192.168.2.22:17788/t/tok']);
+    expect(shareLinks(local).map((l) => l.web)).toEqual(['http://192.168.2.22:17788/t/tok']);
   });
 
   it('puts a non-loopback origin first', () => {
     const links = shareLinks({ ...local, origin: 'http://192.168.2.9:17788' });
-    expect(links.map((l) => l.http)).toEqual([
+    expect(links.map((l) => l.web)).toEqual([
       'http://192.168.2.9:17788/t/tok',
       'http://192.168.2.22:17788/t/tok',
     ]);
@@ -23,30 +23,28 @@ describe('shareLinks', () => {
 
   it('falls back to the origin when the daemon enumerated nothing', () => {
     const links = shareLinks({ ...local, hosts: [] });
-    expect(links.map((l) => l.http)).toEqual(['http://localhost:17788/t/tok']);
+    expect(links.map((l) => l.web)).toEqual(['http://localhost:17788/t/tok']);
   });
 
-  it('offers the app form of every web link', () => {
-    expect(shareLinks(local)[0].app).toBe('beebox://192.168.2.22:17788/t/tok');
+  it('wraps an http link in beebox:// for the code', () => {
+    expect(shareLinks(local)[0].qr).toBe('beebox://192.168.2.22:17788/t/tok');
   });
 
-  it('replaces every address with the share domain', () => {
+  it('replaces every address with the share domain, https by default', () => {
     const links = shareLinks({ ...local, shareHost: 'example.com' });
-    expect(links).toEqual([
-      {
-        http: 'http://example.com/t/tok',
-        app: 'beebox://example.com/t/tok',
-      },
-    ]);
+    expect(links).toEqual([{ web: 'https://example.com/t/tok', qr: 'https://example.com/t/tok' }]);
   });
 
-  it('normalizes a domain typed with a scheme or trailing slash', () => {
-    const links = shareLinks({ ...local, shareHost: ' https://example.com/ ' });
-    expect(links.map((l) => l.http)).toEqual(['http://example.com/t/tok']);
+  it('keeps the scheme a domain is written with', () => {
+    const https = shareLinks({ ...local, shareHost: ' https://example.com/ ' });
+    expect(https).toEqual([{ web: 'https://example.com/t/tok', qr: 'https://example.com/t/tok' }]);
+
+    const http = shareLinks({ ...local, shareHost: 'http://example.com' });
+    expect(http).toEqual([{ web: 'http://example.com/t/tok', qr: 'beebox://example.com/t/tok' }]);
   });
 
   it('treats whitespace as unset', () => {
     const links = shareLinks({ ...local, shareHost: '   ' });
-    expect(links.map((l) => l.http)).toEqual(['http://192.168.2.22:17788/t/tok']);
+    expect(links.map((l) => l.web)).toEqual(['http://192.168.2.22:17788/t/tok']);
   });
 });

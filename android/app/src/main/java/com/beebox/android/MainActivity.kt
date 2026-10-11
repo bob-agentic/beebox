@@ -375,7 +375,13 @@ class MainActivity : AppCompatActivity() {
                     return true
                 }
                 val here = current?.let { Uri.parse(it) }
-                if (here != null && Links.origin(u) == Links.origin(here)) return false
+                // Ours stays inside: the very same origin, or the same host
+                // under an http→https upgrade — the redirect a tunnel in front
+                // of the daemon forces, which must not read as a foreign link
+                // and drop the session into the system browser.
+                val upgrade =
+                    u.host == here?.host && here?.scheme == "http" && u.scheme == "https"
+                if (here != null && (Links.origin(u) == Links.origin(here) || upgrade)) return false
                 // Nothing may be installed to take it — a `mailto:` on a phone
                 // with no mail app — and that must not crash the app.
                 try {

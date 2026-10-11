@@ -189,10 +189,11 @@
           <p class="like">{linkBase}/t/…</p>
         {/if}
         <p class="note full">
-          A tunnel or reverse proxy in front of this machine. With one set,
-          share links use it instead of the machine's LAN addresses — a phone
-          on another network scans the code and connects as-is. Leave empty to
-          list local addresses again.
+          A tunnel or reverse proxy in front of this machine. A bare domain
+          means https; write http:// if the tunnel does not do TLS. With one
+          set, share links use it instead of the machine's LAN addresses — a
+          phone on another network scans the code and connects as-is. Leave
+          empty to list local addresses again.
         </p>
       {/if}
     </div>

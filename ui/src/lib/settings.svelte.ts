@@ -72,8 +72,9 @@ export interface Settings {
    *  regardless; this is only what the browser holds ready to scroll through. */
   scrollback: number;
   /** A tunnel or reverse proxy domain share links should use, e.g.
-   *  `example.com`. Empty lists the machine's own LAN addresses instead —
-   *  see `shareBase` in `share-links.ts`. */
+   *  `https://example.com` — a bare domain means https; write `http://` for
+   *  a plain-http tunnel. Empty lists the machine's own LAN addresses
+   *  instead — see `shareBase` in `share-links.ts`. */
   shareHost: string;
 }
 

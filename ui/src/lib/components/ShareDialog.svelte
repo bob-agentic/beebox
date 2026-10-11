@@ -188,18 +188,18 @@
 
       <!-- One URL per reachable address, like a dev server's banner. -->
       <div class="urls">
-        {#each urls as u (u.http)}
+        {#each urls as u (u.web)}
           <div class="field">
-            <span>{u.http}</span>
+            <span>{u.web}</span>
             <button
               class="qr-btn"
               title="Show a code for the app to scan"
               aria-label="Show QR code"
-              onclick={() => (showing = u.app)}
+              onclick={() => (showing = u.qr)}
             >
               <Icon name="qr" size={13} />
             </button>
-            <button onclick={() => copy(u.http)}>Copy</button>
+            <button onclick={() => copy(u.web)}>Copy</button>
           </div>
         {/each}
       </div>

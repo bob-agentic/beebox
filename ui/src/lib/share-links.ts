@@ -1,20 +1,24 @@
-/** The links the Share dialog offers: the plain web form Copy puts on the
-    clipboard, and the `beebox://` form the QR code carries — the phone's own
-    camera hands that to the app, which knows it is a phone and takes the
-    terminal's size accordingly, so nothing needs to say so here. */
+/** The links the Share dialog offers: `web` is the form Copy puts on the
+    clipboard, `qr` is what the code carries. An https link serves as both —
+    any camera and the app's own scanner take it as-is, so the http hop that
+    a TLS tunnel answers with a 301 (and the app's WebView used to hand to
+    the system browser) never occurs. An http link keeps the `beebox://`
+    form in the code, which the phone's own camera hands straight to the app. */
 
 export interface ShareLink {
-  http: string;
-  app: string;
+  web: string;
+  qr: string;
 }
 
-/** The base a share domain builds. `example.com`, a pasted scheme, a
-    trailing slash — all end up as `http://example.com`: the daemon speaks
-    plain http and so does the phone app, so whatever was typed, http is the
-    scheme the link has to have. Null when nothing is set. */
+/** The base a share domain builds. An explicit http:// or https:// is kept
+    as written — the scheme belongs to the tunnel, not the daemon. A bare
+    domain means https, which is what a public tunnel speaks; write http://
+    out for one that does not. A trailing slash is dropped; null when
+    nothing is set. */
 export function shareBase(host: string): string | null {
-  const h = host.trim().replace(/^https?:\/\//, '').replace(/\/+$/, '');
-  return h ? `http://${h}` : null;
+  const h = host.trim().replace(/\/+$/, '');
+  if (!h) return null;
+  return /^https?:\/\//.test(h) ? h : `https://${h}`;
 }
 
 /**
@@ -50,5 +54,9 @@ export function shareLinks(opts: {
     }
     if (!plain.length) plain = [`${opts.origin}${opts.path}`];
   }
-  return plain.map((http) => ({ http, app: http.replace(/^https?:\/\//, 'beebox://') }));
+  return plain.map((web) => ({
+    web,
+    // https goes into the code as itself; http keeps the beebox:// form.
+    qr: web.startsWith('https://') ? web : web.replace(/^https?:\/\//, 'beebox://'),
+  }));
 }
