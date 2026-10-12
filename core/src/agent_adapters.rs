@@ -122,8 +122,9 @@ Shelves (per workspace; the tab is kept, only where it is filed changes):
   freezer  ends the tab's processes to free memory; taking it out (strip)
            resumes its Claude/Codex session. Only tabs with can_freeze.
   archive  done with, still running.   later  not started yet, still running.
-  In `list --json`, last_active is when the tab's Claude/Codex conversation
-  last changed (ms since epoch; null: no agent session).
+  In `list --json`, last_active is the tab's last prompt or finished turn
+  seen in BeeBox (ms since epoch). null: none seen yet — read the session's
+  transcript for older activity.
 """
 import json, os, shlex, sys, time, urllib.error, urllib.request
 

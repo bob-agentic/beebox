@@ -190,6 +190,13 @@ impl Store {
         if !has_shelved_at {
             db.execute("ALTER TABLE tabs ADD COLUMN shelved_at INTEGER", [])?;
         }
+        // Nullable: a pane from before this has had no conversation BeeBox saw.
+        let has_active_at = db
+            .prepare("SELECT 1 FROM pragma_table_info('panes') WHERE name = 'active_at'")?
+            .exists([])?;
+        if !has_active_at {
+            db.execute("ALTER TABLE panes ADD COLUMN active_at INTEGER", [])?;
+        }
         Ok(())
     }
 
@@ -227,8 +234,8 @@ impl Store {
                 )?;
                 for pane in &tab.panes {
                     tx.execute(
-                        "INSERT INTO panes (id, tab_id, cmd, cwd, agent, session_ref, session_title, cols, rows)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                        "INSERT INTO panes (id, tab_id, cmd, cwd, agent, session_ref, session_title, cols, rows, active_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                         params![
                             to_db(pane.id),
                             to_db(tab.id),
@@ -238,7 +245,8 @@ impl Store {
                             pane.session_ref,
                             pane.session_title,
                             pane.cols,
-                            pane.rows
+                            pane.rows,
+                            pane.active_at
                         ],
                     )?;
                 }
@@ -286,7 +294,7 @@ impl Store {
                 let layout: Node = serde_json::from_str(&layout_json)?;
 
                 let mut pane_stmt = self.db.prepare(
-                    "SELECT id, cmd, cwd, agent, session_ref, session_title, cols, rows
+                    "SELECT id, cmd, cwd, agent, session_ref, session_title, cols, rows, active_at
                      FROM panes WHERE tab_id = ?1",
                 )?;
                 let panes: Vec<Pane> = pane_stmt
@@ -315,6 +323,7 @@ impl Store {
                             cmd: cmd.split_whitespace().map(str::to_string).collect(),
                             session_ref: r.get(4)?,
                             session_ref_at: 0,
+                            active_at: r.get(8)?,
                             run: None,
                         })
                     })?

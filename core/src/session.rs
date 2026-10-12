@@ -51,6 +51,10 @@ pub struct Pane {
     /// When the event that set `session_ref` happened. Hooks can land out of
     /// order, and an older one must not put back the id it carried.
     pub session_ref_at: i64,
+    /// When the conversation in this pane last moved: a prompt sent or a
+    /// turn finished, from the agent's hooks. Not a session start — resuming
+    /// after a restart is not activity. `None` until the first one.
+    pub active_at: Option<i64>,
     /// A command line to type at the shell's first prompt, as if by hand — what
     /// `beebox tab new -- <cmd>` asked for. Taken at spawn and never persisted:
     /// after a restart the agent comes back through its own resume instead.
@@ -279,6 +283,7 @@ impl SessionTree {
             cmd: Vec::new(),
             session_ref: None,
             session_ref_at: 0,
+            active_at: None,
             run: None,
         };
         w.tabs.push(Tab {
@@ -368,6 +373,7 @@ impl SessionTree {
             cmd: Vec::new(),
             session_ref: None,
             session_ref_at: 0,
+            active_at: None,
             run: None,
         };
         tab.panes.push(new_pane);

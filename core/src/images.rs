@@ -124,15 +124,6 @@ impl Images {
         out
     }
 
-    /// When the session's transcript was last written, in ms since the epoch:
-    /// when the conversation last moved, whoever moved it. Survives restarts,
-    /// which nothing the daemon holds in memory does.
-    pub fn transcript_at(&self, agent: AgentKind, session: &str) -> Option<i64> {
-        let path = self.files.lock().unwrap().path(agent, session)?;
-        let at = path.metadata().ok()?.modified().ok()?;
-        Some(at.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as i64)
-    }
-
     /// Image `#n` of a session. `row` is the terminal row the tag was on,
     /// which picks the message for Codex.
     pub fn lookup(&self, agent: AgentKind, session: &str, n: u32, row: &str) -> Option<Arc<Image>> {

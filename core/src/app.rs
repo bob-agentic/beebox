@@ -12,7 +12,7 @@ use anyhow::{anyhow, Result};
 use tokio::sync::{broadcast, Mutex};
 
 use crate::proto::{
-    AgentEvent, AgentKind, AgentStatusView, Caps, In, Out, PaneId,
+    AgentEvent, AgentStatusView, Caps, In, Out, PaneId,
     CloseReason, Peer, PtyId, SessionId, Shelf, TabId, TreeView, WsId,
 };
 use crate::pty::{Registry, Spawn};
@@ -936,6 +936,8 @@ impl App {
         }
 
         let mut dirty = false;
+        // Changed only what no client is shown: saved, not announced.
+        let mut quiet = false;
         let mut deltas: Vec<AgentDelta> = Vec::new();
         {
             let mut tree = self.tree.lock().await;
@@ -947,6 +949,16 @@ impl App {
             if p.agent != Some(ev.agent) {
                 p.agent = Some(ev.agent);
                 dirty = true;
+            }
+            // Activity is a prompt or a finished turn — not a session start,
+            // which a resume after every restart also fires.
+            if matches!(
+                ev.kind,
+                crate::proto::AgentEventKind::PromptSubmit | crate::proto::AgentEventKind::TurnEnd { .. }
+            ) && p.active_at.is_none_or(|at| ev.at_ms > at)
+            {
+                p.active_at = Some(ev.at_ms);
+                quiet = true;
             }
             // The session id, for resuming it after a restart. Newest wins:
             // hooks race each other to the daemon, and a late one from the
@@ -985,6 +997,11 @@ impl App {
         // Persist outside the tree lock — commit() takes it again.
         if dirty {
             self.commit().await;
+        } else if quiet {
+            // Twice a turn; resending every client the whole tree for a field
+            // none of them displays would be waste.
+            let tree = self.tree.lock().await;
+            self.store.lock().await.save_tree(&tree).expect("write state.db");
         }
         for d in deltas {
             let _ = self.agent_tx.send(d);
@@ -1392,32 +1409,6 @@ impl App {
             }
             CliReq::Check => unreachable!("answered above"),
             CliReq::List => {
-                // When each tab's conversation last moved: the newest of its
-                // agents' transcripts. Read here rather than kept, so it is
-                // right after a restart too. A few file stats, paths cached.
-                let sessions: Vec<(TabId, Vec<(AgentKind, String)>)> = {
-                    let tree = self.tree.lock().await;
-                    tree.workspaces
-                        .iter()
-                        .flat_map(|w| &w.tabs)
-                        .map(|t| {
-                            let s = t
-                                .panes
-                                .iter()
-                                .flat_map(|p| {
-                                    self.images.sessions_of(p.id, p.agent.zip(p.session_ref.clone()))
-                                })
-                                .collect();
-                            (t.id, s)
-                        })
-                        .collect()
-                };
-                let last_active: HashMap<TabId, i64> = sessions
-                    .into_iter()
-                    .filter_map(|(tab, s)| {
-                        s.iter().filter_map(|(a, id)| self.images.transcript_at(*a, id)).max().map(|at| (tab, at))
-                    })
-                    .collect();
                 let tree = self.tree.lock().await;
                 let tab = tree.tab_of(pane);
                 let me_ws = tree
@@ -1441,7 +1432,8 @@ impl App {
                                 "title": t.title,
                                 "shelf": t.shelf,
                                 "can_freeze": t.can_freeze(),
-                                "last_active": last_active.get(&t.id),
+                                // The newest of its panes' conversations.
+                                "last_active": t.panes.iter().filter_map(|p| p.active_at).max(),
                                 "panes": t.panes.iter().map(|p| serde_json::json!({
                                     "id": p.id,
                                     "agent": p.agent,
@@ -2194,6 +2186,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn only_a_prompt_or_a_finished_turn_counts_as_activity() {
+        let a = app().await;
+        let pane = a.tree.lock().await.workspaces[0].tabs[0].panes[0].id;
+        let ev = |kind, at_ms| AgentEvent {
+            agent: AgentKind::Claude,
+            kind,
+            at_ms,
+            session_id: Some("s".into()),
+            session_title: None,
+        };
+        let at = |a: &Arc<App>| {
+            let a = a.clone();
+            async move { a.tree.lock().await.pane(pane).unwrap().active_at }
+        };
+
+        // A resume after a restart fires these; it is not the user working.
+        a.apply_agent_event(pane, ev(AgentEventKind::SessionStart, 50)).await;
+        a.apply_agent_event(pane, ev(AgentEventKind::PreTool { detail: None }, 60)).await;
+        assert_eq!(at(&a).await, None);
+
+        // Saved, but no client is sent the tree for it: none shows it.
+        let mut changed = a.subscribe_tree();
+        a.apply_agent_event(pane, ev(AgentEventKind::PromptSubmit, 100)).await;
+        assert_eq!(at(&a).await, Some(100));
+        assert!(changed.try_recv().is_err(), "no tree broadcast for activity alone");
+        a.apply_agent_event(pane, ev(AgentEventKind::TurnEnd { summary: None }, 300)).await;
+        assert_eq!(at(&a).await, Some(300));
+        // Hooks race; a late one does not turn the clock back.
+        a.apply_agent_event(pane, ev(AgentEventKind::PromptSubmit, 200)).await;
+        assert_eq!(at(&a).await, Some(300));
+        a.apply_agent_event(pane, ev(AgentEventKind::SessionStart, 900)).await;
+        assert_eq!(at(&a).await, Some(300));
+
+        // What `beebox list` reports, and what a restart keeps.
+        let list = a.cli(pane, CliReq::List).await.unwrap();
+        assert_eq!(list["workspaces"][0]["tabs"][0]["last_active"], 300);
+        let saved = a.store.lock().await.load_tree().unwrap();
+        assert_eq!(saved.pane(pane).unwrap().active_at, Some(300));
+    }
+
+    #[tokio::test]
     async fn a_new_tab_opens_on_the_workspace_folder() {
         // ⌘T sends only {open_tab, ws}: the folder is the workspace's, never
         // wherever the last shell happened to have cd'd to. Moving the existing
@@ -2607,7 +2640,7 @@ mod tests {
         let row = tabs.iter().find(|t| t["id"] == agent).unwrap();
         assert_eq!(row["can_freeze"], true);
         assert_eq!(row["shelf"], serde_json::Value::Null);
-        assert!(row.get("last_active").is_some(), "always present, null without a transcript");
+        assert!(row.get("last_active").is_some(), "always present, null before any conversation");
         assert_eq!(tabs.iter().find(|t| t["id"] == shell).unwrap()["can_freeze"], false);
 
         let m = bad(a.cli(me, CliReq::TabShelve { tab: mine, shelf: Some(Shelf::Freezer) }).await);
