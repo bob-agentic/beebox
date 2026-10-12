@@ -194,6 +194,14 @@ impl Registry {
         // app bundle, and without it both agents render colourless. xterm.js
         // supports 24-bit colour, so advertising it is honest.
         cmd.env("COLORTERM", "truecolor");
+        // An app opened from Finder has no locale in its environment, and
+        // without one macOS tools take text for MacRoman: `pbcopy` turned
+        // every CJK character Claude's /export copied into mojibake.
+        // Terminal.app and iTerm2 set it from the region; so does this, and
+        // only when nothing is set already.
+        if let Some((k, v)) = default_locale() {
+            cmd.env(k, v);
+        }
         for (k, v) in &spec.env {
             cmd.env(k, v);
         }
@@ -466,6 +474,37 @@ impl Registry {
     }
 }
 
+const LOCALE_VARS: [&str; 3] = ["LANG", "LC_ALL", "LC_CTYPE"];
+
+/// The locale a pane gets when the daemon has none: on a Mac, `LANG` for its
+/// region (`en_NZ` → `en_NZ.UTF-8`) when the system has that locale, else a
+/// UTF-8 character type. `None` when any locale variable is set already.
+fn default_locale() -> Option<(&'static str, String)> {
+    if LOCALE_VARS.iter().any(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty())) {
+        return None;
+    }
+    // Asked once: the region does not change under a running daemon, and
+    // every pane spawn would otherwise start a process to find it out.
+    static REGION: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    let lang = REGION.get_or_init(mac_region_lang);
+    Some(match lang {
+        Some(lang) => ("LANG", lang.clone()),
+        None if cfg!(target_os = "macos") => ("LC_CTYPE", "UTF-8".into()),
+        None => ("LC_CTYPE", "C.UTF-8".into()),
+    })
+}
+
+/// `<AppleLocale>.UTF-8`, if this is a Mac and it has that locale.
+fn mac_region_lang() -> Option<String> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let out = std::process::Command::new("defaults").args(["read", "-g", "AppleLocale"]).output().ok()?;
+    let region = String::from_utf8(out.stdout).ok()?;
+    let lang = format!("{}.UTF-8", region.trim().split('@').next()?);
+    std::path::Path::new("/usr/share/locale").join(&lang).is_dir().then_some(lang)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -527,6 +566,24 @@ mod tests {
         std::env::remove_var("CLAUDE_CODE_CHILD_SESSION");
         let out = drain(rx).await;
         assert!(out.contains("CC=unset CS=unset"), "Claude markers leaked into the pane: {out}");
+    }
+
+    #[test]
+    fn a_missing_locale_is_filled_in_as_utf8() {
+        let saved: Vec<_> = LOCALE_VARS.iter().map(|k| (*k, std::env::var_os(k))).collect();
+        for k in LOCALE_VARS {
+            std::env::remove_var(k);
+        }
+        let (k, v) = default_locale().expect("none set, so one is filled in");
+        assert!(v.ends_with("UTF-8"), "{k}={v}");
+        std::env::set_var("LC_CTYPE", "C");
+        assert_eq!(default_locale(), None, "a locale the user chose is left alone");
+        for (k, v) in saved {
+            match v {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
     }
 
     #[tokio::test]
