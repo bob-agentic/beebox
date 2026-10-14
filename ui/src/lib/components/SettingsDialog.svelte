@@ -1,9 +1,18 @@
 <script lang="ts">
   import { FONTS, LINE_HEIGHTS, SCROLLBACKS, SIZES, THEMES, settings } from '../settings.svelte';
+  import { store } from '../state.svelte';
 
   let { onclose }: { onclose: () => void } = $props();
 
   const s = $derived(settings.current);
+
+  let section = $state<'appearance' | 'advanced'>('appearance');
+  const SLEEP = [
+    { hours: 0, label: 'Off' },
+    { hours: 2, label: '2h' },
+    { hours: 4, label: '4h' },
+    { hours: 8, label: '8h' },
+  ];
 
   // 600 themes need finding, not scrolling.
   let query = $state('');
@@ -37,12 +46,37 @@
   <div class="modal">
     <nav class="nav">
       <div class="nav-title">Settings</div>
-      <button class="on">Appearance</button>
+      <button class:on={section === 'appearance'} onclick={() => (section = 'appearance')}>Appearance</button>
+      <!-- The daemon's own settings: the owner's alone. -->
+      {#if store.caps.host}
+        <button class:on={section === 'advanced'} onclick={() => (section = 'advanced')}>Advanced</button>
+      {/if}
       <div class="nav-spacer"></div>
       <button class="done" onclick={onclose}>Done</button>
     </nav>
 
     <div class="body">
+      {#if section === 'advanced'}
+        <h3>Advanced</h3>
+        <div class="sub">Kept by BeeBox on this Mac — the same for every window and device</div>
+
+        <div class="row">
+          <span class="lbl wide">Sleep idle agents</span>
+          <div class="seg">
+            {#each SLEEP as o (o.hours)}
+              <button
+                class:on={store.sleepAfter === o.hours}
+                onclick={() => store.send({ t: 'set_sleep_after', hours: o.hours })}>{o.label}</button
+              >
+            {/each}
+          </div>
+        </div>
+        <div class="note wide">
+          A Claude or Codex pane with nothing sent and nothing finished for this long has its agent ended to free
+          memory; it picks the conversation up when you open the tab. Panes on screen are left alone, and so are the
+          other panes in its tab.
+        </div>
+      {:else}
         <h3>Appearance</h3>
         <div class="sub">Stored in this browser — your phone can differ from your desk</div>
 
@@ -159,6 +193,7 @@
         <div class="acts">
           <button class="g" onclick={() => settings.reset()}>Reset appearance</button>
         </div>
+      {/if}
     </div>
   </div>
 </div>
@@ -285,6 +320,14 @@
     height: 14px;
   }
 
+  /* A label too long for the usual column, and the note under its control. */
+  .lbl.wide {
+    width: 112px;
+    flex-basis: 112px;
+  }
+  .note.wide {
+    margin-left: 122px;
+  }
   /* Sits under the control it explains, indented to line up with it. */
   .note {
     margin: -2px 0 10px 132px;

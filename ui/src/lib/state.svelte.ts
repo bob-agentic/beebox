@@ -72,6 +72,9 @@ class Store {
   share = $state<{ url: string; hosts: string[] } | null>(null);
   /** Whether the daemon serves non-loopback clients. Owner-only knob. */
   webExposed = $state(false);
+  /** Hours an idle agent pane runs before it is put to sleep, 0 for never.
+      The daemon's, so the owner's alone; null until it says. */
+  sleepAfter = $state<number | null>(null);
   private wsBase = '';
   /** Bumped whenever this browser marks a completion read. localStorage is
       not reactive, so aggregate dots (tab, workspace) depend on this to
@@ -305,6 +308,10 @@ class Store {
       case 'session_title': {
         const pane = this.pane(msg.pane);
         if (pane) pane.session_title = msg.text;
+        break;
+      }
+      case 'sleep_after': {
+        this.sleepAfter = msg.hours;
         break;
       }
       case 'web_server': {

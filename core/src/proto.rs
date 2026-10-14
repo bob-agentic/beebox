@@ -90,7 +90,9 @@ pub struct AgentEvent {
 pub enum AgentEventKind {
     SessionStart,
     PromptSubmit,
-    PreTool { detail: Option<String> },
+    /// `lasting`: the call leaves work running past the turn — a scheduled
+    /// wake-up, or a command or subagent sent to the background.
+    PreTool { detail: Option<String>, lasting: bool },
     PostTool { failed: bool },
     NeedsInput,
     TurnEnd { summary: Option<String> },
@@ -152,6 +154,8 @@ pub struct PaneView {
     /// Authoritative size, owned by the server. See ARCHITECTURE.md §3.
     pub cols: u16,
     pub rows: u16,
+    /// Its agent was put to sleep after sitting idle; showing it wakes it.
+    pub asleep: bool,
 }
 
 /// Where a tab is filed, when it is not on the strip.
@@ -313,6 +317,11 @@ pub enum Out {
     /// else. Owner-only, toggled from the status bar.
     WebServer {
         exposed: bool,
+    },
+    /// Owner only, on connect and on change: hours an idle agent pane runs
+    /// before it is put to sleep, 0 for never.
+    SleepAfter {
+        hours: u32,
     },
     Title {
         pane: PaneId,
@@ -529,6 +538,10 @@ pub enum In {
     /// Owner-only. Opens (or closes) the port to non-loopback clients.
     SetWebServer {
         exposed: bool,
+    },
+    /// Hours an idle agent pane runs before it is put to sleep: 0, 2, 4 or 8.
+    SetSleepAfter {
+        hours: u32,
     },
     /// Deletes a link, disconnecting the device paired on it for good.
     Revoke {

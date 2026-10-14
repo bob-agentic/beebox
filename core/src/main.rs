@@ -84,6 +84,7 @@ async fn main() -> Result<()> {
     // kept in the tree. One watcher for the whole daemon; doing it per
     // connection would repeat the work per viewer.
     tokio::spawn(app.clone().watch_ptys());
+    tokio::spawn(app.clone().sleep_forever());
 
     if args.exit_with_parent {
         // Orphaned processes are reparented to launchd, so a ppid of 1 means

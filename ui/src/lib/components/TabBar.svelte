@@ -29,12 +29,36 @@
     return {
       title: labels.get(tab.id) ?? label(tab),
       rows: [
+        ...(sleeper(tab) ? [{ k: 'Asleep', v: `idle ${idleFor(sleeper(tab)!.status.at_ms)} · resumes when opened` }] : []),
         ...(ws ? [{ k: 'Workspace', v: wsName(ws) }] : []),
         ...(pane ? [{ k: 'cwd', v: tildify(pane.cwd), mono: true }] : []),
         // Said here rather than in a second tooltip on the label.
         ...(tab.title && store.caps.host ? [{ k: 'Renamed', v: 'right-click the name to reset' }] : []),
       ],
     };
+  }
+
+  /** A pane whose agent was put to sleep for sitting idle, if the tab has one. */
+  function sleeper(tab: TabView) {
+    return tab.panes.find((p) => p.asleep);
+  }
+
+  /** Shown as asleep — moon, dimmed — only while nothing else in the tab
+      wants you: a pane beside it working, asking, failed or unread keeps
+      the tab's ordinary dot. */
+  function dormant(tab: TabView) {
+    if (!sleeper(tab)) return false;
+    void store.readRev;
+    const awake = rollupWithUnread(tab.panes.filter((p) => !p.asleep));
+    return !awake.unread && !['running', 'needs_input', 'failed'].includes(awake.phase);
+  }
+
+  /** How long since `ms`, in the largest whole unit: 5h, 2d. */
+  function idleFor(ms: number): string {
+    const m = Math.max(1, Math.floor((Date.now() - ms) / 60_000));
+    if (m < 60) return `${m}m`;
+    const h = Math.floor(m / 60);
+    return h < 48 ? `${h}h` : `${Math.floor(h / 24)}d`;
   }
 
   function agent(tab: TabView): string {
@@ -261,6 +285,7 @@
       }}
       use:hovercard={{ content: () => tabCard(tab), side: 'below', ignore: '.x, .mark', menu: () => store.caps.host && !!tab.title }}
       class:active={tab.id === store.activeTab?.id}
+      class:asleep={dormant(tab)}
       onclick={() => ws && store.activate(ws.id, tab.id)}
       onauxclick={(e) => {
         if (e.button === 1 && store.caps.host) {
@@ -270,7 +295,11 @@
         }
       }}
     >
-      <StatusIcon phase={tabDot(tab).phase} unread={tabDot(tab).unread} />
+      {#if dormant(tab)}
+        <span class="moon"><Icon name="moon" size={12} /></span>
+      {:else}
+        <StatusIcon phase={tabDot(tab).phase} unread={tabDot(tab).unread} />
+      {/if}
       {#if AGENT_MARK[agent(tab)]}
         <span class="mark" style="color:{AGENT_MARK[agent(tab)].color}" title={agent(tab)}>
           <Icon name={AGENT_MARK[agent(tab)].icon} size={12} />
@@ -488,6 +517,15 @@
   }
   .tabbar::-webkit-scrollbar {
     display: none;
+  }
+  /* Its agent sleeps until the tab is opened. */
+  .tab.asleep {
+    opacity: 0.55;
+  }
+  .moon {
+    display: flex;
+    color: var(--faint);
+    flex: 0 0 auto;
   }
   .tab {
     display: flex;

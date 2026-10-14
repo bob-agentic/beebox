@@ -107,6 +107,7 @@ fn exited_pane_keeps_its_identity() {
         git: Some(GitInfo { branch: "main".into(), added: 3, modified: 1 }),
         cols: 96,
         rows: 38,
+        asleep: false,
     };
     let bytes = rmp_serde::to_vec_named(&view).unwrap();
     let back: PaneView = rmp_serde::from_slice(&bytes).unwrap();

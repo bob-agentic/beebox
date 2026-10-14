@@ -59,6 +59,17 @@ pub struct Pane {
     /// `beebox tab new -- <cmd>` asked for. Taken at spawn and never persisted:
     /// after a restart the agent comes back through its own resume instead.
     pub run: Option<String>,
+    /// Put to sleep after sitting idle: its terminal was ended to free
+    /// memory, its session kept, and it starts again when shown. Not kept
+    /// across a restart, where a pane nobody has shown is not started anyway.
+    pub asleep: bool,
+    /// Its agent started work that outlives its turn (see `outlives_turn`),
+    /// so it is never put to sleep while this process lasts. Not persisted.
+    pub lasting: bool,
+    /// When it last woke from sleep, in ms. Opening a sleeping tab and looking
+    /// is not a prompt, so `active_at` stays where it was; idle is counted
+    /// from whichever is later, or one glance would buy only minutes.
+    pub woke_at: Option<i64>,
 }
 
 /// A pane taken out of the tree, and the terminal it was running.
@@ -299,6 +310,9 @@ impl SessionTree {
             session_ref_at: 0,
             active_at: None,
             run: None,
+            asleep: false,
+            lasting: false,
+            woke_at: None,
         };
         w.tabs.push(Tab {
             id: tab_id,
@@ -390,6 +404,9 @@ impl SessionTree {
             session_ref_at: 0,
             active_at: None,
             run: None,
+            asleep: false,
+            lasting: false,
+            woke_at: None,
         };
         tab.panes.push(new_pane);
         insert_beside(&mut tab.layout, pane, new_id, dir);
@@ -520,6 +537,7 @@ impl SessionTree {
                                 git: p.git.clone(),
                                 cols: p.cols,
                                 rows: p.rows,
+                                asleep: p.asleep,
                             })
                             .collect();
                         if panes.is_empty() {

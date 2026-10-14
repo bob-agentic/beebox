@@ -8,7 +8,10 @@
 use std::path::Path;
 
 use anyhow::Result;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
+
+/// Hours an idle agent pane runs before it sleeps, until the owner says otherwise.
+pub const DEFAULT_SLEEP_AFTER: u32 = 4;
 
 use crate::proto::{Node, Shelf, TabId, WsId};
 use crate::session::{Pane, SessionTree, Tab, Workspace};
@@ -139,6 +142,12 @@ impl Store {
             -- Held the Agents toggles. Status and resume are simply on now,
             -- and what was stored there means nothing.
             DROP TABLE IF EXISTS settings;
+
+            -- The daemon's own preferences, the same for every window.
+            CREATE TABLE IF NOT EXISTS prefs (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             "#,
         )?;
 
@@ -197,6 +206,24 @@ impl Store {
         if !has_active_at {
             db.execute("ALTER TABLE panes ADD COLUMN active_at INTEGER", [])?;
         }
+        Ok(())
+    }
+
+    /// Hours an idle agent pane runs before it is put to sleep; 0 is never.
+    pub fn sleep_after(&self) -> Result<u32> {
+        let v: Option<String> = self
+            .db
+            .query_row("SELECT value FROM prefs WHERE key = 'sleep_after'", [], |r| r.get(0))
+            .optional()?;
+        Ok(v.and_then(|v| v.parse().ok()).unwrap_or(DEFAULT_SLEEP_AFTER))
+    }
+
+    pub fn set_sleep_after(&self, hours: u32) -> Result<()> {
+        self.db.execute(
+            "INSERT INTO prefs (key, value) VALUES ('sleep_after', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![hours.to_string()],
+        )?;
         Ok(())
     }
 
@@ -325,6 +352,9 @@ impl Store {
                             session_ref_at: 0,
                             active_at: r.get(8)?,
                             run: None,
+                            asleep: false,
+                            lasting: false,
+                            woke_at: None,
                         })
                     })?
                     .collect::<rusqlite::Result<_>>()?;
@@ -658,6 +688,19 @@ mod tests {
         // A tab written before the column existed is simply one that was
         // never set aside.
         assert_eq!(t.workspaces[0].tabs[0].shelf, None);
+    }
+
+    #[test]
+    fn sleeping_idle_agents_defaults_to_four_hours_and_is_kept() {
+        let dir = std::env::temp_dir().join(format!("beebox-prefs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.db");
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.sleep_after().unwrap(), 4);
+        s.set_sleep_after(8).unwrap();
+        drop(s);
+        assert_eq!(Store::open(&path).unwrap().sleep_after().unwrap(), 8, "across a restart");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

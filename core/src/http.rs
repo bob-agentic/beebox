@@ -409,6 +409,7 @@ async fn serve(
     if grant.host {
         let _ = tx.send(Out::Peers { peers: app.peers().await }).await;
         let _ = tx.send(Out::WebServer { exposed: app.is_exposed() }).await;
+        let _ = tx.send(Out::SleepAfter { hours: app.sleep_after() }).await;
     }
 
     // The panes this client has a terminal for, which it asks for by
@@ -535,6 +536,7 @@ async fn serve(
                     if grant.host {
                         let _ = tx.send(Out::Peers { peers: app.peers().await }).await;
                         let _ = tx.send(Out::WebServer { exposed: app.is_exposed() }).await;
+                        let _ = tx.send(Out::SleepAfter { hours: app.sleep_after() }).await;
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
@@ -553,6 +555,11 @@ async fn serve(
                 match inbound {
                     In::Replay { pane } => {
                         if app.visible(&grant).await.contains(&pane) {
+                            // On screen now — and woken first, if it slept,
+                            // so the history sent is the new terminal's.
+                            if !shown.contains_key(&pane) {
+                                app.show(pane).await;
+                            }
                             resync(&app, pane, &mut shown, &tx).await;
                             // The history as printed, then the screen as the
                             // program draws it now.
@@ -564,7 +571,9 @@ async fn serve(
                         continue;
                     }
                     In::Release { pane } => {
-                        shown.remove(&pane);
+                        if shown.remove(&pane).is_some() {
+                            app.hide(pane);
+                        }
                         continue;
                     }
                     In::Attention { on } => {
@@ -614,6 +623,9 @@ async fn serve(
         }
     }
 
+    for &pane in shown.keys() {
+        app.hide(pane);
+    }
     app.remove_conn(session).await;
     drop(tx);
     let _ = writer.await;

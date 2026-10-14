@@ -113,6 +113,13 @@ pub struct App {
     /// else; that browser's other tabs, reloads and reconnects still work.
     /// Like the key, it lasts one run: a restart frees it.
     owner_device: std::sync::Mutex<Option<String>>,
+    /// Hours an idle agent pane runs before it is put to sleep; 0 is never.
+    /// Kept in state.db, the same for every window and device.
+    sleep_after: std::sync::atomic::AtomicU32,
+    /// How many clients have each pane on screen — a `Replay` not yet
+    /// followed by its `Release` or a disconnect. A pane someone is looking
+    /// at is never put to sleep.
+    viewers: std::sync::Mutex<HashMap<PaneId, u32>>,
     /// Each agent pane's sessions, and the images pasted into them.
     pub images: crate::images::Images,
 }
@@ -149,6 +156,7 @@ impl App {
         adapter_assets: Option<crate::agent_adapters::AdapterAssets>,
     ) -> Arc<Self> {
         let tree = store.load_tree().expect("read state.db");
+        let sleep_after = store.sleep_after().unwrap_or(crate::store::DEFAULT_SLEEP_AFTER);
         let (changed, _) = broadcast::channel(64);
         let (agent_tx, _) = broadcast::channel(256);
         Arc::new(Self {
@@ -170,6 +178,8 @@ impl App {
             shell: std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into()),
             owner_key: random_key(),
             owner_device: std::sync::Mutex::new(None),
+            sleep_after: std::sync::atomic::AtomicU32::new(sleep_after),
+            viewers: std::sync::Mutex::new(HashMap::new()),
             images: Default::default(),
         })
     }
@@ -327,6 +337,11 @@ impl App {
         let p = tree.pane_mut(pane).expect("just read");
         p.pty = Some(pty);
         p.exited = false;
+        if p.asleep {
+            p.woke_at = Some(crate::hooks::now_ms());
+        }
+        p.asleep = false;
+        p.lasting = false;
         p.cols = cols;
         p.rows = rows;
 
@@ -827,6 +842,7 @@ impl App {
             In::SetWebServer { exposed } => {
                 self.set_exposed(exposed).await;
             }
+            In::SetSleepAfter { hours } => self.set_sleep_after(hours).await,
             // Not owner-gated; handled by the caller.
             In::Input { .. }
             | In::Viewport { .. }
@@ -840,6 +856,105 @@ impl App {
             | In::CreateGrant { .. } => {}
         }
         Ok(Vec::new())
+    }
+
+    pub fn sleep_after(&self) -> u32 {
+        self.sleep_after.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Off, or 2, 4 or 8 hours — what the owner can pick.
+    async fn set_sleep_after(&self, hours: u32) {
+        if ![0, 2, 4, 8].contains(&hours) {
+            return;
+        }
+        self.sleep_after.store(hours, std::sync::atomic::Ordering::Relaxed);
+        let _ = self.store.lock().await.set_sleep_after(hours);
+        let _ = self.changed.send(TreeChanged);
+    }
+
+    /// A client put this pane on screen. One that was asleep is started
+    /// again, and its agent resumes as a thawed one does (`resume_on_show`).
+    pub async fn show(&self, pane: PaneId) {
+        *self.viewers.lock().unwrap().entry(pane).or_default() += 1;
+        let asleep = self.tree.lock().await.pane(pane).is_some_and(|p| p.asleep);
+        if asleep && self.ensure_running(pane).await.is_ok() {
+            self.commit().await;
+        }
+    }
+
+    /// A client took this pane off screen, or went away.
+    pub fn hide(&self, pane: PaneId) {
+        let mut viewers = self.viewers.lock().unwrap();
+        if let Some(n) = viewers.get_mut(&pane) {
+            *n -= 1;
+            if *n == 0 {
+                viewers.remove(&pane);
+            }
+        }
+    }
+
+    /// Ends the terminal of every Claude or Codex pane idle past the owner's
+    /// setting, as the freezer does — keeping its session to resume — but
+    /// one pane at a time and leaving the tab where it is. Idle is the last
+    /// prompt or finished turn its hooks reported, or its last waking. Not a
+    /// pane on anyone's screen, one working or waiting on a question, or one
+    /// in a frozen tab.
+    pub async fn sleep_idle(&self, now_ms: i64) {
+        let hours = self.sleep_after();
+        if hours == 0 {
+            return;
+        }
+        let before = now_ms - i64::from(hours) * 3_600_000;
+        let mut tree = self.tree.lock().await;
+        // Read under the tree lock: `show` counts its viewer before it looks
+        // at the tree, so a pane put on screen meanwhile is either seen here
+        // or, once this lets go, woken there.
+        let viewers = self.viewers.lock().unwrap().clone();
+        let idle: Vec<PaneId> = tree
+            .workspaces
+            .iter()
+            .flat_map(|w| &w.tabs)
+            .filter(|t| t.shelf != Some(Shelf::Freezer))
+            .flat_map(|t| &t.panes)
+            .filter(|p| {
+                matches!(p.agent, Some(AgentKind::Claude | AgentKind::Codex))
+                    && p.session_ref.is_some()
+                    && p.pty.is_some()
+                    && p.active_at.is_some_and(|t| t.max(p.woke_at.unwrap_or(0)) <= before)
+                    // Working, or stopped mid-turn to ask — neither is idle.
+                    && !matches!(
+                        p.status.view().phase,
+                        crate::proto::AgentPhase::Running | crate::proto::AgentPhase::NeedsInput
+                    )
+                    && !p.lasting
+                    && !viewers.contains_key(&p.id)
+            })
+            .map(|p| p.id)
+            .collect();
+        for &pane in &idle {
+            if let Some(p) = tree.pane_mut(pane) {
+                if let Some(pty) = p.pty.take() {
+                    self.ptys.kill(pty);
+                }
+                p.asleep = true;
+            }
+        }
+        drop(tree);
+        if !idle.is_empty() {
+            self.commit().await;
+        }
+    }
+
+    /// Looks for idle agents every ten minutes.
+    pub async fn sleep_forever(self: Arc<Self>) {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(600));
+        loop {
+            tick.tick().await;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis() as i64);
+            self.sleep_idle(now).await;
+        }
     }
 
     /// Watches every pty for what the tree has to remember: its title and
@@ -1114,6 +1229,13 @@ impl App {
         {
             let mut tree = self.tree.lock().await;
             let Some(p) = tree.pane_mut(pane) else { return };
+            // Work that outlives its turn keeps the agent awake until the
+            // session ends.
+            match &ev.kind {
+                crate::proto::AgentEventKind::PreTool { lasting: true, .. } => p.lasting = true,
+                crate::proto::AgentEventKind::SessionEnd => p.lasting = false,
+                _ => {}
+            }
 
             if p.status.apply(&ev) {
                 deltas.push(AgentDelta::Status { pane, status: p.status.view().clone() });
@@ -2118,6 +2240,147 @@ mod tests {
         (tab.id, p.id)
     }
 
+    /// Opens a tab whose one pane has had this hook event, and returns it.
+    async fn tab_with(a: &Arc<App>, kind: Option<AgentEventKind>, at_ms: i64) -> PaneId {
+        let owner = a.owner_grant().await;
+        let ws = a.tree.lock().await.workspaces[0].id;
+        a.handle_host(&owner, In::OpenTab { ws }).await.unwrap();
+        let pane = {
+            let t = a.tree.lock().await;
+            t.workspaces[0].tabs.last().unwrap().panes[0].id
+        };
+        if let Some(kind) = kind {
+            let ev = AgentEvent { agent: AgentKind::Claude, kind, at_ms, session_id: Some("s-1".into()), session_title: None };
+            a.apply_agent_event(pane, ev).await;
+        }
+        pane
+    }
+
+    #[tokio::test]
+    async fn only_an_idle_agent_off_screen_is_put_to_sleep() {
+        let a = app().await;
+        let owner = a.owner_grant().await;
+        let hour = 3_600_000;
+        let now = 100 * hour;
+        let done = || Some(AgentEventKind::TurnEnd { summary: None });
+        let idle = tab_with(&a, done(), now - 5 * hour).await;
+        let watched = tab_with(&a, done(), now - 5 * hour).await;
+        let working = tab_with(&a, Some(AgentEventKind::PromptSubmit), now - 5 * hour).await;
+        let recent = tab_with(&a, done(), now - hour).await;
+        let shell = tab_with(&a, None, 0).await;
+        // An agent with a session that has done nothing BeeBox saw.
+        let quiet = tab_with(&a, Some(AgentEventKind::SessionStart), now - 5 * hour).await;
+        // Stopped mid-turn to ask for approval, hours ago.
+        let waiting = tab_with(&a, Some(AgentEventKind::PromptSubmit), now - 5 * hour).await;
+        let ask = AgentEvent { agent: AgentKind::Claude, kind: AgentEventKind::NeedsInput,
+            at_ms: now - 5 * hour + 1, session_id: Some("s-1".into()), session_title: None };
+        a.apply_agent_event(waiting, ask).await;
+        a.show(watched).await;
+        let live = a.ptys.live_count();
+        let asleep = |pane| {
+            let a = a.clone();
+            async move { a.tree.lock().await.pane(pane).unwrap().asleep }
+        };
+
+        // Off: nothing.
+        a.handle_host(&owner, In::SetSleepAfter { hours: 0 }).await.unwrap();
+        a.sleep_idle(now).await;
+        assert_eq!(a.ptys.live_count(), live);
+
+        a.handle_host(&owner, In::SetSleepAfter { hours: 4 }).await.unwrap();
+        a.sleep_idle(now).await;
+        assert_eq!(a.ptys.live_count(), live - 1, "one terminal ended");
+        assert!(asleep(idle).await);
+        assert!(a.pty_of(idle).await.is_none());
+        for pane in [watched, working, recent, shell, quiet, waiting] {
+            assert!(!asleep(pane).await, "pane {pane}");
+            assert!(a.pty_of(pane).await.is_some(), "pane {pane}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_agent_with_work_past_its_turn_is_never_put_to_sleep() {
+        // A reminder set with CronCreate, or a command left running in the
+        // background: asleep, the reminder would wait for someone to open
+        // the tab, and the command would die.
+        let a = app().await;
+        let hour = 3_600_000;
+        let now = 100 * hour;
+        let pre = |tool: &str, input: &str| {
+            let body = serde_json::json!({"hook_event_name": "PreToolUse", "session_id": "s-1",
+                "tool_name": tool, "tool_input": serde_json::from_str::<serde_json::Value>(input).unwrap()});
+            crate::hooks::normalize_claude(&body, now - 6 * hour).unwrap()
+        };
+        let mut panes = Vec::new();
+        for (tool, input) in [
+            ("CronCreate", r#"{"cron":"3 14 15 10 *","prompt":"remind","recurring":false,"durable":true}"#),
+            ("Bash", r#"{"command":"npm run dev","run_in_background":true}"#),
+        ] {
+            let pane = tab_with(&a, None, 0).await;
+            a.apply_agent_event(pane, pre(tool, input)).await;
+            let done = AgentEvent { agent: AgentKind::Claude, kind: AgentEventKind::TurnEnd { summary: None },
+                at_ms: now - 5 * hour, session_id: Some("s-1".into()), session_title: None };
+            a.apply_agent_event(pane, done).await;
+            panes.push(pane);
+        }
+        // A foreground command does not count.
+        let plain = tab_with(&a, None, 0).await;
+        a.apply_agent_event(plain, pre("Bash", r#"{"command":"make"}"#)).await;
+        a.apply_agent_event(plain, AgentEvent { agent: AgentKind::Claude, kind: AgentEventKind::TurnEnd { summary: None },
+            at_ms: now - 5 * hour, session_id: Some("s-1".into()), session_title: None }).await;
+
+        a.sleep_idle(now).await;
+        for pane in panes {
+            assert!(a.pty_of(pane).await.is_some(), "pane {pane} stays awake");
+        }
+        assert!(a.pty_of(plain).await.is_none(), "an ordinary idle agent still sleeps");
+    }
+
+    #[tokio::test]
+    async fn a_sleeping_agent_resumes_only_when_shown() {
+        let a = app().await;
+        let hour = 3_600_000;
+        let now = 100 * hour;
+        let pane = tab_with(&a, Some(AgentEventKind::TurnEnd { summary: None }), now - 5 * hour).await;
+        a.sleep_idle(now).await;
+        assert!(a.pty_of(pane).await.is_none());
+
+        // Shown: started again, its resume queued for the new terminal.
+        a.show(pane).await;
+        assert!(a.pty_of(pane).await.is_some());
+        assert!(!a.tree.lock().await.pane(pane).unwrap().asleep);
+        assert!(a.pending_resume.lock().await.contains_key(&pane), "resumes as a thawed tab does");
+
+        // A client connecting is the restart path: a shell may start, but the
+        // agent waits in `pending_resume` until the pane is shown.
+        a.sleep_idle(now).await;
+        assert!(a.pty_of(pane).await.is_some(), "a shown pane stays awake");
+        // Looked at and left: idle counts from the waking, not the old turn.
+        a.hide(pane);
+        let woke = crate::hooks::now_ms();
+        a.sleep_idle(woke + hour).await;
+        assert!(a.pty_of(pane).await.is_some(), "a glance is not undone in minutes");
+        a.sleep_idle(woke + 5 * hour).await;
+        assert!(a.pty_of(pane).await.is_none());
+        a.start_never_run([pane]).await;
+        assert!(a.pending_resume.lock().await.contains_key(&pane), "not resumed until shown");
+        a.resume_on_show(pane).await;
+        assert!(!a.pending_resume.lock().await.contains_key(&pane), "shown: typed");
+    }
+
+    #[tokio::test]
+    async fn the_owner_alone_sets_how_long_agents_idle() {
+        let a = app().await;
+        assert_eq!(a.sleep_after(), 4, "four hours unless set");
+        a.handle_host(&shared(Scope::All, true), In::SetSleepAfter { hours: 2 }).await.unwrap();
+        assert_eq!(a.sleep_after(), 4, "a link cannot change it");
+        a.handle_host(&a.owner_grant().await, In::SetSleepAfter { hours: 3 }).await.unwrap();
+        assert_eq!(a.sleep_after(), 4, "only off, 2, 4 or 8");
+        a.handle_host(&a.owner_grant().await, In::SetSleepAfter { hours: 8 }).await.unwrap();
+        assert_eq!(a.sleep_after(), 8);
+        assert_eq!(a.store.lock().await.sleep_after().unwrap(), 8, "kept");
+    }
+
     #[tokio::test]
     async fn freezing_stops_a_tab_and_taking_it_out_resumes_it() {
         let a = app().await;
@@ -2560,7 +2823,7 @@ mod tests {
 
         // A resume after a restart fires these; it is not the user working.
         a.apply_agent_event(pane, ev(AgentEventKind::SessionStart, 50)).await;
-        a.apply_agent_event(pane, ev(AgentEventKind::PreTool { detail: None }, 60)).await;
+        a.apply_agent_event(pane, ev(AgentEventKind::PreTool { detail: None, lasting: false }, 60)).await;
         assert_eq!(at(&a).await, None);
 
         // Saved, but no client is sent the tree for it: none shows it.

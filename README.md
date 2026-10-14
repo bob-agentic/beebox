@@ -162,7 +162,9 @@ someone access — your own phone included — send a **share link**, not this U
   give their memory back — and taking it out resumes the same session (Claude
   Code and Codex tabs only). Each shelf lists its tabs by when they went on it
   (Today, Yesterday, This week, Earlier); click one to take it back, or drag it
-  to another shelf.
+  to another shelf. Without shelving anything, an agent idle for 4 hours (Off,
+  2, 4 or 8 under Settings › Advanced) and on no one's screen is put to sleep the
+  same way, its tab dimmed with a moon; opening the tab wakes it.
 - **Sharing by link or QR code.** Four scopes — All / Workspace / Tab / Pane. A
   link belongs to the first device that opens it; every paired device is listed
   under Connections until you disconnect it. A scanned code lets the phone set

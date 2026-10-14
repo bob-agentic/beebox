@@ -81,7 +81,7 @@ impl AgentState {
                 self.turn_had_error = false;
                 true
             }
-            AgentEventKind::PreTool { detail } => {
+            AgentEventKind::PreTool { detail, .. } => {
                 self.view.phase = AgentPhase::Running;
                 self.view.tool_detail = detail.clone();
                 // A tool without a preceding prompt (resumed session) still
@@ -304,7 +304,7 @@ mod tests {
     }
 
     fn pre(at: i64) -> AgentEvent {
-        ev(AgentEventKind::PreTool { detail: Some("Edit src/auth.rs".into()) }, at)
+        ev(AgentEventKind::PreTool { detail: Some("Edit src/auth.rs".into()), lasting: false }, at)
     }
 
     #[test]

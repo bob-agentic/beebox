@@ -46,7 +46,7 @@ pub fn normalize_claude(body: &Value, at_ms: i64) -> Option<AgentEvent> {
         "PreToolUse" => {
             let tool = body.get("tool_name").and_then(Value::as_str).unwrap_or("tool");
             let input = body.get("tool_input").cloned().unwrap_or(Value::Null);
-            AgentEventKind::PreTool { detail: Some(tool_detail(tool, &input)) }
+            AgentEventKind::PreTool { detail: Some(tool_detail(tool, &input)), lasting: outlives_turn(tool, &input) }
         }
         "PostToolUse" => AgentEventKind::PostTool {
             failed: claude_tool_failed(body.get("tool_response").unwrap_or(&Value::Null)),
@@ -96,6 +96,18 @@ pub fn normalize_claude(body: &Value, at_ms: i64) -> Option<AgentEvent> {
     Some(AgentEvent { agent: AgentKind::Claude, kind, at_ms, session_id, session_title })
 }
 
+/// A Claude tool call that leaves work running after its turn: a scheduled
+/// wake-up, or a command or subagent sent to the background. Putting that
+/// agent to sleep would stop the work, or hold the reminder until someone
+/// next opens the tab.
+fn outlives_turn(tool: &str, input: &Value) -> bool {
+    match tool {
+        "CronCreate" | "ScheduleWakeup" => true,
+        "Bash" | "Agent" | "Task" => input.get("run_in_background").and_then(Value::as_bool) == Some(true),
+        _ => false,
+    }
+}
+
 /// A turn is `failed` when a tool reported a structured error. This never
 /// looks at exit codes of the agent process — only at what the agent itself
 /// said about its tool call.
@@ -130,7 +142,7 @@ pub fn normalize_codex(body: &Value, at_ms: i64) -> Option<AgentEvent> {
         "PreToolUse" => {
             let tool = body.get("tool_name").and_then(Value::as_str).unwrap_or("tool");
             let input = body.get("tool_input").cloned().unwrap_or(Value::Null);
-            AgentEventKind::PreTool { detail: Some(tool_detail(tool, &input)) }
+            AgentEventKind::PreTool { detail: Some(tool_detail(tool, &input)), lasting: false }
         }
         "PostToolUse" => AgentEventKind::PostTool {
             failed: claude_tool_failed(body.get("tool_response").unwrap_or(&Value::Null)),
@@ -343,7 +355,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             ev.kind,
-            AgentEventKind::PreTool { detail: Some("Edit c/d/auth.rs".into()) },
+            AgentEventKind::PreTool { detail: Some("Edit c/d/auth.rs".into()), lasting: false },
             "the last three path segments"
         );
     }
@@ -442,7 +454,7 @@ mod tests {
             1,
         )
         .unwrap();
-        assert_eq!(pre.kind, AgentEventKind::PreTool { detail: Some("Bash make".into()) });
+        assert_eq!(pre.kind, AgentEventKind::PreTool { detail: Some("Bash make".into()), lasting: false });
 
         let post = normalize_codex(
             &j(r#"{"hook_event_name":"PostToolUse","tool_response":{"is_error":true}}"#),

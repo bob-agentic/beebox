@@ -53,6 +53,8 @@ export interface PaneView {
   git: GitInfo | null;
   cols: number;
   rows: number;
+  /** Its agent was put to sleep after sitting idle; showing it wakes it. */
+  asleep: boolean;
 }
 
 /** The two shelves a tab can be filed on, mirroring `proto.rs`. */
@@ -158,6 +160,7 @@ export type Out =
   | { t: 'status'; pane: PaneId; status: AgentStatusView }
   | { t: 'session_title'; pane: PaneId; text: string }
   | { t: 'web_server'; exposed: boolean }
+  | { t: 'sleep_after'; hours: number }
   | { t: 'title'; pane: PaneId; text: string }
   | { t: 'cwd'; pane: PaneId; path: string; git: GitInfo | null }
   | { t: 'size'; pane: PaneId; cols: number; rows: number }
@@ -207,6 +210,7 @@ export type In =
   | { t: 'reorder_tabs'; ws: WsId; order: TabId[] }
   | { t: 'create_grant'; scope: GrantScope; writable: boolean }
   | { t: 'set_web_server'; exposed: boolean }
+  | { t: 'set_sleep_after'; hours: number }
   | { t: 'revoke'; token: string }
   | { t: 'revoke_all' };
 
