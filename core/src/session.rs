@@ -61,6 +61,23 @@ pub struct Pane {
     pub run: Option<String>,
 }
 
+/// A pane taken out of the tree, and the terminal it was running.
+///
+/// Handed back by the close functions so the caller ends that terminal with
+/// it in hand. Asking the tree afterwards found nothing — the pane was
+/// already gone — and every closed tab left its shell and agent running.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Closed {
+    pub pane: PaneId,
+    pub pty: Option<PtyId>,
+}
+
+impl Closed {
+    fn of(p: &Pane) -> Self {
+        Self { pane: p.id, pty: p.pty }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Tab {
     pub id: TabId,
@@ -240,7 +257,8 @@ impl SessionTree {
         id
     }
 
-    pub fn close_workspace(&mut self, ws: WsId) -> Vec<PaneId> {
+    /// Removes a workspace, and hands back what its panes were running.
+    pub fn close_workspace(&mut self, ws: WsId) -> Vec<Closed> {
         let Some(i) = self.workspaces.iter().position(|w| w.id == ws) else {
             return Vec::new();
         };
@@ -252,11 +270,7 @@ impl SessionTree {
             // leaving nothing active and making the tab bar pick for us.
             self.active_tab = next.and_then(|w| w.active_tab().or(w.tabs.first().map(|t| t.id)));
         }
-        removed
-            .tabs
-            .iter()
-            .flat_map(|t| t.panes.iter().map(|p| p.id))
-            .collect()
+        removed.tabs.iter().flat_map(|t| t.panes.iter().map(Closed::of)).collect()
     }
 
     pub fn open_tab(&mut self, ws: WsId) -> Result<TabId> {
@@ -300,7 +314,8 @@ impl SessionTree {
         Ok(tab_id)
     }
 
-    pub fn close_tab(&mut self, tab: TabId) -> Vec<PaneId> {
+    /// Removes a tab, and hands back what its panes were running.
+    pub fn close_tab(&mut self, tab: TabId) -> Vec<Closed> {
         for w in &mut self.workspaces {
             if let Some(i) = w.tabs.iter().position(|t| t.id == tab) {
                 let removed = w.tabs.remove(i);
@@ -313,7 +328,7 @@ impl SessionTree {
                 if self.active_tab == Some(tab) {
                     self.active_tab = fallback;
                 }
-                return removed.panes.iter().map(|p| p.id).collect();
+                return removed.panes.iter().map(Closed::of).collect();
             }
         }
         Vec::new()
@@ -321,9 +336,9 @@ impl SessionTree {
 
     /// Files a tab on a shelf, or brings it back to the strip.
     ///
-    /// Deliberately not a variant of `close_tab`: nothing is removed and no
-    /// pane ids are returned, because returning them is how closing tells the
-    /// caller which processes to kill. A shelved tab keeps running.
+    /// Deliberately not a variant of `close_tab`: nothing is removed and
+    /// nothing handed back, because that is how closing tells the caller which
+    /// processes to kill. A shelved tab keeps running.
     pub fn shelve_tab(&mut self, tab: TabId, shelf: Option<Shelf>) {
         for w in &mut self.workspaces {
             if w.tabs.iter().any(|t| t.id == tab) {
@@ -381,18 +396,20 @@ impl SessionTree {
         Ok(new_id)
     }
 
-    /// Removes a pane and collapses any split left holding a single child.
-    pub fn close_pane(&mut self, pane: PaneId) -> Option<TabId> {
+    /// Removes a pane and collapses any split left holding a single child,
+    /// and hands back what it was running. `None` for the last pane in its
+    /// tab — the caller closes the tab instead — or one that is not here.
+    pub fn close_pane(&mut self, pane: PaneId) -> Option<Closed> {
         let tab_id = self.tab_of(pane)?;
         let tab = self.tab_mut(tab_id)?;
 
-        // Last pane in the tab: the caller closes the tab instead.
         if tab.panes.len() == 1 {
             return None;
         }
-        tab.panes.retain(|p| p.id != pane);
+        let i = tab.panes.iter().position(|p| p.id == pane)?;
+        let removed = tab.panes.remove(i);
         remove_leaf(&mut tab.layout, pane);
-        Some(tab_id)
+        Some(Closed::of(&removed))
     }
 
     pub fn pane(&self, id: PaneId) -> Option<&Pane> {

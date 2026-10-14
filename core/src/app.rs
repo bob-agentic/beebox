@@ -894,12 +894,7 @@ impl App {
     pub(crate) async fn close_pane_inner(&self, pane: PaneId) {
         let closed = self.tree.lock().await.close_pane(pane);
         match closed {
-            Some(_) => {
-                if let Some(pty) = self.pty_of(pane).await {
-                    self.ptys.kill(pty);
-                }
-                self.images.forget_pane(pane);
-            }
+            Some(c) => self.end(&[c]),
             // Last pane in a tab: closing it means closing the tab.
             None => {
                 let tab = self.tree.lock().await.tab_of(pane);
@@ -911,15 +906,21 @@ impl App {
         self.commit().await;
     }
 
-    async fn close_tab_inner(&self, tab: TabId) {
-        let ws = self.workspace_of_tab(tab).await;
-        let panes = self.tree.lock().await.close_tab(tab);
-        for pane in panes {
-            self.images.forget_pane(pane);
-            if let Some(pty) = self.pty_of(pane).await {
+    /// Ends the terminals of panes just taken out of the tree, as closing a
+    /// terminal window does: a hangup to whatever runs in them.
+    fn end(&self, closed: &[crate::session::Closed]) {
+        for c in closed {
+            self.images.forget_pane(c.pane);
+            if let Some(pty) = c.pty {
                 self.ptys.kill(pty);
             }
         }
+    }
+
+    async fn close_tab_inner(&self, tab: TabId) {
+        let ws = self.workspace_of_tab(tab).await;
+        let closed = self.tree.lock().await.close_tab(tab);
+        self.end(&closed);
         // A workspace whose last tab closed would linger as a ghost: invisible
         // in the UI (views hide tabless workspaces) yet counted by bootstrap,
         // so the next launch opened onto apparent emptiness with dead
@@ -1372,13 +1373,8 @@ impl App {
     }
 
     async fn close_workspace_now(&self, ws: WsId) {
-        let panes = self.tree.lock().await.close_workspace(ws);
-        for pane in panes {
-            self.images.forget_pane(pane);
-            if let Some(pty) = self.pty_of(pane).await {
-                self.ptys.kill(pty);
-            }
-        }
+        let closed = self.tree.lock().await.close_workspace(ws);
+        self.end(&closed);
         self.commit().await;
     }
 
@@ -2147,6 +2143,38 @@ mod tests {
         assert_eq!(a.ptys.live_count(), 1, "taking it out starts its shell");
         assert!(a.pending_resume.lock().await.contains_key(&pane), "and resumes when shown");
         watcher.abort();
+    }
+
+    #[tokio::test]
+    async fn closing_ends_what_ran_in_the_pane_tab_or_workspace() {
+        // Each close used to ask the tree for a pane's terminal after taking
+        // the pane out of it, find nothing, and leave the shell and its agent
+        // running behind a tab that was gone.
+        let a = app().await;
+        let owner = a.owner_grant().await;
+        let ws = a.tree.lock().await.workspaces[0].id;
+        assert_eq!(a.ptys.live_count(), 1);
+
+        // A pane, split off and closed.
+        let first = first_pane_id(&*a.tree.lock().await);
+        a.handle_host(&owner, In::Split { pane: first, dir: Dir::Vertical }).await.unwrap();
+        assert_eq!(a.ptys.live_count(), 2);
+        let second = a.tree.lock().await.workspaces[0].tabs[0].panes[1].id;
+        a.handle_host(&owner, In::ClosePane { pane: second }).await.unwrap();
+        assert_eq!(a.ptys.live_count(), 1, "closing a pane ends its terminal");
+
+        // A tab.
+        a.handle_host(&owner, In::OpenTab { ws }).await.unwrap();
+        assert_eq!(a.ptys.live_count(), 2);
+        let tab = a.tree.lock().await.workspaces[0].tabs[1].id;
+        a.handle_host(&owner, In::CloseTab { tab }).await.unwrap();
+        assert_eq!(a.ptys.live_count(), 1, "closing a tab ends its terminals");
+
+        // A workspace, with two tabs.
+        a.handle_host(&owner, In::OpenTab { ws }).await.unwrap();
+        assert_eq!(a.ptys.live_count(), 2);
+        a.handle_host(&owner, In::CloseWorkspace { ws }).await.unwrap();
+        assert_eq!(a.ptys.live_count(), 0, "closing a workspace ends every terminal in it");
     }
 
     #[tokio::test]
