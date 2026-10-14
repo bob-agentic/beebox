@@ -41,7 +41,7 @@ describe('conversation search', () => {
   });
 
   it('builds a resume command that survives any folder name', () => {
-    expect(resumeCommand('/Users/bob/repo/app', 'abc-1')).toBe('cd /Users/bob/repo/app && claude -r abc-1');
+    expect(resumeCommand('/Users/me/repo/app', 'abc-1')).toBe('cd /Users/me/repo/app && claude -r abc-1');
     expect(resumeCommand("/tmp/it's here", 'x')).toBe("cd '/tmp/it'\\''s here' && claude -r x");
   });
 
