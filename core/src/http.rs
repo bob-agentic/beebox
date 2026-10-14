@@ -209,7 +209,8 @@ struct WsQuery {
     /// interface, so "no token" must mean *no access*, not *all access*.
     key: Option<String>,
     /// A secret the client made up once and keeps. The first device to
-    /// open a link binds it with this; any other device is turned away.
+    /// open a link — or the owner key — binds it with this; any other device
+    /// is turned away.
     device: Option<String>,
     /// The size this client will render at, if it already knows. A resizing
     /// client that only says so after mounting gets the replay at the old
@@ -281,7 +282,12 @@ async fn ws_upgrade(
                 (None, _) => return not_found(),
             }
         }
-        (None, Some(k)) if app.is_owner_key(k) => app.owner_grant().await,
+        // The owner key works for one browser: the first to open it.
+        (None, Some(k)) if app.is_owner_key(k) => match &q.device {
+            Some(secret) if app.claim_owner(&hash_secret(secret)) => app.owner_grant().await,
+            // Another browser's, or a client that says nothing of itself.
+            _ => return ws.on_upgrade(refuse),
+        },
         _ => return not_found(),
     };
 

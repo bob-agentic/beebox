@@ -107,6 +107,12 @@ pub struct App {
     /// to disk: without it, anything that can reach the port would have a full
     /// terminal on this machine, and the default bind is every interface.
     owner_key: String,
+    /// The browser the owner key belongs to: the first that opened it, by the
+    /// hash of the secret it keeps. The key is in a URL, and a URL travels —
+    /// a screenshot, a history entry, a paste. Bound, it is no use to anyone
+    /// else; that browser's other tabs, reloads and reconnects still work.
+    /// Like the key, it lasts one run: a restart frees it.
+    owner_device: std::sync::Mutex<Option<String>>,
     /// Each agent pane's sessions, and the images pasted into them.
     pub images: crate::images::Images,
 }
@@ -163,6 +169,7 @@ impl App {
             scrollback_bytes,
             shell: std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into()),
             owner_key: random_key(),
+            owner_device: std::sync::Mutex::new(None),
             images: Default::default(),
         })
     }
@@ -975,6 +982,19 @@ impl App {
 
     pub fn owner_key(&self) -> &str {
         &self.owner_key
+    }
+
+    /// Whether the browser with this device hash may use the owner key: the
+    /// first to ask claims it, and from then on only that one may.
+    pub fn claim_owner(&self, device_hash: &str) -> bool {
+        let mut held = self.owner_device.lock().unwrap();
+        match held.as_deref() {
+            Some(h) => h == device_hash,
+            None => {
+                *held = Some(device_hash.to_string());
+                true
+            }
+        }
     }
 
     /// Constant-time comparison: a length-or-prefix leak would let the key be

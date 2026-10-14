@@ -86,8 +86,11 @@ open:  http://localhost:17788/?key=e824e393...
 key, anyone on the same network who opens that port gets your whole machine's
 terminals — so "no token" means **zero access**, not full access.
 
-The key is regenerated on every start and never persisted: leak it, restart, and
-it's dead. To give someone access, send a **share link**, not this URL.
+The key belongs to the **first browser that opens it**: that browser's tabs,
+reloads and reconnects keep working, and the same URL opened anywhere else is a
+404 — so a screenshot or a history entry gives nothing away. It is regenerated on
+every start and never persisted; to move to another browser, restart. To give
+someone access — your own phone included — send a **share link**, not this URL.
 
 > ### On actually letting someone connect — the last mile is yours
 >

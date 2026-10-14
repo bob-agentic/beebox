@@ -34,8 +34,9 @@ export const PAIRED_MS = 5000;
 
 const EMPTY_TREE: TreeView = { workspaces: [], active_ws: null, active_tab: null };
 
-/** This browser's lasting identity for share links, made on first use. Lose
-    it (cleared site data) and the links it held have to be shared again. */
+/** This browser's lasting identity for share links and the owner key, made on
+    first use. Lose it (cleared site data) and the links it held have to be
+    shared again — and the owner key waits for a restart. */
 function deviceSecret(): string {
   const KEY = 'beebox.device';
   let secret = localStorage.getItem(KEY);
@@ -129,12 +130,12 @@ class Store {
     // daemon listens on every interface by default.
     const m = location.pathname.match(/^\/[awtp]\/(.+)$/);
     const key = (window as any).__BEEBOX_KEY__ as string | undefined;
-    // A share link belongs to the first device that opens it; this browser
-    // proves it is that device with a secret it keeps for good.
+    // A share link, and the owner key too, belongs to the first device that
+    // opens it; this browser proves it is that device with a secret it keeps.
     const q = m
       ? `?token=${encodeURIComponent(m[1])}&device=${deviceSecret()}`
       : key
-        ? `?key=${encodeURIComponent(key)}`
+        ? `?key=${encodeURIComponent(key)}&device=${deviceSecret()}`
         : '';
     // Sizing, for a screen the terminal was not laid out for. A phone shown a
     // 175-column terminal on a 44-column screen gets text overlapping itself —

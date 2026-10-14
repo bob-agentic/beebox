@@ -61,3 +61,17 @@ async fn revoking_a_link_closes_it_for_good() {
     assert_eq!(phone.try_recv().ok(), Some(Some(CloseReason::Revoked)));
     assert!(app.store.lock().await.grant("t").unwrap().is_none());
 }
+
+#[tokio::test]
+async fn the_owner_key_belongs_to_the_first_browser_that_opens_it() {
+    // The key travels in a URL; once a browser has it, the URL is no use to
+    // anyone else. That browser comes back as often as it likes.
+    let app = App::new(Store::in_memory().unwrap(), 100);
+    assert!(app.claim_owner("browser-a"), "the first claims it");
+    assert!(app.claim_owner("browser-a"), "and keeps it: reloads, other tabs, reconnects");
+    assert!(!app.claim_owner("browser-b"), "another browser is turned away");
+
+    // A restart is a new key and a free claim.
+    let next = App::new(Store::in_memory().unwrap(), 100);
+    assert!(next.claim_owner("browser-b"));
+}

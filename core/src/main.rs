@@ -108,7 +108,7 @@ async fn main() -> Result<()> {
 
     // The key is what separates "reachable" from "authorised". Printing it in
     // the URL is the whole handshake: whoever can read this terminal is the
-    // owner, and nobody else gets in.
+    // owner, and the first browser to open it keeps it.
     let key = app.owner_key().to_string();
     tracing::info!("listening on {}", args.listen);
     tracing::info!("");
@@ -117,7 +117,8 @@ async fn main() -> Result<()> {
         tracing::info!("         {addr}/?key={key}");
     }
     tracing::info!("");
-    tracing::info!("  the key grants full access — share links instead of this URL");
+    tracing::info!("  the key grants full access, to the first browser that opens it —");
+    tracing::info!("  share links for anyone, or anything, else");
 
     axum::serve(
         listener,
