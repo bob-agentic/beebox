@@ -355,7 +355,7 @@ pub enum Out {
         data: Vec<u8>,
     },
     /// Answer to `In::Search`: the conversations with any of the words,
-    /// newest hit first. Empty for anyone but the owner.
+    /// newest hit first. Empty for anyone who may not search.
     SearchResult {
         req: u32,
         took_ms: u32,
@@ -431,15 +431,16 @@ pub enum In {
     },
 
     /// Words to look for in past Claude conversations — under one
-    /// workspace's folders, or every open workspace's when `ws` is `None`. Owner only, and
-    /// answered with `SearchResult` under `req` either way.
+    /// workspace's folders, or every open workspace's when `ws` is `None`.
+    /// For who may search (`Grant::may_search`); answered with `SearchResult`
+    /// under `req` either way.
     Search {
         q: String,
         ws: Option<WsId>,
         req: u32,
     },
-    /// One conversation, whole, for reading. Owner only; answered with
-    /// `Conversation` under `req`.
+    /// One conversation, whole, for reading. For who may search; answered
+    /// with `Conversation` under `req` either way.
     Conversation {
         session: String,
         req: u32,
@@ -447,7 +448,8 @@ pub enum In {
 
     // ---- owner only; rejected otherwise ----
     /// Brings a past conversation to the front: its tab if one holds it, out
-    /// of a shelf if need be, or a new tab resuming it.
+    /// of a shelf if need be, or a new tab resuming it. Also for a link that
+    /// may search, as `OpenTab` is for one that may open a tab.
     OpenConversation {
         session: String,
     },

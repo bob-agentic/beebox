@@ -199,7 +199,13 @@
     // Opening a tab is the one thing a share may do, and only a writable
     // whole-machine one. The server enforces this too; this only keeps the
     // shortcut from looking broken.
-    if (cmd === 'new_tab' ? !store.caps.may_open_tab : !store.caps.host) return;
+    const allowed =
+      cmd === 'new_tab'
+        ? store.caps.may_open_tab
+        : cmd === 'search_conversations'
+          ? store.caps.may_open_tab
+          : store.caps.host;
+    if (!allowed) return;
     COMMANDS[cmd]?.();
   }
 
@@ -334,16 +340,19 @@
   <div class="slot-hint">+ plugins</div>
 
   <div class="spacer"></div>
-  <!-- Owner-key holders only, as Share: transcripts are the machine's. A
-       phone pairs through a link, so it is never the host and never sees it. -->
-  {#if store.caps.host}
+  <!-- Searching past conversations needs the whole machine, writable: the
+       owner, and a link like the owner's own phone, which has a shell on the
+       machine and could read the transcripts anyway. Not Share's line — that
+       stays the owner's alone. -->
+  {#if store.caps.may_open_tab}
     <button
       class="tb-btn"
+      class:command={store.sizing}
       title={withChord('Search conversations', '⇧⌘F', 'Ctrl+Shift+F')}
       aria-label="Search conversations"
       onclick={() => (dialog = 'search')}
     >
-      <Icon name="search" size={13} />
+      <Icon name="search" size={store.sizing ? 15 : 13} />
     </button>
   {/if}
   {#if store.caps.host}

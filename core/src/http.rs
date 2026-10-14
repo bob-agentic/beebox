@@ -585,10 +585,10 @@ async fn serve(
                         });
                         continue;
                     }
-                    // Off the loop too, and the owner's alone: transcripts
-                    // hold everything said in every project, tool output and
-                    // all, which no link was ever meant to show. Anyone else
-                    // gets an empty answer, so a request never hangs.
+                    // Off the loop too, and only for who may search
+                    // (`Grant::may_search`): transcripts hold everything said
+                    // in every project, tool output and all. Anyone else gets
+                    // an empty answer, so a request never hangs.
                     In::Search { q, ws, req } => {
                         let (app, tx, grant) = (app.clone(), tx.clone(), grant.clone());
                         tokio::spawn(async move {

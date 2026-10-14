@@ -502,20 +502,21 @@ impl App {
         (took_ms, sessions)
     }
 
-    /// `search_conversations` for a connection: the owner's alone. Anyone
-    /// else gets an empty answer rather than none, so a request never hangs.
+    /// `search_conversations` for a connection that may search
+    /// ([`Grant::may_search`]). Anyone else gets an empty answer rather than
+    /// none, so a request never hangs.
     pub async fn search_for(&self, grant: &Grant, q: &str, ws: Option<WsId>) -> (u32, Vec<SearchSession>) {
-        if !grant.host {
+        if !grant.may_search() {
             return (0, Vec::new());
         }
         let q: String = q.chars().take(512).collect();
         self.search_conversations(&q, ws).await
     }
 
-    /// One whole conversation for a connection; empty for anyone but the
-    /// owner, and when there is no such transcript.
+    /// One whole conversation for a connection; empty for anyone but those
+    /// who may search, and when there is no such transcript.
     pub async fn conversation_for(&self, grant: &Grant, session: String) -> Vec<crate::search::ConvMsg> {
-        if !grant.host {
+        if !grant.may_search() {
             return Vec::new();
         }
         tokio::task::spawn_blocking(move || crate::search::conversation(&session))
@@ -680,6 +681,7 @@ impl App {
         // a link lets someone type into terminals someone else owns.
         let allowed = grant.host
             || (matches!(msg, In::OpenTab { .. }) && grant.may_open_tab())
+            || (matches!(msg, In::OpenConversation { .. }) && grant.may_search())
             || (matches!(msg, In::Activate { .. }) && grant.may_navigate());
         if !allowed {
             // Not an error worth telling the client about in detail — a
@@ -1472,18 +1474,16 @@ impl App {
             .any(|g| visible_panes(&g.scope, &tree).contains(&pane))
     }
 
-    /// Whether a narrower link — read-only ones too — shows this pane.
-    /// Transcripts hold every project's conversations and tool output; a
-    /// command printing them here would print them to that viewer as well,
-    /// past the workspace or tab the link was meant to stop at. A
-    /// whole-machine link already sees every terminal, and is how the owner's
-    /// own phone pairs: refusing for it would refuse everywhere.
+    /// Whether a link that may not search can see this pane. Transcripts hold
+    /// every project's conversations and tool output; a command printing them
+    /// here prints them to every viewer too — so only where every viewer is
+    /// one who could search for themselves ([`Grant::may_search`]).
     async fn pane_watched(&self, pane: PaneId) -> bool {
         let grants = self.store.lock().await.grants().unwrap_or_default();
         let tree = self.tree.lock().await;
         grants
             .iter()
-            .filter(|g| g.scope != Scope::All)
+            .filter(|g| !g.may_search())
             .any(|g| visible_panes(&g.scope, &tree).contains(&pane))
     }
 
@@ -2167,12 +2167,16 @@ mod tests {
         assert_eq!(t.workspaces[0].tabs.len(), 2, "no new tab for a conversation already open");
         drop(t);
 
-        // Not the owner: nothing moves.
-        let link = shared(Scope::All, true);
-        a.handle_host(&link, In::ShelveTab { tab, shelf: Some(Shelf::Later) }).await.unwrap();
+        // A link that may not search: nothing moves.
         a.handle_host(&owner, In::ShelveTab { tab, shelf: Some(Shelf::Later) }).await.unwrap();
-        a.handle_host(&link, In::OpenConversation { session }).await.unwrap();
-        assert_eq!(a.tree.lock().await.tab(tab).unwrap().shelf, Some(Shelf::Later));
+        let ws = a.tree.lock().await.workspaces[0].id;
+        for link in [shared(Scope::All, false), shared(Scope::Workspace(ws), true)] {
+            a.handle_host(&link, In::OpenConversation { session: session.clone() }).await.unwrap();
+            assert_eq!(a.tree.lock().await.tab(tab).unwrap().shelf, Some(Shelf::Later), "{:?}", link.scope);
+        }
+        // One that may — the owner's own phone — brings it back as the owner does.
+        a.handle_host(&shared(Scope::All, true), In::OpenConversation { session }).await.unwrap();
+        assert_eq!(a.tree.lock().await.tab(tab).unwrap().shelf, None);
     }
 
     #[tokio::test]
@@ -3025,13 +3029,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_whole_machine_link_does_not_block_reading() {
-        // How the owner's own phone pairs: it sees every terminal already.
+    async fn only_a_writable_whole_machine_link_leaves_reading_alone() {
         let a = app().await;
         let me = first_pane_id(&*a.tree.lock().await);
-        let phone = Grant { token: "ph".into(), scope: Scope::All, writable: false, host: false };
+        // The owner's own phone: a shell on the machine already.
+        let phone = Grant { token: "ph".into(), scope: Scope::All, writable: true, host: false };
         a.store.lock().await.put_grant(&phone).unwrap();
         assert!(a.cli(me, CliReq::Search { q: "x".into(), all: false }).await.is_ok());
+        // A viewer of the whole machine who cannot type could not have read
+        // these files; the output here would show them all the same.
+        let viewer = Grant { token: "vw".into(), scope: Scope::All, writable: false, host: false };
+        a.store.lock().await.put_grant(&viewer).unwrap();
+        assert!(matches!(a.cli(me, CliReq::Search { q: "x".into(), all: false }).await, Err(CliError::Watched)));
     }
 
     #[tokio::test]
@@ -3047,16 +3056,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn only_the_owner_reads_past_conversations_over_the_socket() {
+    async fn only_who_may_search_reads_past_conversations_over_the_socket() {
         let a = app().await;
-        let owner = a.owner_grant().await;
-        // Even a writable link to the whole machine is not the owner.
-        let link = Grant { token: "aw".into(), scope: Scope::All, writable: true, host: false };
-        let (took, found) = a.search_for(&link, "tooltip", None).await;
-        assert_eq!((took, found.len()), (0, 0));
-        assert!(a.conversation_for(&link, "0c8f6c3e-5b1a-4d2e-9f7a-1b2c3d4e5f60".into()).await.is_empty());
-        // The owner's request is run; what it finds depends on this machine.
-        let _ = a.search_for(&owner, "zz-no-such-word-zz", None).await;
+        let link = |token: &str, scope, writable| Grant { token: token.into(), scope, writable, host: false };
+        let ws = a.tree.lock().await.workspaces[0].id;
+        for g in [link("ar", Scope::All, false), link("ww", Scope::Workspace(ws), true)] {
+            let (took, found) = a.search_for(&g, "tooltip", None).await;
+            assert_eq!((took, found.len()), (0, 0), "{:?}", g.scope);
+            assert!(a.conversation_for(&g, "0c8f6c3e-5b1a-4d2e-9f7a-1b2c3d4e5f60".into()).await.is_empty());
+        }
+        // The owner's and a writable whole-machine link's requests are run;
+        // what they find depends on this machine.
+        let _ = a.search_for(&a.owner_grant().await, "zz-no-such-word-zz", None).await;
+        let _ = a.search_for(&link("aw", Scope::All, true), "zz-no-such-word-zz", None).await;
     }
 
     #[tokio::test]

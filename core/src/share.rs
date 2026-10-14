@@ -79,6 +79,19 @@ impl Grant {
         self.writable && self.scope == Scope::All
     }
 
+    /// Searching and reading past Claude conversations.
+    ///
+    /// The whole machine, writable — the owner, and a link like the owner's
+    /// own phone. That much is a shell on the machine already, from which
+    /// `grep ~/.claude/projects` reads every transcript anyway; refusing the
+    /// search would guard nothing. A read-only or narrower link cannot read
+    /// files, and transcripts hold every project's conversations and tool
+    /// output: it gets none of this. Not the same line as sharing, which
+    /// stays the owner's alone ([`Grant::host`]).
+    pub fn may_search(&self) -> bool {
+        self.writable && self.scope == Scope::All
+    }
+
     /// Moving the shared view — which workspace and tab are active.
     ///
     /// Whoever may open a tab may also switch between them, and both move the
@@ -229,6 +242,17 @@ mod tests {
                 !link(scope, true).may_open_tab(),
                 "a {scope:?} share cannot open a tab: it would land out of sight",
             );
+        }
+
+        // Searching past conversations: the owner and a writable
+        // whole-machine link, which has a shell on the machine anyway.
+        assert!(Grant { host: true, ..link(Scope::All, true) }.may_search());
+        assert!(link(Scope::All, true).may_search());
+        assert!(!link(Scope::All, false).may_search(), "read-only cannot read files, so cannot search");
+        for scope in [Scope::Workspace(1), Scope::Tab(1), Scope::Pane(1)] {
+            for writable in [false, true] {
+                assert!(!link(scope, writable).may_search(), "{scope:?} writable={writable}");
+            }
         }
     }
 

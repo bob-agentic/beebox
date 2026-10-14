@@ -314,7 +314,7 @@
         <Icon name="claude" size={13} />
         <span class="name">{s.title || s.session}</span>
         {@render badge(s)}
-        <span class="sub">{@render place(s)} · {span(s.first_ms, s.last_ms)}</span>
+        <span class="sub">{@render place(s)}<span>·</span><span>{span(s.first_ms, s.last_ms)}</span></span>
         <span class="nav">
           {#if marks.length}<span class="count" title="Hits — ↑↓ step through them">{marks.indexOf(cur ?? '') + 1} / {marks.length}</span>{/if}
           <button class="qnav" title="Previous question" aria-label="Previous question" onclick={() => question(-1)}
@@ -375,7 +375,7 @@
                   g.s,
                 )}
               </div>
-              <div class="gsub">{#if !sec.label}{@render place(g.s)} · {/if}{span(g.s.first_ms, g.s.last_ms)}</div>
+              <div class="gsub">{#if !sec.label}{@render place(g.s)}<span>·</span>{/if}<span>{span(g.s.first_ms, g.s.last_ms)}</span></div>
               {#each g.hits as h (h.key)}
                 {@const i = rows.findIndex((r) => r.h === h)}
                 <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -885,5 +885,73 @@
   }
   .primary:hover {
     filter: brightness(1.08);
+  }
+
+  /* A phone: the same dialog, fitted to about 390px. */
+  @media (max-width: 600px) {
+    .mask {
+      padding-top: 6vh;
+    }
+    .pop {
+      width: calc(100vw - 16px);
+      max-height: calc(100vh - 12vh);
+    }
+    .pop.tall {
+      height: calc(100vh - 12vh);
+    }
+    .bar {
+      padding: 10px 12px;
+      gap: 8px;
+    }
+    .seg button {
+      max-width: 96px;
+      padding: 3px 7px;
+    }
+    .hint {
+      padding-left: 35px;
+    }
+    .sheet {
+      margin: 0 4px;
+    }
+    .gsub {
+      padding-left: 26px;
+    }
+    .hit {
+      padding: 7px 6px 7px 18px;
+    }
+    /* Too narrow for the matched word to be sure of a place on one line. */
+    .snip {
+      white-space: normal;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      line-clamp: 2;
+      -webkit-box-orient: vertical;
+    }
+    .who-tag {
+      width: 22px;
+    }
+    .rdh {
+      flex-wrap: wrap;
+      row-gap: 2px;
+      padding: 0 12px 8px;
+    }
+    .rdh .name {
+      flex: 1;
+    }
+    .rdh .sub {
+      display: none;
+    }
+    .chat {
+      padding: 10px 10px 24px;
+    }
+    .msg {
+      max-width: 92%;
+    }
+    .foot {
+      padding: 8px 12px;
+    }
+    .primary {
+      max-width: 60%;
+    }
   }
 </style>
