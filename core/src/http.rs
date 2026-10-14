@@ -579,6 +579,26 @@ async fn serve(
                         });
                         continue;
                     }
+                    // Off the loop too, and the owner's alone: transcripts
+                    // hold everything said in every project, tool output and
+                    // all, which no link was ever meant to show. Anyone else
+                    // gets an empty answer, so a request never hangs.
+                    In::Search { q, ws, req } => {
+                        let (app, tx, grant) = (app.clone(), tx.clone(), grant.clone());
+                        tokio::spawn(async move {
+                            let (took_ms, sessions) = app.search_for(&grant, &q, ws).await;
+                            let _ = tx.send(Out::SearchResult { req, took_ms, sessions }).await;
+                        });
+                        continue;
+                    }
+                    In::Conversation { session, req } => {
+                        let (app, tx, grant) = (app.clone(), tx.clone(), grant.clone());
+                        tokio::spawn(async move {
+                            let msgs = app.conversation_for(&grant, session).await;
+                            let _ = tx.send(Out::Conversation { req, msgs }).await;
+                        });
+                        continue;
+                    }
                     _ => {}
                 }
                 if handle(&app, &grant, sizing, inbound, &tx).await.is_break() {
@@ -780,6 +800,12 @@ async fn cli(
             StatusCode::FORBIDDEN,
             "refused — someone can type in this terminal through a Workspace/Tab/Pane \
              link, and would not see what it opens"
+                .into(),
+        ),
+        Err(crate::app::CliError::Watched) => fail(
+            StatusCode::FORBIDDEN,
+            "refused — a share link can see this terminal, and past conversations are not \
+             for its viewers"
                 .into(),
         ),
         Err(crate::app::CliError::Bad(msg)) => fail(StatusCode::BAD_REQUEST, msg),

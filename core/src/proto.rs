@@ -354,6 +354,18 @@ pub enum Out {
         #[serde(with = "serde_bytes")]
         data: Vec<u8>,
     },
+    /// Answer to `In::Search`: the conversations with any of the words,
+    /// newest hit first. Empty for anyone but the owner.
+    SearchResult {
+        req: u32,
+        took_ms: u32,
+        sessions: Vec<SearchSession>,
+    },
+    /// Answer to `In::Conversation`. Empty when there is no such transcript.
+    Conversation {
+        req: u32,
+        msgs: Vec<crate::search::ConvMsg>,
+    },
     Closed {
         reason: CloseReason,
     },
@@ -418,7 +430,27 @@ pub enum In {
         req: u32,
     },
 
+    /// Words to look for in past Claude conversations — under one
+    /// workspace's folders, or every open workspace's when `ws` is `None`. Owner only, and
+    /// answered with `SearchResult` under `req` either way.
+    Search {
+        q: String,
+        ws: Option<WsId>,
+        req: u32,
+    },
+    /// One conversation, whole, for reading. Owner only; answered with
+    /// `Conversation` under `req`.
+    Conversation {
+        session: String,
+        req: u32,
+    },
+
     // ---- owner only; rejected otherwise ----
+    /// Brings a past conversation to the front: its tab if one holds it, out
+    /// of a shelf if need be, or a new tab resuming it.
+    OpenConversation {
+        session: String,
+    },
     Split {
         pane: PaneId,
         dir: Dir,
@@ -502,6 +534,19 @@ pub enum In {
     },
     /// Every link at once.
     RevokeAll,
+}
+
+/// One conversation in a search result, and where it lives now.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchSession {
+    #[serde(flatten)]
+    pub found: crate::search::Found,
+    /// The workspace it belongs to: the one whose tab holds it, or else the
+    /// one whose folder it ran in.
+    pub ws: Option<WsId>,
+    /// The tab running it, if any; `shelf` says where that tab is filed.
+    pub tab: Option<TabId>,
+    pub shelf: Option<Shelf>,
 }
 
 /// Wire form of a share scope. Mirrors `share::Scope` but stays in the protocol

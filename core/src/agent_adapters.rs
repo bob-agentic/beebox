@@ -98,6 +98,11 @@ const BEEBOX_CLI: &str = r#"#!/usr/bin/env python3
   beebox list [--here] [--json]    workspaces/tabs/panes, agent session ids;
                                    "self" is this terminal; --here: only its
                                    workspace
+  beebox search WORDS... [--all]   past Claude conversations with any of the
+                                   words; this workspace, --all: every open one
+  beebox conversation ID           one past Claude conversation, whole
+
+search and conversation are refused when a share link can see this terminal.
 
 Output is one JSON line. CMD is typed at the new terminal's first prompt
 (aliases work, the shell stays after). New tabs/workspaces open in the
@@ -226,6 +231,17 @@ def main(argv):
         if len(argv) != 3 or not argv[2].isdigit():
             die("usage: beebox workspace close <ID>", 2)
         out = call({"op": "workspace_close", "ws": int(argv[2])})
+    elif argv[0] == "search":
+        rest = argv[1:]
+        everywhere = "--all" in rest
+        words = [w for w in rest if w != "--all"]
+        if not words:
+            die("usage: beebox search WORDS... [--all]", 2)
+        out = call({"op": "search", "q": " ".join(words), "all": everywhere})
+    elif argv[0] == "conversation":
+        if len(argv) != 2:
+            die("usage: beebox conversation <session id>", 2)
+        out = call({"op": "conversation", "session": argv[1]})
     elif argv == ["check"]:
         out = call({"op": "check"})
         if not out.get("allowed"):
@@ -255,14 +271,15 @@ main(sys.argv[1:])
 const CODEX_CONTEXT: &str = "In BeeBox. Delegate: `beebox check` first (refused: stop, tell the user), then \
 `beebox tab new -- codex \"<brief>\"`; a worktree only if asked. Message a session: \
 `codex queue --thread <session from beebox list> --message ...`. File tabs away (freezer frees memory): \
-`beebox tab shelve`. Details: `beebox --help`.";
+`beebox tab shelve`. Past Claude conversations: `beebox search <words>`, `beebox conversation <id>`. \
+Details: `beebox --help`.";
 
 /// The Claude plugin's one skill. Loaded with `--plugin-dir` by the wrapper,
 /// so it exists only in BeeBox panes; until used it costs Claude the
 /// description line and nothing else.
 const CLAUDE_SKILL: &str = r#"---
 name: beebox
-description: Delegate tasks to new visible Claude sessions — BeeBox tabs, or git worktrees on request — and file tabs away (freezer/archive/later). Use when the user wants work handed off or run in parallel, a BeeBox tab/workspace opened, or tabs tidied up, e.g. idle ones frozen.
+description: Delegate tasks to new visible Claude sessions — BeeBox tabs, or git worktrees on request — file tabs away (freezer/archive/later), and search past Claude conversations. Use when the user wants work handed off or run in parallel, a BeeBox tab/workspace opened, tabs tidied up, or something found in an earlier conversation.
 ---
 
 1. `beebox check`. Refused: stop, tell the user, run nothing else (no git).
@@ -281,6 +298,10 @@ description: Delegate tasks to new visible Claude sessions — BeeBox tabs, or g
 5. Coordinate only via SendMessage; never read or type into other terminals.
 6. Merge (into the branch it started from), worktree removal, branch
    deletion: ask first.
+
+Past conversations: `beebox search <words…> [--all]` (any word matches;
+this workspace, --all every open one), then `beebox conversation <id>`.
+Refused when a share link can see this terminal: tell the user.
 
 Reference: `beebox --help`.
 "#;

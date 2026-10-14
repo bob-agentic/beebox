@@ -87,6 +87,34 @@ export interface WorkspaceView {
   tabs: TabView[];
 }
 
+/** Who a conversation message is from. `tool` is one line per tool call. */
+export type Who = 'user' | 'ai' | 'tool';
+
+export interface ConvMsg {
+  /** The transcript line's uuid; a hit and the same message in the whole
+      conversation share it. */
+  key: string;
+  who: Who;
+  at_ms: number;
+  text: string;
+}
+
+/** A past Claude conversation with words in it, and where it lives now. */
+export interface SearchSession {
+  session: string;
+  title: string;
+  cwd: string;
+  first_ms: number;
+  last_ms: number;
+  /** Every hit; `hits` holds the newest few, as snippets. */
+  total: number;
+  hits: ConvMsg[];
+  ws: WsId | null;
+  /** The tab running it, if any, and where that tab is filed. */
+  tab: TabId | null;
+  shelf: Shelf | null;
+}
+
 export interface TreeView {
   workspaces: WorkspaceView[];
   active_ws: WsId | null;
@@ -138,6 +166,8 @@ export type Out =
   | { t: 'grant'; url: string; hosts: string[] }
   | { t: 'pong' }
   | { t: 'image'; req: number; mime: string; data: Uint8Array }
+  | { t: 'search_result'; req: number; took_ms: number; sessions: SearchSession[] }
+  | { t: 'conversation'; req: number; msgs: ConvMsg[] }
   | { t: 'closed'; reason: CloseReason }
   | { t: 'worktree_info'; ws: WsId; path: string; branch: string; dirty: number }
   | { t: 'worktree_removed'; ws: WsId; error: string | null };
@@ -156,6 +186,9 @@ export type In =
   | { t: 'replay'; pane: PaneId }
   | { t: 'release'; pane: PaneId }
   | { t: 'image'; pane: PaneId; n: number; row: string; req: number }
+  | { t: 'search'; q: string; ws: WsId | null; req: number }
+  | { t: 'conversation'; session: string; req: number }
+  | { t: 'open_conversation'; session: string }
   | { t: 'split'; pane: PaneId; dir: Dir }
   | { t: 'set_sizes'; tab: TabId; path: number[]; sizes: number[] }
   | { t: 'close_pane'; pane: PaneId }

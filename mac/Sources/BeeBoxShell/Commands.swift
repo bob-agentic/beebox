@@ -29,6 +29,7 @@ enum Commands {
         Command(id: "close_pane", title: "Close Pane", key: "w", modifiers: [.command]),
         Command(id: "prev_tab", title: "Previous Tab", key: "[", modifiers: [.command, .shift]),
         Command(id: "next_tab", title: "Next Tab", key: "]", modifiers: [.command, .shift]),
+        Command(id: "search_conversations", title: "Search Conversations…", key: "f", modifiers: [.command, .shift]),
     ]
 
     /// Whether an event is one the menu owns. The web view uses this to decline

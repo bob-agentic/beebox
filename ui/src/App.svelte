@@ -10,13 +10,14 @@
   import ConnectionsDialog from './lib/components/ConnectionsDialog.svelte';
   import SettingsDialog from './lib/components/SettingsDialog.svelte';
   import OpenWorkspaceDialog from './lib/components/OpenWorkspaceDialog.svelte';
+  import SearchDialog from './lib/components/SearchDialog.svelte';
   import Icon from './lib/components/Icon.svelte';
   import KeyBar from './lib/components/KeyBar.svelte';
   import Countdown from './lib/components/Countdown.svelte';
   import ImageViewer from './lib/components/ImageViewer.svelte';
   import HoverCard from './lib/components/HoverCard.svelte';
 
-  let dialog = $state<'share' | 'conns' | 'settings' | 'openws' | null>(null);
+  let dialog = $state<'share' | 'conns' | 'settings' | 'openws' | 'search' | null>(null);
 
   /** A fresh install — or one whose last workspace was just closed — lands with
       nothing open. The daemon no longer guesses a folder for us, so invite the
@@ -190,6 +191,7 @@
     },
     prev_tab: () => store.cycleTab(-1),
     next_tab: () => store.cycleTab(1),
+    search_conversations: () => (dialog = 'search'),
   };
 
   function run(cmd: string) {
@@ -214,9 +216,7 @@
     if (!e.metaKey) return;
 
     // Appearance is local to this browser, so a read-only viewer gets it too.
-    // ⌘, is the platform convention; ⌘K stays as a working alias for the
-    // e2e/muscle-memory path but is no longer advertised.
-    if (e.key === ',' || e.key.toLowerCase() === 'k') {
+    if (e.key === ',') {
       e.preventDefault();
       dialog = 'settings';
       return;
@@ -261,6 +261,8 @@
         return e.shiftKey ? 'split_h' : 'split_v';
       case 'w':
         return 'close_pane';
+      case 'f':
+        return e.shiftKey ? 'search_conversations' : null;
       // ⇧⌘[ / ⇧⌘] — the same pair Chrome and Safari use for tabs. macOS
       // reports the unshifted character here, so both forms are matched.
       case '[':
@@ -322,6 +324,18 @@
   <div class="slot-hint">+ plugins</div>
 
   <div class="spacer"></div>
+  <!-- Owner-key holders only, as Share: transcripts are the machine's. A
+       phone pairs through a link, so it is never the host and never sees it. -->
+  {#if store.caps.host}
+    <button
+      class="tb-btn"
+      title="Search conversations ⇧⌘F"
+      aria-label="Search conversations"
+      onclick={() => (dialog = 'search')}
+    >
+      <Icon name="search" size={13} />
+    </button>
+  {/if}
   {#if store.caps.host}
     <button
       class="tb-btn with-icon"
@@ -541,6 +555,8 @@
   <SettingsDialog onclose={() => (dialog = null)} />
 {:else if dialog === 'openws'}
   <OpenWorkspaceDialog onclose={() => (dialog = null)} />
+{:else if dialog === 'search'}
+  <SearchDialog onclose={() => (dialog = null)} />
 {/if}
 
 <style>

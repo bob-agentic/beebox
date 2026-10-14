@@ -9,6 +9,7 @@ pub mod modes;
 pub mod proto;
 pub mod pty;
 pub mod ring;
+pub mod search;
 pub mod session;
 pub mod share;
 pub mod store;

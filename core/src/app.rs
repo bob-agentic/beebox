@@ -12,11 +12,12 @@ use anyhow::{anyhow, Result};
 use tokio::sync::{broadcast, Mutex};
 
 use crate::proto::{
-    AgentEvent, AgentStatusView, Caps, In, Out, PaneId,
-    CloseReason, Peer, PtyId, SessionId, Shelf, TabId, TreeView, WsId,
+    AgentEvent, AgentKind, AgentStatusView, Caps, In, Out, PaneId,
+    CloseReason, Peer, PtyId, SearchSession, SessionId, Shelf, TabId, TreeView, WsId,
 };
+use crate::search::Where;
 use crate::pty::{Registry, Spawn};
-use crate::session::SessionTree;
+use crate::session::{SessionTree, Tab, Workspace};
 use crate::share::{visible_panes, Grant, Scope};
 use crate::store::Store;
 
@@ -435,6 +436,151 @@ impl App {
         Ok(())
     }
 
+    /// Past Claude conversations with any of the words in `q`, under one
+    /// workspace or under every workspace open in BeeBox. A workspace covers
+    /// its own folder, the repository it belongs to, and every open worktree
+    /// of that repository — where Claude would have filed what was said about
+    /// it. Each result says where it lives now.
+    ///
+    /// "Every workspace" rather than every transcript on the machine: the
+    /// workspaces are already in memory, so narrowing costs nothing and means
+    /// fewer files read, and whatever is found has a workspace to open in.
+    pub async fn search_conversations(&self, q: &str, ws: Option<WsId>) -> (u32, Vec<SearchSession>) {
+        let words = crate::search::words(q);
+        let scope = {
+            let tree = self.tree.lock().await;
+            let picked: Vec<&Workspace> = match ws {
+                Some(ws) => tree.workspaces.iter().filter(|w| w.id == ws).collect(),
+                None => tree.workspaces.iter().collect(),
+            };
+            if picked.is_empty() {
+                return (0, Vec::new());
+            }
+            let mut roots = Vec::new();
+            for w in picked {
+                roots.push(w.path.clone());
+                if let Some(g) = &w.git {
+                    if let Some(repo) = g.common_dir.strip_suffix("/.git") {
+                        roots.push(repo.to_string());
+                    }
+                    roots.extend(
+                        tree.workspaces
+                            .iter()
+                            .filter(|o| o.git.as_ref().is_some_and(|og| og.common_dir == g.common_dir))
+                            .map(|o| o.path.clone()),
+                    );
+                }
+            }
+            roots.sort();
+            roots.dedup();
+            Where::Under(roots)
+        };
+        let started = std::time::Instant::now();
+        let found = tokio::task::spawn_blocking(move || crate::search::search(&words, &scope))
+            .await
+            .unwrap_or_default();
+        let took_ms = started.elapsed().as_millis().min(u32::MAX as u128) as u32;
+
+        let tree = self.tree.lock().await;
+        let sessions = found
+            .into_iter()
+            .map(|found| {
+                let (ws, tab, shelf) = match holder(&tree, &found.session) {
+                    Some((w, t)) => (Some(w.id), Some(t.id), t.shelf),
+                    None => (folder_owner(&tree, &found.cwd).map(|w| w.id), None, None),
+                };
+                SearchSession { found, ws, tab, shelf }
+            })
+            .collect();
+        (took_ms, sessions)
+    }
+
+    /// `search_conversations` for a connection: the owner's alone. Anyone
+    /// else gets an empty answer rather than none, so a request never hangs.
+    pub async fn search_for(&self, grant: &Grant, q: &str, ws: Option<WsId>) -> (u32, Vec<SearchSession>) {
+        if !grant.host {
+            return (0, Vec::new());
+        }
+        let q: String = q.chars().take(512).collect();
+        self.search_conversations(&q, ws).await
+    }
+
+    /// One whole conversation for a connection; empty for anyone but the
+    /// owner, and when there is no such transcript.
+    pub async fn conversation_for(&self, grant: &Grant, session: String) -> Vec<crate::search::ConvMsg> {
+        if !grant.host {
+            return Vec::new();
+        }
+        tokio::task::spawn_blocking(move || crate::search::conversation(&session))
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+    }
+
+    /// Brings a past conversation to the front. Its tab if one holds it,
+    /// taken off its shelf first; otherwise a new tab resuming it, in the
+    /// workspace whose folder it ran in — or a new workspace on that folder.
+    async fn open_conversation(&self, session: &str) -> Result<()> {
+        let Some(cmd) = crate::agent::resume_command(AgentKind::Claude, session) else {
+            return Ok(());
+        };
+        let held = {
+            let tree = self.tree.lock().await;
+            holder(&tree, session).map(|(w, t)| (w.id, t.id, t.shelf))
+        };
+        if let Some((ws, tab, shelf)) = held {
+            if shelf.is_some() {
+                self.shelve_tab(tab, None).await?;
+            }
+            let mut tree = self.tree.lock().await;
+            tree.active_ws = Some(ws);
+            tree.active_tab = Some(tab);
+            if let Some(w) = tree.workspaces.iter_mut().find(|w| w.id == ws) {
+                w.touch_tab(tab);
+            }
+            drop(tree);
+            let _ = self.changed.send(TreeChanged);
+            return Ok(());
+        }
+
+        let id = session.to_string();
+        let cwd = tokio::task::spawn_blocking(move || crate::search::session_cwd(&id))
+            .await
+            .ok()
+            .flatten()
+            .filter(|c| std::path::Path::new(c).is_dir());
+        let owner = {
+            let tree = self.tree.lock().await;
+            cwd.as_deref().and_then(|c| folder_owner(&tree, c)).map(|w| w.id)
+        };
+        match (owner, cwd) {
+            (Some(ws), cwd) => {
+                let pane = {
+                    let mut tree = self.tree.lock().await;
+                    let tab = tree.open_tab(ws)?;
+                    let pane = tree.first_pane(tab).ok_or_else(|| anyhow!("tab {tab} has no pane"))?;
+                    if let Some(p) = tree.pane_mut(pane) {
+                        if let Some(cwd) = cwd {
+                            p.cwd = cwd;
+                        }
+                        p.run = Some(cmd);
+                    }
+                    pane
+                };
+                self.ensure_running(pane).await?;
+                self.commit().await;
+            }
+            (None, Some(cwd)) => {
+                self.open_workspace_at(cwd, None, Some(cmd), true).await?;
+            }
+            // Its folder is gone and no workspace claims it: nowhere that
+            // `claude --resume` would find it.
+            (None, None) => {}
+        }
+        Ok(())
+    }
+
     /// Types a pane's waiting resume, the first time any client shows it.
     /// The session id stays stored either way, so a pane never opened before
     /// the next restart still resumes when it finally is.
@@ -668,6 +814,7 @@ impl App {
             In::CloseWorkspace { ws } => self.close_workspace_now(ws).await,
             In::Revoke { token } => self.revoke(&token).await,
             In::RevokeAll => self.revoke_all().await,
+            In::OpenConversation { session } => self.open_conversation(&session).await?,
             In::SetWebServer { exposed } => {
                 self.set_exposed(exposed).await;
             }
@@ -679,6 +826,8 @@ impl App {
             | In::Replay { .. }
             | In::Release { .. }
             | In::Image { .. }
+            | In::Search { .. }
+            | In::Conversation { .. }
             | In::CreateGrant { .. } => {}
         }
         Ok(Vec::new())
@@ -1303,6 +1452,21 @@ impl App {
             .any(|g| visible_panes(&g.scope, &tree).contains(&pane))
     }
 
+    /// Whether a narrower link — read-only ones too — shows this pane.
+    /// Transcripts hold every project's conversations and tool output; a
+    /// command printing them here would print them to that viewer as well,
+    /// past the workspace or tab the link was meant to stop at. A
+    /// whole-machine link already sees every terminal, and is how the owner's
+    /// own phone pairs: refusing for it would refuse everywhere.
+    async fn pane_watched(&self, pane: PaneId) -> bool {
+        let grants = self.store.lock().await.grants().unwrap_or_default();
+        let tree = self.tree.lock().await;
+        grants
+            .iter()
+            .filter(|g| g.scope != Scope::All)
+            .any(|g| visible_panes(&g.scope, &tree).contains(&pane))
+    }
+
     /// One `beebox` command, from the process in `pane`. Answers JSON.
     ///
     /// What it opens does not come to the front: the person at the screen is
@@ -1316,6 +1480,9 @@ impl App {
         }
         if !allowed {
             return Err(CliError::Refused);
+        }
+        if matches!(req, CliReq::Search { .. } | CliReq::Conversation { .. }) && self.pane_watched(pane).await {
+            return Err(CliError::Watched);
         }
         let dir = |path: &str| -> std::result::Result<String, CliError> {
             let p = std::path::Path::new(path);
@@ -1408,6 +1575,62 @@ impl App {
                 Ok(serde_json::json!({ "tab": tab, "shelf": shelf }))
             }
             CliReq::Check => unreachable!("answered above"),
+            CliReq::Search { q, all } => {
+                let ws = if all {
+                    None
+                } else {
+                    let tab = self.tree.lock().await.tab_of(pane);
+                    let ws = match tab {
+                        Some(t) => self.workspace_of_tab(t).await,
+                        None => None,
+                    };
+                    Some(ws.ok_or_else(|| CliError::Bad("this terminal has no workspace".into()))?)
+                };
+                let q: String = q.chars().take(512).collect();
+                let (took_ms, sessions) = self.search_conversations(&q, ws).await;
+                // Compact: a few snippets per conversation is enough to pick
+                // one; `beebox conversation` reads the rest.
+                let sessions: Vec<_> = sessions
+                    .into_iter()
+                    .map(|s| {
+                        let f = s.found;
+                        serde_json::json!({
+                            "id": f.session,
+                            "title": f.title,
+                            "cwd": f.cwd,
+                            "ws": s.ws,
+                            "tab": s.tab,
+                            "shelf": s.shelf,
+                            "first_ms": f.first_ms,
+                            "last_ms": f.last_ms,
+                            "total": f.total,
+                            "hits": f.hits.into_iter().take(CLI_HITS).map(|h| serde_json::json!({
+                                "key": h.key,
+                                "who": h.who,
+                                "at_ms": h.at_ms,
+                                "text": h.text,
+                            })).collect::<Vec<_>>(),
+                        })
+                    })
+                    .collect();
+                Ok(serde_json::json!({ "took_ms": took_ms, "sessions": sessions }))
+            }
+            CliReq::Conversation { session } => {
+                if !crate::agent::valid_session_id(&session) {
+                    return Err(CliError::Bad(format!("not a session id: {session:?}")));
+                }
+                let id = session.clone();
+                let msgs = tokio::task::spawn_blocking(move || crate::search::conversation(&id))
+                    .await
+                    .ok()
+                    .flatten()
+                    .ok_or_else(|| CliError::Bad(format!("no Claude conversation {session}")))?;
+                let msgs: Vec<_> = msgs
+                    .into_iter()
+                    .map(|m| serde_json::json!({ "who": m.who, "at_ms": m.at_ms, "text": m.text }))
+                    .collect();
+                Ok(serde_json::json!({ "session": session, "msgs": msgs }))
+            }
             CliReq::List => {
                 let tree = self.tree.lock().await;
                 let tab = tree.tab_of(pane);
@@ -1454,6 +1677,9 @@ impl App {
     }
 }
 
+/// Snippets per conversation in `beebox search` output.
+const CLI_HITS: usize = 5;
+
 /// What the `beebox` command can ask. Paths arrive absolute — the command
 /// resolves them against its own working directory before sending.
 #[derive(Debug, serde::Deserialize)]
@@ -1467,12 +1693,20 @@ pub enum CliReq {
     List,
     /// Whether the rest is allowed from this pane.
     Check,
+    /// Past Claude conversations with any of the words: under this pane's
+    /// workspace, or every open workspace with `all`.
+    Search { q: String, #[serde(default)] all: bool },
+    /// One past Claude conversation, whole.
+    Conversation { session: String },
 }
 
 #[derive(Debug)]
 pub enum CliError {
     /// A writable link narrower than the whole machine reaches the pane.
     Refused,
+    /// A read of past conversations, from a pane some link can see: what it
+    /// prints would land in front of that link's viewer.
+    Watched,
     Bad(String),
 }
 
@@ -1482,10 +1716,36 @@ impl CliError {
     }
 }
 
+/// The workspace and tab whose pane is in this Claude session.
+fn holder<'a>(tree: &'a SessionTree, session: &str) -> Option<(&'a Workspace, &'a Tab)> {
+    tree.workspaces.iter().find_map(|w| {
+        w.tabs
+            .iter()
+            .find(|t| {
+                t.panes
+                    .iter()
+                    .any(|p| p.agent == Some(AgentKind::Claude) && p.session_ref.as_deref() == Some(session))
+            })
+            .map(|t| (w, t))
+    })
+}
+
+/// The workspace on the deepest folder containing `cwd`: a worktree's own
+/// workspace rather than its repository's.
+fn folder_owner<'a>(tree: &'a SessionTree, cwd: &str) -> Option<&'a Workspace> {
+    tree.workspaces
+        .iter()
+        .filter(|w| {
+            let p = w.path.trim_end_matches('/');
+            cwd == p || cwd.strip_prefix(p).is_some_and(|rest| rest.starts_with('/'))
+        })
+        .max_by_key(|w| w.path.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::{AgentEventKind, AgentKind, Dir, Shelf};
+    use crate::proto::{AgentEventKind, Dir, Shelf};
     use crate::share::Scope;
 
     /// A ready app with one workspace open, as most tests assume. `bootstrap`
@@ -1867,6 +2127,51 @@ mod tests {
         assert_eq!(a.ptys.live_count(), 1, "taking it out starts its shell");
         assert!(a.pending_resume.lock().await.contains_key(&pane), "and resumes when shown");
         watcher.abort();
+    }
+
+    #[tokio::test]
+    async fn opening_a_conversation_brings_its_tab_back_from_a_shelf() {
+        let a = app().await;
+        let owner = a.owner_grant().await;
+        let (tab, _) = agent_tab(&a).await;
+        // Something else in front, the conversation's tab archived.
+        let ws = a.tree.lock().await.workspaces[0].id;
+        a.handle_host(&owner, In::OpenTab { ws }).await.unwrap();
+        a.handle_host(&owner, In::ShelveTab { tab, shelf: Some(Shelf::Archive) }).await.unwrap();
+
+        let session = "0c8f6c3e-5b1a-4d2e-9f7a-1b2c3d4e5f60".to_string();
+        a.handle_host(&owner, In::OpenConversation { session: session.clone() }).await.unwrap();
+        let t = a.tree.lock().await;
+        assert_eq!(t.tab(tab).unwrap().shelf, None, "off the shelf");
+        assert_eq!(t.active_tab, Some(tab), "and in front");
+        assert_eq!(t.workspaces[0].tabs.len(), 2, "no new tab for a conversation already open");
+        drop(t);
+
+        // Not the owner: nothing moves.
+        let link = shared(Scope::All, true);
+        a.handle_host(&link, In::ShelveTab { tab, shelf: Some(Shelf::Later) }).await.unwrap();
+        a.handle_host(&owner, In::ShelveTab { tab, shelf: Some(Shelf::Later) }).await.unwrap();
+        a.handle_host(&link, In::OpenConversation { session }).await.unwrap();
+        assert_eq!(a.tree.lock().await.tab(tab).unwrap().shelf, Some(Shelf::Later));
+    }
+
+    #[tokio::test]
+    async fn a_conversation_belongs_to_the_deepest_workspace_folder() {
+        let a = app().await;
+        let owner = a.owner_grant().await;
+        let dir = std::env::temp_dir().join(format!("beebox-owner-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("wt")).unwrap();
+        let (outer, inner) = (dir.to_string_lossy().into_owned(), dir.join("wt").to_string_lossy().into_owned());
+        for p in [&outer, &inner] {
+            a.handle_host(&owner, In::OpenWorkspace { path: p.clone() }).await.unwrap();
+        }
+        let t = a.tree.lock().await;
+        let name = |cwd: &str| folder_owner(&t, cwd).map(|w| w.path.clone());
+        assert_eq!(name(&format!("{inner}/src")), Some(inner.clone()));
+        assert_eq!(name(&outer), Some(outer.clone()));
+        assert_eq!(name(&format!("{outer}-old")), None, "a lookalike sibling is not inside");
+        drop(t);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -2659,6 +2964,79 @@ mod tests {
         assert_eq!(row["shelf"], "freezer", "list says where each tab is filed");
         a.cli(me, CliReq::TabShelve { tab: agent, shelf: None }).await.unwrap();
         assert_eq!(shelf_of(agent).await, None, "and strip puts it back");
+    }
+
+    #[tokio::test]
+    async fn past_conversations_are_read_only_where_no_link_can_see() {
+        let a = app().await;
+        let (me, tab) = {
+            let t = a.tree.lock().await;
+            (first_pane_id(&t), t.workspaces[0].tabs[0].id)
+        };
+        let search = || CliReq::Search { q: "zz-no-such-word-zz".into(), all: false };
+        let read = || CliReq::Conversation { session: "no-such-session-zz".into() };
+
+        // Unshared: allowed, and a missing transcript is a plain error
+        // rather than a refusal.
+        let out = a.cli(me, search()).await.unwrap();
+        assert!(out["sessions"].is_array());
+        assert!(matches!(a.cli(me, read()).await, Err(CliError::Bad(_))));
+        assert!(a.cli(me, CliReq::Search { q: "x".into(), all: true }).await.is_ok());
+
+        // A read-only link that sees this pane: the structure commands still
+        // work, the reads do not — their output would land in front of it.
+        let link = Grant { token: "tr".into(), scope: Scope::Tab(tab), writable: false, host: false };
+        a.store.lock().await.put_grant(&link).unwrap();
+        assert!(a.cli(me, CliReq::List).await.is_ok());
+        assert!(matches!(a.cli(me, search()).await, Err(CliError::Watched)));
+        assert!(matches!(a.cli(me, read()).await, Err(CliError::Watched)));
+    }
+
+    #[tokio::test]
+    async fn a_link_that_cannot_see_the_pane_does_not_block_reading() {
+        let a = app().await;
+        let me = first_pane_id(&*a.tree.lock().await);
+        // Another tab's pane, shared read-only; this one is not.
+        let ws = a.tree.lock().await.workspaces[0].id;
+        let other = a.tree.lock().await.open_tab(ws).unwrap();
+        let link = Grant { token: "o".into(), scope: Scope::Tab(other), writable: false, host: false };
+        a.store.lock().await.put_grant(&link).unwrap();
+        assert!(a.cli(me, CliReq::Search { q: "x".into(), all: false }).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_whole_machine_link_does_not_block_reading() {
+        // How the owner's own phone pairs: it sees every terminal already.
+        let a = app().await;
+        let me = first_pane_id(&*a.tree.lock().await);
+        let phone = Grant { token: "ph".into(), scope: Scope::All, writable: false, host: false };
+        a.store.lock().await.put_grant(&phone).unwrap();
+        assert!(a.cli(me, CliReq::Search { q: "x".into(), all: false }).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn conversation_ids_are_checked_before_any_file_is_looked_for() {
+        let a = app().await;
+        let me = first_pane_id(&*a.tree.lock().await);
+        for bad in ["../../etc/passwd", "a b", "", "x;rm -rf /"] {
+            match a.cli(me, CliReq::Conversation { session: bad.into() }).await {
+                Err(CliError::Bad(msg)) => assert!(msg.starts_with("not a session id"), "{bad}: {msg}"),
+                other => panic!("{bad}: {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn only_the_owner_reads_past_conversations_over_the_socket() {
+        let a = app().await;
+        let owner = a.owner_grant().await;
+        // Even a writable link to the whole machine is not the owner.
+        let link = Grant { token: "aw".into(), scope: Scope::All, writable: true, host: false };
+        let (took, found) = a.search_for(&link, "tooltip", None).await;
+        assert_eq!((took, found.len()), (0, 0));
+        assert!(a.conversation_for(&link, "0c8f6c3e-5b1a-4d2e-9f7a-1b2c3d4e5f60".into()).await.is_empty());
+        // The owner's request is run; what it finds depends on this machine.
+        let _ = a.search_for(&owner, "zz-no-such-word-zz", None).await;
     }
 
     #[tokio::test]

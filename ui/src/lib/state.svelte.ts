@@ -13,6 +13,7 @@ import { PaneTerm } from './pane-term';
 import type {
   AgentStatusView,
   Caps,
+  ConvMsg,
   Dir,
   In,
   Out,
@@ -189,6 +190,10 @@ class Store {
             this.imageReqs.delete(req);
             done(null);
           }
+          for (const [req, done] of this.searchReqs) {
+            this.searchReqs.delete(req);
+            done(null);
+          }
           for (const [ws, done] of this.worktreeDone) {
             this.worktreeDone.delete(ws);
             done('BeeBox disconnected before answering — check whether the worktree is still there.');
@@ -359,6 +364,12 @@ class Store {
       case 'worktree_removed': {
         this.worktreeDone.get(msg.ws)?.(msg.error);
         this.worktreeDone.delete(msg.ws);
+        break;
+      }
+      case 'search_result':
+      case 'conversation': {
+        this.searchReqs.get(msg.req)?.(msg);
+        this.searchReqs.delete(msg.req);
         break;
       }
       case 'image': {
@@ -730,6 +741,39 @@ class Store {
 
   closeImage() {
     this.image = null;
+  }
+
+  // ---- past conversations ----
+
+  /** What was last searched for. Only the words: the results are dropped with
+      the dialog and fetched again when it reopens, which is quick. */
+  lastSearch = '';
+  /** Settled with null when the socket drops: the old one never answers. */
+  private searchReqs = new Map<number, (msg: Extract<Out, { t: 'search_result' | 'conversation' }> | null) => void>();
+  private nextSearchReq = 1;
+
+  private ask<T extends 'search_result' | 'conversation'>(
+    send: (req: number) => In,
+  ): Promise<Extract<Out, { t: T }> | null> {
+    const req = this.nextSearchReq++;
+    this.send(send(req));
+    return new Promise((resolve) => this.searchReqs.set(req, (m) => resolve(m as Extract<Out, { t: T }> | null)));
+  }
+
+  /** Conversations with any of the words, under `ws`'s folders or every
+      open workspace's. Null if the connection dropped first. */
+  searchConversations(q: string, ws: WsId | null) {
+    return this.ask<'search_result'>((req) => ({ t: 'search', q, ws, req }));
+  }
+
+  /** One conversation, whole. Null if the connection dropped first. */
+  async conversation(session: string): Promise<ConvMsg[] | null> {
+    return (await this.ask<'conversation'>((req) => ({ t: 'conversation', session, req })))?.msgs ?? null;
+  }
+
+  /** Its tab to the front, off a shelf if need be, or a new tab resuming it. */
+  openConversation(session: string) {
+    this.send({ t: 'open_conversation', session });
   }
 
   /** ⌘↑/⌘↓ for the pane on screen, from the phone's key bar. */
