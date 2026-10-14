@@ -39,11 +39,19 @@ const EMPTY_TREE: TreeView = { workspaces: [], active_ws: null, active_tab: null
     shared again — and the owner key waits for a restart. */
 function deviceSecret(): string {
   const KEY = 'beebox.device';
-  let secret = localStorage.getItem(KEY);
+  // Storage can be blocked outright (cookies off, some private windows), and
+  // then reading it throws. One made up for this page still connects; the
+  // next load is a new device.
+  let secret: string | null = null;
+  try {
+    secret = localStorage.getItem(KEY);
+  } catch {}
   if (!secret) {
     const bytes = crypto.getRandomValues(new Uint8Array(16));
     secret = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-    localStorage.setItem(KEY, secret);
+    try {
+      localStorage.setItem(KEY, secret);
+    } catch {}
   }
   return secret;
 }
