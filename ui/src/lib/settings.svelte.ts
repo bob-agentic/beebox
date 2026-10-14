@@ -1,5 +1,7 @@
-// Appearance settings. Local to the browser, not the daemon: your phone and
-// your desktop want different sizes, and a shared setting would fight itself.
+// Settings local to this browser, not the daemon: your phone and your desk
+// want different sizes, and a shared setting would fight itself. The share
+// domain names a tunnel to this machine, but it is typed here where the
+// Share dialog is, so it lives here with the rest.
 
 const KEY = 'beebox.settings';
 
@@ -69,6 +71,11 @@ export interface Settings {
    *  full 200k is most of a gigabyte. The daemon keeps the full history
    *  regardless; this is only what the browser holds ready to scroll through. */
   scrollback: number;
+  /** A tunnel or reverse proxy domain share links should use, e.g.
+   *  `https://example.com` — a bare domain means https; write `http://` for
+   *  a plain-http tunnel. Empty lists the machine's own LAN addresses
+   *  instead — see `shareBase` in `share-links.ts`. */
+  shareHost: string;
 }
 
 /** A sensible starting point out of 600 — and the fallback if a saved theme
@@ -82,6 +89,7 @@ const DEFAULTS: Settings = {
   theme: DEFAULT_THEME.name,
   cursorBlink: true,
   scrollback: 50_000,
+  shareHost: '',
 };
 
 function load(): Settings {
@@ -136,8 +144,10 @@ class SettingsStore {
     for (const fn of this.listeners) fn();
   }
 
+  /** Appearance only: the share domain names this machine's tunnel, and a
+      repaint reset must not quietly break every link made afterwards. */
   reset() {
-    this.update({ ...DEFAULTS });
+    this.update({ ...DEFAULTS, shareHost: this.current.shareHost });
   }
 
   /** Repaints the app chrome to match the terminal theme. */
