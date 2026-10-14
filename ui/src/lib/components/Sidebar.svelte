@@ -5,6 +5,7 @@
 
 <script lang="ts">
   import { slide } from 'svelte/transition';
+  import { withChord } from '../keys';
   import { cubicOut } from 'svelte/easing';
   import { store } from '../state.svelte';
   import { sortable } from '../dragsort.svelte';
@@ -171,7 +172,7 @@
     {#if !folded}Workspaces{/if}
     <button
       class="fold"
-      title="Workspaces  ⌘B"
+      title={withChord('Workspaces', '⌘B', null)}
       aria-label={folded ? 'Show workspaces' : 'Hide workspaces'}
       onclick={ontoggle}
     >
@@ -355,7 +356,7 @@
   <!-- At the foot, where a list grows towards: the next workspace goes below
        the last one. -->
   {#if store.caps.host}
-    <button class="add" title="Open a workspace  ⌘N" aria-label="Open a workspace" onclick={onnew}>
+    <button class="add" title={withChord('Open a workspace', '⌘N', null)} aria-label="Open a workspace" onclick={onnew}>
       <Icon name="plus" size={14} />
       {#if !folded}<span>Open workspace</span>{/if}
     </button>

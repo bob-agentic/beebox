@@ -2,6 +2,7 @@
   import { fade, fly } from 'svelte/transition';
   import { cubicIn, cubicOut } from 'svelte/easing';
   import { PAIRED_MS, store } from './lib/state.svelte';
+  import { withChord, isMac, otherCommand } from './lib/keys';
   import { paneLabel, tabLabel } from './lib/labels';
   import Sidebar, { FOLD_MS } from './lib/components/Sidebar.svelte';
   import TabBar from './lib/components/TabBar.svelte';
@@ -213,6 +214,15 @@
   });
 
   function onkeydown(e: KeyboardEvent) {
+    if (!isMac) {
+      // Off a Mac only a few Ctrl+Shift chords are the app's; see keys.ts.
+      const cmd = otherCommand(e);
+      if (!cmd) return;
+      e.preventDefault();
+      if (cmd === 'settings') dialog = 'settings';
+      else if (store.caps.host || store.caps.may_open_tab) run(cmd);
+      return;
+    }
     if (!e.metaKey) return;
 
     // Appearance is local to this browser, so a read-only viewer gets it too.
@@ -314,7 +324,7 @@
     <button
       class="tb-btn command phone-fold"
       aria-label={folded ? 'Show workspaces' : 'Hide workspaces'}
-      title="Workspaces  ⌘B"
+      title={withChord('Workspaces', '⌘B', null)}
       onclick={() => setFolded(!folded)}
     >
       <Icon name="sidebar" size={15} />
@@ -329,7 +339,7 @@
   {#if store.caps.host}
     <button
       class="tb-btn"
-      title="Search conversations ⇧⌘F"
+      title={withChord('Search conversations', '⇧⌘F', 'Ctrl+Shift+F')}
       aria-label="Search conversations"
       onclick={() => (dialog = 'search')}
     >
@@ -398,7 +408,7 @@
   <button
     class="tb-btn command"
     aria-label="Settings"
-    title="Settings  ⌘,"
+    title={withChord('Settings', '⌘,', 'Ctrl+,')}
     onclick={() => (dialog = 'settings')}
   >
     <Icon name="settings" size={15} />
@@ -452,7 +462,7 @@
               <Icon name="plus" size={14} />
               Open a workspace
             </button>
-            <div class="empty-hint">or press ⌘N</div>
+            {#if isMac}<div class="empty-hint">or press ⌘N</div>{/if}
           {:else}
             <div class="empty-icon"><Icon name="folder" size={30} stroke={1.5} /></div>
             <div class="empty-title">Nothing shared yet</div>

@@ -15,6 +15,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { settings } from './settings.svelte';
+import { isMac, otherCommand } from './keys';
 import { fileLinkProvider } from './file-links';
 import { findImageMessage, imageAtPoint, imageLinkProvider } from './image-links';
 import { sentRows } from './sent-messages';
@@ -160,6 +161,10 @@ export class PaneTerm {
     // ⌘↑/⌘↓ step between the messages you sent. Taken before xterm sees the
     // key, which would otherwise type it into the agent as an escape sequence.
     term.attachCustomKeyEventHandler((e) => {
+      // Off a Mac the app's chords are Ctrl+Shift ones, which xterm would
+      // otherwise send on as plain Ctrl — Ctrl+Shift+D as an EOF that ends
+      // the shell. They are the window's to handle.
+      if (!isMac && otherCommand(e)) return false;
       const dir = e.key === 'ArrowUp' ? -1 : e.key === 'ArrowDown' ? 1 : 0;
       if (!dir || !e.metaKey || e.shiftKey || e.altKey || e.ctrlKey) return true;
       if (!wiring.agent()) return true;
