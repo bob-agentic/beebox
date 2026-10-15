@@ -56,7 +56,7 @@ pub struct Pane {
     /// after a restart is not activity. `None` until the first one.
     pub active_at: Option<i64>,
     /// A command line to type at the shell's first prompt, as if by hand — what
-    /// `beebox tab new -- <cmd>` asked for. Taken at spawn and never persisted:
+    /// `beebox tab open -- <cmd>` asked for. Taken at spawn and never persisted:
     /// after a restart the agent comes back through its own resume instead.
     pub run: Option<String>,
     /// Put to sleep after sitting idle: its terminal was ended to free

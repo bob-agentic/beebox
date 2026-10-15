@@ -132,7 +132,7 @@ someone access — your own phone included — send a **share link**, not this U
   Always on; there is nothing to switch on. Your own hooks keep running beside
   BeeBox's — Codex asks once to trust those from `~/.codex/hooks.json` in BeeBox.
 - **Agents open their own tabs.** Inside a BeeBox terminal, a `beebox` command
-  opens workspaces and tabs, starting a command in them (`beebox tab new --
+  opens workspaces and tabs, starting a command in them (`beebox tab open --
   claude --name FV-510 "…"`), so the Claude or Codex you are talking to can hand
   tasks to new sessions you can watch and type into. Claude learns of it through
   a skill BeeBox loads only in its own terminals; Codex through its session

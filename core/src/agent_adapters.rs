@@ -87,16 +87,20 @@ exit 0
 /// Structure only — open, list, close, shelve. It never reads or types into
 /// another terminal; agents talk to each other through their own channels.
 const BEEBOX_CLI: &str = r#"#!/usr/bin/env python3
-"""beebox — open and file BeeBox workspaces, tabs and panes from inside a BeeBox terminal.
+"""beebox — open, close and file BeeBox workspaces, tabs and panes from inside a BeeBox terminal.
 
   beebox check                     may this terminal use the rest? (exit 0/1)
   beebox workspace open PATH [--name N] [-- CMD...]
-  beebox tab new [--ws ID] [--name N] [--cwd DIR] [-- CMD...]
+  beebox tab open [--ws ID] [--name N] [--cwd DIR] [-- CMD...]
                                    (default ws: this terminal's)
-  beebox pane split [--pane ID] [--dir right|down] [--cwd DIR] [-- CMD...]
-                                   new pane beside ID (default: this one);
+  beebox pane open [--pane ID] [--dir right|down] [--cwd DIR] [-- CMD...]
+                                   split beside ID (default: this one);
                                    splits nest at most 2 deep
-  beebox workspace close ID        ends its processes; deletes nothing
+  beebox workspace|tab|pane close ID
+                                   ends its processes; deletes nothing. Not
+                                   the one this terminal is in. A tab's last
+                                   pane takes the tab, a workspace's last tab
+                                   the workspace
   beebox tab shelve ID SHELF       SHELF: freezer | archive | later | strip
   beebox list [--here] [--json]    workspaces/tabs/panes, agent session ids;
                                    "self" is this terminal; --here: only its
@@ -114,8 +118,8 @@ closes its workspace.
 
 Delegating:
   1. beebox check. Refused: stop, tell the user, run nothing (no git).
-  2. Default: beebox tab new --name N -- claude --name N "BRIEF"
-     (Codex: -- codex "BRIEF").
+  2. Default: beebox tab open --name N -- claude --name N "BRIEF"
+     (Codex: -- codex "BRIEF"). Done and reported back: close its tab.
   3. Worktree only if the user asks, only in a git repo (never git init):
      git worktree add MAIN.worktrees/BRANCH -b BRANCH
      (MAIN = first line of `git worktree list`), copy .env etc., then
@@ -216,23 +220,23 @@ def main(argv):
         if len(rest) != 1:
             die("usage: beebox workspace open <path> [--name NAME] [-- CMD...]", 2)
         out = call({"op": "workspace_open", "path": absdir(rest[0]), "name": name, "run": cmd})
-    elif argv[:2] == ["tab", "new"]:
+    elif argv[:2] == ["tab", "open"]:
         rest = argv[2:]
         ws, name, cwd = take(rest, "--ws"), take(rest, "--name"), take(rest, "--cwd")
         if rest:
-            die("usage: beebox tab new [--ws ID] [--name TITLE] [--cwd DIR] [-- CMD...]", 2)
+            die("usage: beebox tab open [--ws ID] [--name TITLE] [--cwd DIR] [-- CMD...]", 2)
         if ws is not None and not ws.isdigit():
             die(f"--ws takes a workspace id, got {ws!r}", 2)
-        out = call({"op": "tab_new", "ws": int(ws) if ws else None, "name": name,
+        out = call({"op": "tab_open", "ws": int(ws) if ws else None, "name": name,
                     "cwd": absdir(cwd) if cwd else None, "run": cmd})
-    elif argv[:2] == ["pane", "split"]:
+    elif argv[:2] == ["pane", "open"]:
         rest = argv[2:]
         pane, way, cwd = take(rest, "--pane"), take(rest, "--dir") or "right", take(rest, "--cwd")
         if rest or way not in ("right", "down"):
-            die("usage: beebox pane split [--pane ID] [--dir right|down] [--cwd DIR] [-- CMD...]", 2)
+            die("usage: beebox pane open [--pane ID] [--dir right|down] [--cwd DIR] [-- CMD...]", 2)
         if pane is not None and not pane.isdigit():
             die(f"--pane takes a pane id, got {pane!r}", 2)
-        out = call({"op": "pane_split", "pane": int(pane) if pane else None,
+        out = call({"op": "pane_open", "pane": int(pane) if pane else None,
                     "dir": "vertical" if way == "right" else "horizontal",
                     "cwd": absdir(cwd) if cwd else None, "run": cmd})
     elif argv[:2] == ["tab", "shelve"]:
@@ -240,10 +244,11 @@ def main(argv):
             die("usage: beebox tab shelve <ID> freezer|archive|later|strip", 2)
         out = call({"op": "tab_shelve", "tab": int(argv[2]),
                     "shelf": None if argv[3] == "strip" else argv[3]})
-    elif argv[:2] == ["workspace", "close"]:
+    elif argv[1:2] == ["close"] and argv[0] in ("workspace", "tab", "pane"):
         if len(argv) != 3 or not argv[2].isdigit():
-            die("usage: beebox workspace close <ID>", 2)
-        out = call({"op": "workspace_close", "ws": int(argv[2])})
+            die(f"usage: beebox {argv[0]} close <ID>", 2)
+        key = {"workspace": "ws"}.get(argv[0], argv[0])
+        out = call({"op": f"{argv[0]}_close", key: int(argv[2])})
     elif argv[0] == "search":
         rest = argv[1:]
         everywhere = "--all" in rest
@@ -282,10 +287,10 @@ main(sys.argv[1:])
 /// the hook command stays exactly as it was and only the sender's output
 /// changes.
 const CODEX_CONTEXT: &str = "In BeeBox. Delegate: `beebox check` first (refused: stop, tell the user), then \
-`beebox tab new -- codex \"<brief>\"`; a worktree only if asked. Message a session: \
+`beebox tab open -- codex \"<brief>\"`; a worktree only if asked; done: `beebox tab close <id>`. Message a session: \
 `codex queue --thread <session from beebox list> --message ...`. File tabs away (freezer frees memory): \
 `beebox tab shelve`. Side by side (only if asked, or for a dev server/watcher): \
-`beebox pane split -- <cmd>`. Past Claude conversations: `beebox search <words>`, `beebox conversation <id>`. \
+`beebox pane open -- <cmd>`. Past Claude conversations: `beebox search <words>`, `beebox conversation <id>`. \
 Details: `beebox --help`.";
 
 /// The Claude plugin's one skill. Loaded with `--plugin-dir` by the wrapper,
@@ -299,7 +304,7 @@ description: Delegate tasks to new visible Claude sessions — BeeBox tabs, or g
 1. `beebox check`. Refused: stop, tell the user, run nothing else (no git).
 2. Your name: ListAgents → "This session is <name>".
 3. Per task:
-   - Default: `beebox tab new --name <n> -- claude --name <n> "<brief>"`.
+   - Default: `beebox tab open --name <n> -- claude --name <n> "<brief>"`.
    - Worktree only if asked, only in a git repo (never `git init`):
      `git worktree add <main>.worktrees/<branch> -b <branch>` (<main> = first
      line of `git worktree list`, or the project's convention); copy .env etc.,
@@ -307,11 +312,12 @@ description: Delegate tasks to new visible Claude sessions — BeeBox tabs, or g
      `beebox workspace open <path> -- claude --name <branch> "<brief>"`.
      It branches from HEAD; uncommitted changes stay behind — tell the user.
    - Tabs in one workspace editing the same files: mention it once.
-   - Side by side only if asked: `beebox pane split [--dir down] -- <cmd>`;
+   - Side by side only if asked: `beebox pane open [--dir down] -- <cmd>`;
      also for a dev server or test watcher next to you.
 4. Brief: goal, acceptance criteria, key files; end with "Questions or done →
    SendMessage <your name>, conclusions only."
 5. Coordinate only via SendMessage; never read or type into other terminals.
+   Done and reported back: `beebox tab close <id>` (or `pane close`).
 6. Merge (into the branch it started from), worktree removal, branch
    deletion: ask first.
 
@@ -421,7 +427,7 @@ fi
 if [ -n "$BEEBOX_AGENT_HOOKS_DIR" ] && [ -d "$BEEBOX_AGENT_HOOKS_DIR/bin" ]; then
   path+=("$BEEBOX_AGENT_HOOKS_DIR/bin")
 fi
-# A command this pane was opened to run (`beebox tab new -- <cmd>`): typed at
+# A command this pane was opened to run (`beebox tab open -- <cmd>`): typed at
 # the first prompt as if by hand, so it goes through aliases and the wrappers
 # above, lands in history, and leaves the shell behind when it exits. Read and
 # unset at once, so a shell started inside this one does not run it again.

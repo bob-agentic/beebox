@@ -1605,6 +1605,15 @@ impl App {
             .any(|g| visible_panes(&g.scope, &tree).contains(&pane))
     }
 
+    /// The workspace and tab of a terminal asking through the CLI.
+    async fn cli_own(&self, pane: PaneId) -> (Option<WsId>, Option<TabId>) {
+        let tab = self.tree.lock().await.tab_of(pane);
+        match tab {
+            Some(t) => (self.workspace_of_tab(t).await, Some(t)),
+            None => (None, None),
+        }
+    }
+
     /// One `beebox` command, from the process in `pane`. Answers JSON.
     ///
     /// What it opens does not come to the front: the person at the screen is
@@ -1638,17 +1647,14 @@ impl App {
                 let worktree = self.workspace_git(ws).await.is_some_and(|(_, g)| g.linked);
                 Ok(serde_json::json!({ "ws": ws, "tab": tab, "pane": new, "path": path, "worktree": worktree }))
             }
-            CliReq::TabNew { ws, name, cwd, run } => {
+            CliReq::TabOpen { ws, name, cwd, run } => {
                 let ws = match ws {
                     Some(ws) => ws,
-                    None => {
-                        let tab = self.tree.lock().await.tab_of(pane);
-                        match tab {
-                            Some(t) => self.workspace_of_tab(t).await,
-                            None => None,
-                        }
-                        .ok_or_else(|| CliError::Bad("this terminal has no workspace".into()))?
-                    }
+                    None => self
+                        .cli_own(pane)
+                        .await
+                        .0
+                        .ok_or_else(|| CliError::Bad("this terminal has no workspace".into()))?,
                 };
                 let cwd = cwd.as_deref().map(dir).transpose()?;
                 let (tab, new) = {
@@ -1682,7 +1688,7 @@ impl App {
                 self.commit().await;
                 Ok(serde_json::json!({ "ws": ws, "tab": tab, "pane": new }))
             }
-            CliReq::PaneSplit { pane: target, dir: way, cwd, run } => {
+            CliReq::PaneOpen { pane: target, dir: way, cwd, run } => {
                 let target = target.unwrap_or(pane);
                 let cwd = cwd.as_deref().map(dir).transpose()?;
                 let (ws, tab, new) = {
@@ -1694,7 +1700,7 @@ impl App {
                         return Err(CliError::Bad(format!("tab {tab} is in the freezer; take it out first")));
                     }
                     let new = tree.split(target, way).map_err(|e| {
-                        CliError::Bad(format!("{e} (at most {} deep; use `beebox tab new`)", crate::session::MAX_SPLIT_DEPTH))
+                        CliError::Bad(format!("{e} (at most {} deep; use `beebox tab open`)", crate::session::MAX_SPLIT_DEPTH))
                     })?;
                     if let Some(p) = tree.pane_mut(new) {
                         if let Some(cwd) = cwd {
@@ -1713,8 +1719,32 @@ impl App {
                 if !self.tree.lock().await.workspaces.iter().any(|w| w.id == ws) {
                     return Err(CliError::Bad(format!("no workspace {ws}")));
                 }
+                if self.cli_own(pane).await.0 == Some(ws) {
+                    return Err(CliError::Bad(OWN.replace("{}", "workspace")));
+                }
                 self.close_workspace_now(ws).await;
                 Ok(serde_json::json!({ "ws": ws, "closed": true }))
+            }
+            CliReq::TabClose { tab } => {
+                if self.tree.lock().await.tab(tab).is_none() {
+                    return Err(CliError::Bad(format!("no tab {tab}")));
+                }
+                if self.cli_own(pane).await.1 == Some(tab) {
+                    return Err(CliError::Bad(OWN.replace("{}", "tab")));
+                }
+                self.close_tab_inner(tab).await;
+                self.commit().await;
+                Ok(serde_json::json!({ "tab": tab, "closed": true }))
+            }
+            CliReq::PaneClose { pane: target } => {
+                if self.tree.lock().await.tab_of(target).is_none() {
+                    return Err(CliError::Bad(format!("no pane {target}")));
+                }
+                if target == pane {
+                    return Err(CliError::Bad(OWN.replace("{}", "pane")));
+                }
+                self.close_pane_inner(target).await;
+                Ok(serde_json::json!({ "pane": target, "closed": true }))
             }
             CliReq::TabShelve { tab, shelf } => {
                 {
@@ -1842,6 +1872,9 @@ impl App {
     }
 }
 
+/// Closing what holds the asking terminal ends it before it hears back.
+const OWN: &str = "that is this terminal's own {}; closing it would end this session";
+
 /// Snippets per conversation in `beebox search` output.
 const CLI_HITS: usize = 5;
 
@@ -1851,10 +1884,12 @@ const CLI_HITS: usize = 5;
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum CliReq {
     WorkspaceOpen { path: String, name: Option<String>, run: Option<String> },
-    TabNew { ws: Option<WsId>, name: Option<String>, cwd: Option<String>, run: Option<String> },
+    TabOpen { ws: Option<WsId>, name: Option<String>, cwd: Option<String>, run: Option<String> },
     /// A new pane beside `pane`, or beside the one asking.
-    PaneSplit { pane: Option<PaneId>, dir: crate::proto::Dir, cwd: Option<String>, run: Option<String> },
+    PaneOpen { pane: Option<PaneId>, dir: crate::proto::Dir, cwd: Option<String>, run: Option<String> },
     WorkspaceClose { ws: WsId },
+    TabClose { tab: TabId },
+    PaneClose { pane: PaneId },
     /// Files a tab on a shelf, or `None` to put it back on the strip.
     TabShelve { tab: TabId, shelf: Option<Shelf> },
     List,
@@ -3242,7 +3277,7 @@ mod tests {
             (first_pane_id(&t), t.workspaces[0].id, t.workspaces[0].tabs[0].id)
         };
         let out = a
-            .cli(me, CliReq::TabNew { ws: None, name: Some(" FV-2 ".into()), cwd: None, run: None })
+            .cli(me, CliReq::TabOpen { ws: None, name: Some(" FV-2 ".into()), cwd: None, run: None })
             .await
             .unwrap();
         assert_eq!(out["ws"], ws);
@@ -3261,7 +3296,7 @@ mod tests {
             let t = a.tree.lock().await;
             (first_pane_id(&t), t.workspaces[0].tabs[0].id)
         };
-        let split = |pane, dir, cwd: Option<&str>| CliReq::PaneSplit {
+        let split = |pane, dir, cwd: Option<&str>| CliReq::PaneOpen {
             pane,
             dir,
             cwd: cwd.map(Into::into),
@@ -3278,16 +3313,45 @@ mod tests {
         }
         a.cli(me, split(Some(right), Dir::Horizontal, None)).await.unwrap();
         let deep = a.cli(me, split(Some(right), Dir::Vertical, None)).await;
-        assert!(matches!(deep, Err(CliError::Bad(m)) if m.contains("tab new")));
+        assert!(matches!(deep, Err(CliError::Bad(m)) if m.contains("tab open")));
         assert!(matches!(a.cli(me, split(Some(9999), Dir::Vertical, None)).await, Err(CliError::Bad(_))));
         assert_eq!(a.tree.lock().await.workspaces[0].tabs[0].panes.len(), 3);
 
         let (agent, frozen) = agent_tab(&a).await;
-        let new_tab = CliReq::TabNew { ws: None, name: None, cwd: None, run: None };
+        let new_tab = CliReq::TabOpen { ws: None, name: None, cwd: None, run: None };
         let other = a.cli(me, new_tab).await.unwrap()["pane"].as_u64().unwrap();
         a.cli(other, CliReq::TabShelve { tab: agent, shelf: Some(Shelf::Freezer) }).await.unwrap();
         let r = a.cli(other, split(Some(frozen), Dir::Vertical, None)).await;
         assert!(matches!(r, Err(CliError::Bad(m)) if m.contains("freezer")));
+    }
+
+    #[tokio::test]
+    async fn cli_closes_anything_but_what_holds_you() {
+        let a = app().await;
+        let (me, ws, tab) = {
+            let t = a.tree.lock().await;
+            (first_pane_id(&t), t.workspaces[0].id, t.workspaces[0].tabs[0].id)
+        };
+        let bad = |r: std::result::Result<serde_json::Value, CliError>| match r {
+            Err(CliError::Bad(m)) => m,
+            other => panic!("expected an error, got {other:?}"),
+        };
+        let open_pane = CliReq::PaneOpen { pane: None, dir: Dir::Vertical, cwd: None, run: None };
+        let beside = a.cli(me, open_pane).await.unwrap()["pane"].as_u64().unwrap();
+        let open_tab = CliReq::TabOpen { ws: None, name: None, cwd: None, run: None };
+        let other = a.cli(me, open_tab).await.unwrap()["tab"].as_u64().unwrap();
+
+        assert!(bad(a.cli(me, CliReq::PaneClose { pane: me }).await).contains("own pane"));
+        assert!(bad(a.cli(me, CliReq::TabClose { tab }).await).contains("own tab"));
+        assert!(bad(a.cli(me, CliReq::WorkspaceClose { ws }).await).contains("own workspace"));
+        assert!(bad(a.cli(me, CliReq::PaneClose { pane: 9999 }).await).contains("no pane"));
+        assert!(bad(a.cli(me, CliReq::TabClose { tab: 9999 }).await).contains("no tab"));
+
+        a.cli(me, CliReq::PaneClose { pane: beside }).await.unwrap();
+        a.cli(me, CliReq::TabClose { tab: other }).await.unwrap();
+        let t = a.tree.lock().await;
+        assert_eq!(t.workspaces[0].tabs.len(), 1);
+        assert_eq!(t.workspaces[0].tabs[0].panes.len(), 1);
     }
 
     #[tokio::test]
@@ -3306,11 +3370,11 @@ mod tests {
         let a = app().await;
         let (agent, _) = agent_tab(&a).await;
         let first = first_pane_id(&*a.tree.lock().await);
-        let tab_new = || CliReq::TabNew { ws: None, name: None, cwd: None, run: None };
+        let tab_open = || CliReq::TabOpen { ws: None, name: None, cwd: None, run: None };
         // Asking from a second tab, as an agent in another tab would.
-        let me = a.cli(first, tab_new()).await.unwrap()["pane"].as_u64().unwrap();
+        let me = a.cli(first, tab_open()).await.unwrap()["pane"].as_u64().unwrap();
         let mine = a.tree.lock().await.tab_of(me).unwrap();
-        let shell = a.cli(me, tab_new()).await.unwrap()["tab"].as_u64().unwrap();
+        let shell = a.cli(me, tab_open()).await.unwrap()["tab"].as_u64().unwrap();
         let shelf_of = |t: TabId| {
             let a = a.clone();
             async move { a.tree.lock().await.tab(t).unwrap().shelf }
