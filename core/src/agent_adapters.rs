@@ -87,12 +87,15 @@ exit 0
 /// Structure only — open, list, close, shelve. It never reads or types into
 /// another terminal; agents talk to each other through their own channels.
 const BEEBOX_CLI: &str = r#"#!/usr/bin/env python3
-"""beebox — open and file BeeBox workspaces and tabs from inside a BeeBox terminal.
+"""beebox — open and file BeeBox workspaces, tabs and panes from inside a BeeBox terminal.
 
   beebox check                     may this terminal use the rest? (exit 0/1)
   beebox workspace open PATH [--name N] [-- CMD...]
   beebox tab new [--ws ID] [--name N] [--cwd DIR] [-- CMD...]
                                    (default ws: this terminal's)
+  beebox pane split [--pane ID] [--dir right|down] [--cwd DIR] [-- CMD...]
+                                   new pane beside ID (default: this one);
+                                   splits nest at most 2 deep
   beebox workspace close ID        ends its processes; deletes nothing
   beebox tab shelve ID SHELF       SHELF: freezer | archive | later | strip
   beebox list [--here] [--json]    workspaces/tabs/panes, agent session ids;
@@ -105,8 +108,8 @@ const BEEBOX_CLI: &str = r#"#!/usr/bin/env python3
 search and conversation are refused when a share link can see this terminal.
 
 Output is one JSON line. CMD is typed at the new terminal's first prompt
-(aliases work, the shell stays after). New tabs/workspaces open in the
-background. A git worktree shows under its repository; `git worktree remove`
+(aliases work, the shell stays after). New tabs/workspaces/panes open in
+the background. A git worktree shows under its repository; `git worktree remove`
 closes its workspace.
 
 Delegating:
@@ -222,6 +225,16 @@ def main(argv):
             die(f"--ws takes a workspace id, got {ws!r}", 2)
         out = call({"op": "tab_new", "ws": int(ws) if ws else None, "name": name,
                     "cwd": absdir(cwd) if cwd else None, "run": cmd})
+    elif argv[:2] == ["pane", "split"]:
+        rest = argv[2:]
+        pane, way, cwd = take(rest, "--pane"), take(rest, "--dir") or "right", take(rest, "--cwd")
+        if rest or way not in ("right", "down"):
+            die("usage: beebox pane split [--pane ID] [--dir right|down] [--cwd DIR] [-- CMD...]", 2)
+        if pane is not None and not pane.isdigit():
+            die(f"--pane takes a pane id, got {pane!r}", 2)
+        out = call({"op": "pane_split", "pane": int(pane) if pane else None,
+                    "dir": "vertical" if way == "right" else "horizontal",
+                    "cwd": absdir(cwd) if cwd else None, "run": cmd})
     elif argv[:2] == ["tab", "shelve"]:
         if len(argv) != 4 or not argv[2].isdigit() or argv[3] not in SHELVES:
             die("usage: beebox tab shelve <ID> freezer|archive|later|strip", 2)
@@ -271,7 +284,8 @@ main(sys.argv[1:])
 const CODEX_CONTEXT: &str = "In BeeBox. Delegate: `beebox check` first (refused: stop, tell the user), then \
 `beebox tab new -- codex \"<brief>\"`; a worktree only if asked. Message a session: \
 `codex queue --thread <session from beebox list> --message ...`. File tabs away (freezer frees memory): \
-`beebox tab shelve`. Past Claude conversations: `beebox search <words>`, `beebox conversation <id>`. \
+`beebox tab shelve`. Side by side (only if asked, or for a dev server/watcher): \
+`beebox pane split -- <cmd>`. Past Claude conversations: `beebox search <words>`, `beebox conversation <id>`. \
 Details: `beebox --help`.";
 
 /// The Claude plugin's one skill. Loaded with `--plugin-dir` by the wrapper,
@@ -293,6 +307,8 @@ description: Delegate tasks to new visible Claude sessions — BeeBox tabs, or g
      `beebox workspace open <path> -- claude --name <branch> "<brief>"`.
      It branches from HEAD; uncommitted changes stay behind — tell the user.
    - Tabs in one workspace editing the same files: mention it once.
+   - Side by side only if asked: `beebox pane split [--dir down] -- <cmd>`;
+     also for a dev server or test watcher next to you.
 4. Brief: goal, acceptance criteria, key files; end with "Questions or done →
    SendMessage <your name>, conclusions only."
 5. Coordinate only via SendMessage; never read or type into other terminals.
@@ -309,7 +325,7 @@ Reference: `beebox --help`.
 const CLAUDE_PLUGIN_JSON: &str = r#"{
   "name": "beebox",
   "version": "1.0.0",
-  "description": "BeeBox terminal: open workspaces and tabs, run work in parallel"
+  "description": "BeeBox terminal: open workspaces, tabs and panes, run work in parallel"
 }
 "#;
 

@@ -1682,6 +1682,33 @@ impl App {
                 self.commit().await;
                 Ok(serde_json::json!({ "ws": ws, "tab": tab, "pane": new }))
             }
+            CliReq::PaneSplit { pane: target, dir: way, cwd, run } => {
+                let target = target.unwrap_or(pane);
+                let cwd = cwd.as_deref().map(dir).transpose()?;
+                let (ws, tab, new) = {
+                    let mut tree = self.tree.lock().await;
+                    let tab = tree.tab_of(target).ok_or_else(|| CliError::Bad(format!("no pane {target}")))?;
+                    // Its processes were ended to free memory; one started
+                    // here would run where nothing is meant to.
+                    if tree.tab(tab).is_some_and(|t| t.shelf == Some(Shelf::Freezer)) {
+                        return Err(CliError::Bad(format!("tab {tab} is in the freezer; take it out first")));
+                    }
+                    let new = tree.split(target, way).map_err(|e| {
+                        CliError::Bad(format!("{e} (at most {} deep; use `beebox tab new`)", crate::session::MAX_SPLIT_DEPTH))
+                    })?;
+                    if let Some(p) = tree.pane_mut(new) {
+                        if let Some(cwd) = cwd {
+                            p.cwd = cwd;
+                        }
+                        p.run = run;
+                    }
+                    let ws = tree.workspaces.iter().find(|w| w.tabs.iter().any(|t| t.id == tab)).map(|w| w.id);
+                    (ws, tab, new)
+                };
+                self.ensure_running(new).await.map_err(CliError::other)?;
+                self.commit().await;
+                Ok(serde_json::json!({ "ws": ws, "tab": tab, "pane": new }))
+            }
             CliReq::WorkspaceClose { ws } => {
                 if !self.tree.lock().await.workspaces.iter().any(|w| w.id == ws) {
                     return Err(CliError::Bad(format!("no workspace {ws}")));
@@ -1825,6 +1852,8 @@ const CLI_HITS: usize = 5;
 pub enum CliReq {
     WorkspaceOpen { path: String, name: Option<String>, run: Option<String> },
     TabNew { ws: Option<WsId>, name: Option<String>, cwd: Option<String>, run: Option<String> },
+    /// A new pane beside `pane`, or beside the one asking.
+    PaneSplit { pane: Option<PaneId>, dir: crate::proto::Dir, cwd: Option<String>, run: Option<String> },
     WorkspaceClose { ws: WsId },
     /// Files a tab on a shelf, or `None` to put it back on the strip.
     TabShelve { tab: TabId, shelf: Option<Shelf> },
@@ -3223,6 +3252,42 @@ mod tests {
         assert_eq!(w.tabs.len(), 2);
         assert_eq!(w.tabs[1].title, "FV-2");
         assert_eq!(w.active_tab(), Some(tab), "the tab in front heads the history");
+    }
+
+    #[tokio::test]
+    async fn cli_splits_beside_you_without_moving_you() {
+        let a = app().await;
+        let (me, tab) = {
+            let t = a.tree.lock().await;
+            (first_pane_id(&t), t.workspaces[0].tabs[0].id)
+        };
+        let split = |pane, dir, cwd: Option<&str>| CliReq::PaneSplit {
+            pane,
+            dir,
+            cwd: cwd.map(Into::into),
+            run: Some("echo hi".into()),
+        };
+        let out = a.cli(me, split(None, Dir::Vertical, Some("/tmp"))).await.unwrap();
+        assert_eq!(out["tab"], tab);
+        let right = out["pane"].as_u64().unwrap();
+        {
+            let t = a.tree.lock().await;
+            assert_eq!(t.active_tab, Some(tab));
+            let p = t.workspaces[0].tabs[0].panes.iter().find(|p| p.id == right).unwrap();
+            assert_eq!(p.cwd, "/tmp");
+        }
+        a.cli(me, split(Some(right), Dir::Horizontal, None)).await.unwrap();
+        let deep = a.cli(me, split(Some(right), Dir::Vertical, None)).await;
+        assert!(matches!(deep, Err(CliError::Bad(m)) if m.contains("tab new")));
+        assert!(matches!(a.cli(me, split(Some(9999), Dir::Vertical, None)).await, Err(CliError::Bad(_))));
+        assert_eq!(a.tree.lock().await.workspaces[0].tabs[0].panes.len(), 3);
+
+        let (agent, frozen) = agent_tab(&a).await;
+        let new_tab = CliReq::TabNew { ws: None, name: None, cwd: None, run: None };
+        let other = a.cli(me, new_tab).await.unwrap()["pane"].as_u64().unwrap();
+        a.cli(other, CliReq::TabShelve { tab: agent, shelf: Some(Shelf::Freezer) }).await.unwrap();
+        let r = a.cli(other, split(Some(frozen), Dir::Vertical, None)).await;
+        assert!(matches!(r, Err(CliError::Bad(m)) if m.contains("freezer")));
     }
 
     #[tokio::test]
