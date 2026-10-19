@@ -3,8 +3,9 @@
 // depth); the copy of its rules here only draws what a drop would do, so a
 // drop it would refuse shows red instead of doing nothing.
 //
-// A finger has to hold the head first — a tap there focuses the pane, a
-// swipe scrolls — and the head stays lit while held, so it reads as picked up.
+// A finger has to hold the head first — a tap there only focuses the pane,
+// and a quick swipe drags nothing — and the head stays lit while held, so it
+// reads as picked up.
 
 import { tick } from 'svelte';
 import { store } from './state.svelte';

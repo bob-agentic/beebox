@@ -4,7 +4,7 @@
 
 **A web terminal built for running many agent CLIs in parallel.**
 
-`v0.2.27`
+`v0.2.28`
 
 </div>
 
@@ -123,8 +123,9 @@ someone access — your own phone included — send a **share link**, not this U
 - **A real terminal.** PTY pool, raw byte passthrough, 200k lines of scrollback
   kept by the daemon, correct CJK and emoji widths, Chinese IME that works.
 - **Workspaces × tabs × splits.** A workspace is a project directory; each has
-  tabs, each tab a split tree (capped at two levels). Everything is saved and
-  restored on restart, and terminals in the background keep running.
+  tabs, each tab a split tree (capped at two levels). Drag a pane by its head
+  onto another to swap them, or onto an edge to put it on that side. Everything
+  is saved and restored on restart, and terminals in the background keep running.
 - **Agent status.** Claude Code and Codex report through hooks: a status dot per
   pane (rolled up to its tab and workspace), the tool being run, a summary when
   it finishes, automatic tab titles, and sessions resumed after a restart — each
@@ -132,7 +133,7 @@ someone access — your own phone included — send a **share link**, not this U
   Always on; there is nothing to switch on. Your own hooks keep running beside
   BeeBox's — Codex asks once to trust those from `~/.codex/hooks.json` in BeeBox.
 - **Agents open their own tabs.** Inside a BeeBox terminal, a `beebox` command
-  opens workspaces and tabs, starting a command in them (`beebox tab open --
+  opens and closes workspaces, tabs and panes, starting a command in what it opens (`beebox tab open --
   claude --name FV-510 "…"`), so the Claude or Codex you are talking to can hand
   tasks to new sessions you can watch and type into. Claude learns of it through
   a skill BeeBox loads only in its own terminals; Codex through its session
@@ -180,6 +181,8 @@ someone access — your own phone included — send a **share link**, not this U
 - **607 themes**, from Ghostty's set, with the window chrome derived from each.
 - **Phones.** A key bar for what a phone keyboard lacks (Esc, Tab, Ctrl, Alt,
   arrows), no autocorrect in the terminal, and a sidebar that gets out of the way.
+  The keyboard comes up when you tap a terminal, not whenever focus lands in one.
+  Hold a pane's head to drag it; where panes stack, ↑ ↓ on the head swap them.
   In the image viewer: pinch to zoom, swipe to step, swipe down to close.
 
 ---
@@ -221,6 +224,7 @@ someone access — your own phone included — send a **share link**, not this U
 | Hover a workspace → `×` | Close it and its terminals (asks first) |
 | A tab's `×`, or middle-click | Close tab |
 | Drag a divider | Resize the split |
+| Drag a pane's head | Onto another pane to swap, onto an edge to move it there |
 | Drag a workspace row / tab | Reorder |
 | Drag a tab onto Freezer / Archive / Later | Shelve it |
 | Drag a shelved tab | Onto another shelf, or back onto the tab strip |
