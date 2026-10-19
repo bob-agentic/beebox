@@ -200,6 +200,7 @@ export class PaneTerm {
       this.term.open(host);
       this.patchIme(this.term.element!);
       this.watchTaps(this.term.element!);
+      this.keyboardOnTapOnly();
       return;
     }
     // Moving an element loses its scroll offset, and xterm only writes the
@@ -340,12 +341,36 @@ export class PaneTerm {
     this.term.dispose();
   }
 
+  // On a touch screen the soft keyboard comes up for a tap on the terminal
+  // and nothing else. Focus moves for many reasons — a tap on the pane's
+  // head, a tab switch, a pane remounted where it was moved to — and each
+  // one used to raise the keyboard over what you were looking at. Focus
+  // still moves (keys from the key bar go where it is); `inputmode=none`
+  // only keeps the keyboard down until a tap asks for it, in `watchTaps`.
+  private keyboardOnTapOnly() {
+    const ta = this.term.textarea;
+    if (!ta || !matchMedia('(pointer: coarse)').matches) return;
+    ta.inputMode = 'none';
+    ta.addEventListener('blur', () => (ta.inputMode = 'none'));
+  }
+
+  private raiseKeyboard() {
+    const ta = this.term.textarea;
+    if (!ta || ta.inputMode !== 'none') return;
+    // Already focused, the keyboard would not notice the change; focusing
+    // again, inside the tap, is what brings it up. Blurred first: the blur
+    // puts `none` back.
+    if (document.activeElement === ta) ta.blur();
+    ta.inputMode = '';
+    ta.focus();
+  }
+
   // A tap on `[Image #N]` opens it. xterm has no touch handling, so the
   // link above never sees a finger; this finds the tag from where the tap
   // landed. Only a tap — a touch that neither moved nor lingered — so
   // scrolling and the long press are left as they were. Taken at touchend,
   // whose default is what the browser turns into a click and a focus: a tap
-  // on an image should not bring the keyboard up.
+  // on an image should not bring the keyboard up. Any other tap does.
   private watchTaps(el: HTMLElement) {
     let start: { x: number; y: number; at: number } | null = null;
     el.addEventListener(
@@ -362,10 +387,10 @@ export class PaneTerm {
         const s = start;
         start = null;
         const t = e.changedTouches[0];
-        if (!s || !t || e.touches.length || !this.wiring.agent()) return;
+        if (!s || !t || e.touches.length) return;
         if (Math.hypot(t.clientX - s.x, t.clientY - s.y) > 10 || e.timeStamp - s.at > 500) return;
-        const hit = imageAtPoint(this.term, t.clientX, t.clientY);
-        if (!hit) return;
+        const hit = this.wiring.agent() ? imageAtPoint(this.term, t.clientX, t.clientY) : null;
+        if (!hit) return this.raiseKeyboard();
         e.preventDefault();
         e.stopPropagation();
         this.wiring.image(hit.n, hit.row);
