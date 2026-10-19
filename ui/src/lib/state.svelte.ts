@@ -219,6 +219,9 @@ class Store {
     );
   }
 
+  /** Run once by the next tree frame: a pane moved here slides into place. */
+  onTree: (() => void) | null = null;
+
   send(msg: In) {
     this.conn?.send(msg);
   }
@@ -272,6 +275,7 @@ class Store {
         }
         this.caps = msg.caps;
         this.reconcile();
+        this.onTree?.();
         break;
       }
       case 'output': {

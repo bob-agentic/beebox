@@ -38,6 +38,9 @@ export interface GitInfo {
   modified: number;
 }
 
+/** Where a moved pane lands against its target; `center` trades places. */
+export type Side = 'center' | 'left' | 'right' | 'up' | 'down';
+
 export type Node =
   | { kind: 'leaf'; pane: PaneId }
   | { kind: 'split'; dir: Dir; children: Node[]; sizes: number[] };
@@ -192,6 +195,7 @@ export type In =
   | { t: 'search'; q: string; ws: WsId | null; req: number }
   | { t: 'conversation'; session: string; req: number }
   | { t: 'open_conversation'; session: string }
+  | { t: 'move_pane'; pane: PaneId; target: PaneId; side: Side }
   | { t: 'split'; pane: PaneId; dir: Dir }
   | { t: 'set_sizes'; tab: TabId; path: number[]; sizes: number[] }
   | { t: 'close_pane'; pane: PaneId }

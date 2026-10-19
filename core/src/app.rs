@@ -697,7 +697,14 @@ impl App {
         let allowed = grant.host
             || (matches!(msg, In::OpenTab { .. }) && grant.may_open_tab())
             || (matches!(msg, In::OpenConversation { .. }) && grant.may_search())
-            || (matches!(msg, In::Activate { .. }) && grant.may_navigate());
+            || (matches!(msg, In::Activate { .. }) && grant.may_navigate())
+            || match &msg {
+                In::MovePane { pane, target, .. } => {
+                    let tree = self.tree.lock().await;
+                    grant.may_type(*pane, &tree) && grant.may_type(*target, &tree)
+                }
+                _ => false,
+            };
         if !allowed {
             // Not an error worth telling the client about in detail — a
             // well-behaved client never sends these without `caps.host`.
@@ -712,6 +719,10 @@ impl App {
             }
             In::ClosePane { pane } => {
                 self.close_pane_inner(pane).await;
+            }
+            In::MovePane { pane, target, side } => {
+                self.tree.lock().await.move_pane(pane, target, side)?;
+                self.commit().await;
             }
             In::Respawn { pane } => {
                 self.ensure_running(pane).await?;
@@ -1947,7 +1958,7 @@ fn folder_owner<'a>(tree: &'a SessionTree, cwd: &str) -> Option<&'a Workspace> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::{AgentEventKind, Dir, Shelf};
+    use crate::proto::{AgentEventKind, Dir, Node, Shelf, Side};
     use crate::share::Scope;
 
     /// A ready app with one workspace open, as most tests assume. `bootstrap`
@@ -1964,6 +1975,40 @@ mod tests {
 
     fn shared(scope: Scope, writable: bool) -> Grant {
         Grant { token: "t".into(), scope, writable, host: false }
+    }
+
+    #[tokio::test]
+    async fn whoever_may_type_in_both_panes_may_move_them() {
+        let a = app().await;
+        let (tab, left) = {
+            let t = a.tree.lock().await;
+            (t.workspaces[0].tabs[0].id, first_pane_id(&t))
+        };
+        a.handle_host(&a.owner_grant().await, In::Split { pane: left, dir: Dir::Vertical }).await.unwrap();
+        let right = a.tree.lock().await.tab(tab).unwrap().panes[1].id;
+        let order = |a: Arc<App>| async move {
+            match &a.tree.lock().await.tab(tab).unwrap().layout {
+                Node::Split { children, .. } => children
+                    .iter()
+                    .map(|c| match c {
+                        Node::Leaf { pane } => *pane,
+                        _ => panic!("expected two leaves"),
+                    })
+                    .collect::<Vec<_>>(),
+                _ => panic!("expected a split"),
+            }
+        };
+        let swap = In::MovePane { pane: left, target: right, side: Side::Center };
+
+        // Read-only: would move the owner's screen. A one-pane link cannot see the other.
+        a.handle_host(&shared(Scope::Tab(tab), false), swap.clone()).await.unwrap();
+        a.handle_host(&shared(Scope::Pane(left), true), swap.clone()).await.unwrap();
+        assert_eq!(order(a.clone()).await, vec![left, right]);
+
+        a.handle_host(&shared(Scope::Tab(tab), true), swap.clone()).await.unwrap();
+        assert_eq!(order(a.clone()).await, vec![right, left]);
+        a.handle_host(&shared(Scope::All, true), swap).await.unwrap();
+        assert_eq!(order(a.clone()).await, vec![left, right]);
     }
 
     #[tokio::test]

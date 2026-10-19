@@ -9,7 +9,7 @@ use anyhow::{anyhow, Result};
 
 use crate::agent::AgentState;
 use crate::proto::{
-    AgentKind, Dir, GitInfo, Node, PaneId, PaneView, PtyId, Shelf, TabId, TabView, WsId,
+    AgentKind, Dir, GitInfo, Node, PaneId, PaneView, PtyId, Shelf, Side, TabId, TabView, WsId,
 };
 
 /// The UI caps nesting here. `Node` stays recursive so lifting the cap is a
@@ -409,8 +409,39 @@ impl SessionTree {
             woke_at: None,
         };
         tab.panes.push(new_pane);
-        insert_beside(&mut tab.layout, pane, new_id, dir);
+        insert_beside(&mut tab.layout, pane, new_id, dir, false);
         Ok(new_id)
+    }
+
+    /// Moves `pane` against `target` in their tab: trading places, or taking
+    /// the side named. Refused, leaving the layout as it was, where the result
+    /// would nest deeper than the cap.
+    pub fn move_pane(&mut self, pane: PaneId, target: PaneId, side: Side) -> Result<()> {
+        let tab_id = self.tab_of(pane).ok_or_else(|| anyhow!("pane {pane} not in any tab"))?;
+        if pane == target || self.tab_of(target) != Some(tab_id) {
+            return Err(anyhow!("pane {target} is not another pane of this tab"));
+        }
+        let tab = self.tab_mut(tab_id).expect("just located");
+        let mut layout = tab.layout.clone();
+        let (dir, before) = match side {
+            Side::Center => {
+                swap_leaves(&mut layout, pane, target);
+                tab.layout = layout;
+                return Ok(());
+            }
+            Side::Left => (Dir::Vertical, true),
+            Side::Right => (Dir::Vertical, false),
+            Side::Up => (Dir::Horizontal, true),
+            Side::Down => (Dir::Horizontal, false),
+        };
+        remove_leaf(&mut layout, pane);
+        flatten(&mut layout);
+        insert_beside(&mut layout, target, pane, dir, before);
+        if deepest(&layout, 0) > MAX_SPLIT_DEPTH {
+            return Err(anyhow!("split depth limit reached"));
+        }
+        tab.layout = layout;
+        Ok(())
     }
 
     /// Removes a pane and collapses any split left holding a single child,
@@ -605,31 +636,66 @@ fn depth_of(node: &Node, pane: PaneId, d: usize) -> Option<usize> {
     }
 }
 
-/// Puts `new_pane` next to `target`. If the enclosing split already runs in
-/// `dir`, it joins that split rather than nesting a new one — matching how
-/// iTerm2 behaves and keeping depth down.
-fn insert_beside(node: &mut Node, target: PaneId, new_pane: PaneId, dir: Dir) {
+fn deepest(node: &Node, d: usize) -> usize {
+    match node {
+        Node::Leaf { .. } => d,
+        Node::Split { children, .. } => children.iter().map(|c| deepest(c, d + 1)).max().unwrap_or(d),
+    }
+}
+
+fn swap_leaves(node: &mut Node, a: PaneId, b: PaneId) {
+    match node {
+        Node::Leaf { pane } if *pane == a => *pane = b,
+        Node::Leaf { pane } if *pane == b => *pane = a,
+        Node::Leaf { .. } => {}
+        Node::Split { children, .. } => children.iter_mut().for_each(|c| swap_leaves(c, a, b)),
+    }
+}
+
+/// Merges a split into its parent when both run the same way — what taking
+/// a pane out can leave behind — so the next insert joins rather than nests.
+fn flatten(node: &mut Node) {
+    if let Node::Split { dir, children, sizes } = node {
+        children.iter_mut().for_each(flatten);
+        if children.iter().any(|c| matches!(c, Node::Split { dir: d, .. } if d == dir)) {
+            let old = std::mem::take(children);
+            for c in old {
+                match c {
+                    Node::Split { dir: d, children: inner, .. } if d == *dir => children.extend(inner),
+                    c => children.push(c),
+                }
+            }
+            *sizes = vec![1.0 / children.len() as f32; children.len()];
+        }
+    }
+}
+
+/// Puts `new_pane` next to `target`, after it or `before`. If the enclosing
+/// split already runs in `dir`, it joins that split rather than nesting a new
+/// one — matching how iTerm2 behaves and keeping depth down.
+fn insert_beside(node: &mut Node, target: PaneId, new_pane: PaneId, dir: Dir, before: bool) {
     if let Node::Split { dir: d, children, sizes } = node {
         if *d == dir {
             if let Some(i) = children.iter().position(
                 |c| matches!(c, Node::Leaf { pane } if *pane == target),
             ) {
-                children.insert(i + 1, Node::Leaf { pane: new_pane });
+                children.insert(if before { i } else { i + 1 }, Node::Leaf { pane: new_pane });
                 let even = 1.0 / children.len() as f32;
                 *sizes = vec![even; children.len()];
                 return;
             }
         }
         for c in children.iter_mut() {
-            insert_beside(c, target, new_pane, dir);
+            insert_beside(c, target, new_pane, dir, before);
         }
         return;
     }
 
     if matches!(node, Node::Leaf { pane } if *pane == target) {
+        let (a, b) = if before { (new_pane, target) } else { (target, new_pane) };
         *node = Node::Split {
             dir,
-            children: vec![Node::Leaf { pane: target }, Node::Leaf { pane: new_pane }],
+            children: vec![Node::Leaf { pane: a }, Node::Leaf { pane: b }],
             sizes: vec![0.5, 0.5],
         };
     }
@@ -714,6 +780,59 @@ mod tests {
         assert_eq!(*dir, Dir::Horizontal);
         assert_eq!(children.len(), 2);
         assert!(matches!(children[1], Node::Leaf { pane } if pane == bottom));
+    }
+
+    /// A layout as text: `1`, `r(1 c(2 3))` — r side by side, c stacked.
+    fn shape(n: &Node) -> String {
+        match n {
+            Node::Leaf { pane } => pane.to_string(),
+            Node::Split { dir, children, .. } => format!(
+                "{}({})",
+                if *dir == Dir::Vertical { "r" } else { "c" },
+                children.iter().map(shape).collect::<Vec<_>>().join(" ")
+            ),
+        }
+    }
+
+    /// One big pane on the left, two stacked on the right.
+    fn three() -> (SessionTree, TabId, [PaneId; 3]) {
+        let (mut t, tab, a) = tab_with_one_pane();
+        let b = t.split(a, Dir::Vertical).unwrap();
+        let c = t.split(b, Dir::Horizontal).unwrap();
+        (t, tab, [a, b, c])
+    }
+
+    #[test]
+    fn moving_onto_the_middle_trades_places_and_keeps_the_shape() {
+        let (mut t, tab, [a, b, c]) = three();
+        t.move_pane(c, a, Side::Center).unwrap();
+        assert_eq!(shape(&t.tab(tab).unwrap().layout), format!("r({c} c({b} {a}))"));
+    }
+
+    #[test]
+    fn moving_to_an_edge_takes_that_side() {
+        let (mut t, tab, [a, b, c]) = three();
+        // Under the big pane: the right column loses c and collapses to b.
+        t.move_pane(c, a, Side::Down).unwrap();
+        assert_eq!(shape(&t.tab(tab).unwrap().layout), format!("r(c({a} {c}) {b})"));
+        // Left of b joins the row instead of nesting.
+        t.move_pane(c, b, Side::Left).unwrap();
+        assert_eq!(shape(&t.tab(tab).unwrap().layout), format!("r({a} {c} {b})"));
+        t.move_pane(b, a, Side::Up).unwrap();
+        assert_eq!(shape(&t.tab(tab).unwrap().layout), format!("r(c({b} {a}) {c})"));
+    }
+
+    #[test]
+    fn a_move_that_would_nest_too_deep_changes_nothing() {
+        let (mut t, tab, [a, b, c]) = three();
+        t.split(a, Dir::Horizontal).unwrap();
+        let before = shape(&t.tab(tab).unwrap().layout);
+        assert!(t.move_pane(a, b, Side::Right).is_err());
+        assert_eq!(shape(&t.tab(tab).unwrap().layout), before);
+        assert!(t.move_pane(a, a, Side::Center).is_err());
+        let other = t.open_tab(t.workspaces[0].id).unwrap();
+        let e = t.first_pane(other).unwrap();
+        assert!(t.move_pane(c, e, Side::Center).is_err(), "not across tabs");
     }
 
     #[test]

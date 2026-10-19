@@ -11,6 +11,8 @@
   import type { PaneView } from '../proto';
   import type { PaneTerm } from '../pane-term';
   import { agentBadge, isUnread } from '../agent-status';
+  import { leaves } from '../proto';
+  import { startMove, swap } from '../pane-move';
   import Crumbs from './Crumbs.svelte';
   import Icon from './Icon.svelte';
   import StatusIcon from './StatusIcon.svelte';
@@ -63,6 +65,17 @@
     CC: { icon: 'claude', color: '#D97757' },
     CX: { icon: 'codex', color: 'var(--fg)' },
   };
+
+  /** Who can type here can move it; with one pane there is nowhere to go.
+      In the narrow layout, where panes stack, the neighbours above and
+      below are the only places a pane can trade with. */
+  const order = $derived.by(() => {
+    const tab = store.caps.writable ? store.tabOf(pane.id) : undefined;
+    return tab ? leaves(tab.layout) : [];
+  });
+  const movable = $derived(order.length > 1);
+  const above = $derived(order[order.indexOf(pane.id) - 1]);
+  const below = $derived(order[order.indexOf(pane.id) + 1]);
 
   const badge = $derived(agentBadge(pane.agent));
   const mark = $derived(AGENT_MARK[badge]);
@@ -193,12 +206,20 @@
 <div
   class="pane"
   class:focus={focused}
+  data-pane={pane.id}
   role="group"
   style="background:{settings.theme.background}"
   aria-label="Terminal {pane.title || badge}"
   onpointerdown={() => store.focus(pane.id)}
 >
-  <div class="pane-head">
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="pane-head"
+    class:movable
+    onpointerdown={(e) => {
+      if (movable && !(e.target as HTMLElement).closest('button')) startMove(e, pane.id, paneTitle);
+    }}
+  >
     <StatusIcon phase={pane.status.phase} view={pane.status} {unread} />
     {#if mark}
       <span class="mark" style="color:{mark.color}" title={badge}>
@@ -214,6 +235,16 @@
       </button>
     {/if}
     <span class="dims">{pane.cols}×{pane.rows}</span>
+    {#if movable}
+      <!-- Not through to the pane: focusing it raises the phone's keyboard,
+           and rearranging is not typing. -->
+      <button class="mv" disabled={above === undefined} title="Swap with the pane above"
+        onpointerdown={(e) => e.stopPropagation()}
+        onclick={() => swap(pane.id, above)}>↑</button>
+      <button class="mv" disabled={below === undefined} title="Swap with the pane below"
+        onpointerdown={(e) => e.stopPropagation()}
+        onclick={() => swap(pane.id, below)}>↓</button>
+    {/if}
   </div>
 
   <div class="body">
@@ -289,6 +320,54 @@
   }
   .dims {
     font-family: ui-monospace, monospace;
+  }
+  /* Dragged by the head where panes sit side by side; where they stack
+     (the media query below) only traded with a neighbour, by ↑ ↓. */
+  .pane-head.movable {
+    cursor: grab;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    touch-action: none;
+  }
+  /* Held long enough to drag — lit until let go, so it reads as picked up. */
+  .pane-head:global(.lifted) {
+    background: color-mix(in srgb, var(--accent) 22%, var(--panel));
+    color: var(--fg);
+    transition: background 150ms ease-out;
+  }
+  /* The head stays as it is, lit if held: it is what was picked up. */
+  .pane:global(.moving) > :not(.pane-head) {
+    opacity: 0.35;
+  }
+  .mv {
+    display: none;
+    width: 22px;
+    height: 20px;
+    border-radius: 4px;
+    color: var(--dim);
+    font-size: 12px;
+    align-items: center;
+    justify-content: center;
+  }
+  .mv:disabled {
+    opacity: 0.25;
+  }
+  .mv:not(:disabled):active {
+    background: var(--panel-2);
+    color: var(--fg);
+  }
+  @media (max-width: 640px) {
+    .pane-head.movable {
+      cursor: default;
+      touch-action: auto;
+    }
+    .mv {
+      display: inline-flex;
+    }
+    .dims {
+      display: none;
+    }
   }
   .respawn {
     font-size: 9.5px;

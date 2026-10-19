@@ -108,6 +108,18 @@ pub enum Dir {
     Horizontal,
 }
 
+/// Where a moved pane lands against its target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Side {
+    /// Trade places; the layout keeps its shape.
+    Center,
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitInfo {
     pub branch: String,
@@ -453,6 +465,15 @@ pub enum In {
     Conversation {
         session: String,
         req: u32,
+    },
+
+    /// Drag a pane by its head: onto `target`'s middle to trade places, or
+    /// an edge to sit on that side of it. For whoever may type in both — a
+    /// read-only viewer would be moving the owner's screen.
+    MovePane {
+        pane: PaneId,
+        target: PaneId,
+        side: Side,
     },
 
     // ---- owner only; rejected otherwise ----
