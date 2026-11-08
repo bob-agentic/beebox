@@ -4,7 +4,7 @@
 
 **A web terminal built for running many agent CLIs in parallel.**
 
-`v0.2.28`
+`v0.2.29`
 
 </div>
 
@@ -130,7 +130,8 @@ someone access — your own phone included — send a **share link**, not this U
   pane (rolled up to its tab and workspace), the tool being run, a summary when
   it finishes, automatic tab titles, and sessions resumed after a restart — each
   as its pane is first shown, so dozens of agent tabs do not all start at once.
-  Always on; there is nothing to switch on. Your own hooks keep running beside
+  A resumed Claude keeps the name other agents message it by (`bee-box-17`),
+  where Claude alone would draw a new one every restart. Always on; there is nothing to switch on. Your own hooks keep running beside
   BeeBox's — Codex asks once to trust those from `~/.codex/hooks.json` in BeeBox.
 - **Agents open their own tabs.** Inside a BeeBox terminal, a `beebox` command
   opens and closes workspaces, tabs and panes, starting a command in what it opens (`beebox tab open --
