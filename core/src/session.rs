@@ -51,6 +51,10 @@ pub struct Pane {
     /// When the event that set `session_ref` happened. Hooks can land out of
     /// order, and an older one must not put back the id it carried.
     pub session_ref_at: i64,
+    /// Claude's peer name for the process running `session_ref`, read while
+    /// it runs and written into the transcript once it exits, so a resume
+    /// keeps it (see `peer_name`). Cleared when the session changes.
+    pub peer_name: Option<String>,
     /// When the conversation in this pane last moved: a prompt sent or a
     /// turn finished, from the agent's hooks. Not a session start — resuming
     /// after a restart is not activity. `None` until the first one.
@@ -77,15 +81,22 @@ pub struct Pane {
 /// Handed back by the close functions so the caller ends that terminal with
 /// it in hand. Asking the tree afterwards found nothing — the pane was
 /// already gone — and every closed tab left its shell and agent running.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Closed {
     pub pane: PaneId,
     pub pty: Option<PtyId>,
+    /// A Claude session and its peer name, to pin once it has exited. The
+    /// pane is gone by the time its `SessionEnd` arrives.
+    pub pin: Option<(String, String)>,
 }
 
 impl Closed {
     fn of(p: &Pane) -> Self {
-        Self { pane: p.id, pty: p.pty }
+        let pin = match p.agent {
+            Some(crate::proto::AgentKind::Claude) => p.session_ref.clone().zip(p.peer_name.clone()),
+            _ => None,
+        };
+        Self { pane: p.id, pty: p.pty, pin }
     }
 }
 
@@ -308,6 +319,7 @@ impl SessionTree {
             cmd: Vec::new(),
             session_ref: None,
             session_ref_at: 0,
+            peer_name: None,
             active_at: None,
             run: None,
             asleep: false,
@@ -402,6 +414,7 @@ impl SessionTree {
             cmd: Vec::new(),
             session_ref: None,
             session_ref_at: 0,
+            peer_name: None,
             active_at: None,
             run: None,
             asleep: false,

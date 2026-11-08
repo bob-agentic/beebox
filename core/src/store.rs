@@ -206,6 +206,14 @@ impl Store {
         if !has_active_at {
             db.execute("ALTER TABLE panes ADD COLUMN active_at INTEGER", [])?;
         }
+        // Claude's peer name, kept so a session that died without saying so
+        // still gets it back on resume.
+        let has_peer_name = db
+            .prepare("SELECT 1 FROM pragma_table_info('panes') WHERE name = 'peer_name'")?
+            .exists([])?;
+        if !has_peer_name {
+            db.execute("ALTER TABLE panes ADD COLUMN peer_name TEXT", [])?;
+        }
         Ok(())
     }
 
@@ -261,8 +269,8 @@ impl Store {
                 )?;
                 for pane in &tab.panes {
                     tx.execute(
-                        "INSERT INTO panes (id, tab_id, cmd, cwd, agent, session_ref, session_title, cols, rows, active_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                        "INSERT INTO panes (id, tab_id, cmd, cwd, agent, session_ref, session_title, cols, rows, active_at, peer_name)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                         params![
                             to_db(pane.id),
                             to_db(tab.id),
@@ -273,7 +281,8 @@ impl Store {
                             pane.session_title,
                             pane.cols,
                             pane.rows,
-                            pane.active_at
+                            pane.active_at,
+                            pane.peer_name
                         ],
                     )?;
                 }
@@ -321,7 +330,7 @@ impl Store {
                 let layout: Node = serde_json::from_str(&layout_json)?;
 
                 let mut pane_stmt = self.db.prepare(
-                    "SELECT id, cmd, cwd, agent, session_ref, session_title, cols, rows, active_at
+                    "SELECT id, cmd, cwd, agent, session_ref, session_title, cols, rows, active_at, peer_name
                      FROM panes WHERE tab_id = ?1",
                 )?;
                 let panes: Vec<Pane> = pane_stmt
@@ -350,6 +359,7 @@ impl Store {
                             cmd: cmd.split_whitespace().map(str::to_string).collect(),
                             session_ref: r.get(4)?,
                             session_ref_at: 0,
+                            peer_name: r.get(9)?,
                             active_at: r.get(8)?,
                             run: None,
                             asleep: false,
@@ -607,12 +617,14 @@ mod tests {
         let pane = t.first_pane(tab).unwrap();
         t.pane_mut(pane).unwrap().session_ref = Some("abc-123".into());
         t.pane_mut(pane).unwrap().cmd = vec!["claude".into()];
+        t.pane_mut(pane).unwrap().peer_name = Some("svc-17".into());
         s.save_tree(&t).unwrap();
 
         let after = s.load_tree().unwrap();
         let p = &after.workspaces[0].tabs[0].panes[0];
         assert_eq!(p.session_ref.as_deref(), Some("abc-123"));
         assert_eq!(p.cmd, vec!["claude"]);
+        assert_eq!(p.peer_name.as_deref(), Some("svc-17"));
     }
 
     #[test]

@@ -78,6 +78,9 @@ pub struct App {
     /// brought back every agent at once — forty-odd Claudes starting together,
     /// some 80 MB each, for tabs nobody had opened yet.
     pending_resume: Mutex<HashMap<PaneId, PendingResume>>,
+    /// Peer names to pin for panes closed while Claude ran in them, taken
+    /// when its `SessionEnd` arrives. Pane ids are never reused.
+    closed_pins: std::sync::Mutex<HashMap<PaneId, (String, String)>>,
     changed: broadcast::Sender<TreeChanged>,
     /// Whether any window is looking. Git is only asked while one is: what
     /// the sidebar and pane footers show matters to someone watching, and
@@ -166,6 +169,7 @@ impl App {
             owner_size: Mutex::new(HashMap::new()),
             hook_secrets: Mutex::new(HashMap::new()),
             pending_resume: Mutex::new(HashMap::new()),
+            closed_pins: std::sync::Mutex::new(HashMap::new()),
             changed,
             attention: tokio::sync::watch::channel(false).0,
             agent_tx,
@@ -355,6 +359,14 @@ impl App {
         // Only for panes without an explicit spawn command; an explicit
         // command keeps priority (existing product semantics: resume > none,
         // explicit cmd already replaced the shell entirely above).
+        // The exit that should have pinned the peer name may never have been
+        // heard — killed, or the daemon was down — so it is checked here too.
+        let pin = match (p.agent, &p.session_ref, &p.peer_name) {
+            (Some(AgentKind::Claude), Some(id), Some(name)) if p.cmd.is_empty() => {
+                Some((id.clone(), name.clone()))
+            }
+            _ => None,
+        };
         let resume = if p.cmd.is_empty() {
             match (p.agent, &p.session_ref) {
                 (Some(agent), Some(id)) => {
@@ -366,6 +378,9 @@ impl App {
             None
         };
         drop(tree);
+        if let Some((id, name)) = pin {
+            let _ = tokio::task::spawn_blocking(move || crate::peer_name::pin(&id, &name)).await;
+        }
 
         // Typed when the pane is first shown, not now (`resume_on_show`).
         let mut pending = self.pending_resume.lock().await;
@@ -1037,6 +1052,9 @@ impl App {
     fn end(&self, closed: &[crate::session::Closed]) {
         for c in closed {
             self.images.forget_pane(c.pane);
+            if let Some(pin) = c.pin.clone() {
+                self.closed_pins.lock().unwrap().insert(c.pane, pin);
+            }
             if let Some(pty) = c.pty {
                 self.ptys.kill(pty);
             }
@@ -1229,6 +1247,15 @@ impl App {
     /// across restarts, the phase does not — a restarted daemon has no idea
     /// what the agent is doing until its next hook.
     pub async fn apply_agent_event(&self, pane: PaneId, ev: AgentEvent) {
+        if matches!(ev.kind, crate::proto::AgentEventKind::SessionEnd) {
+            let closed = self.closed_pins.lock().unwrap().remove(&pane);
+            if let Some((id, name)) = closed {
+                if ev.session_id.as_deref() == Some(id.as_str()) {
+                    let _ = tokio::task::spawn_blocking(move || crate::peer_name::pin(&id, &name)).await;
+                }
+                return;
+            }
+        }
         if let Some(id) = &ev.session_id {
             self.images.note_session(pane, ev.agent, id, ev.at_ms);
         }
@@ -1237,6 +1264,9 @@ impl App {
         // Changed only what no client is shown: saved, not announced.
         let mut quiet = false;
         let mut deltas: Vec<AgentDelta> = Vec::new();
+        // Peer-name work, done with the tree unlocked: file reads and writes.
+        let mut look_up: Option<String> = None;
+        let mut pin: Option<(String, String)> = None;
         {
             let mut tree = self.tree.lock().await;
             let Some(p) = tree.pane_mut(pane) else { return };
@@ -1273,7 +1303,32 @@ impl App {
                     p.session_ref_at = ev.at_ms;
                     if p.session_ref.as_deref() != Some(id.as_str()) {
                         p.session_ref = Some(id.clone());
+                        // Another process, or `/clear` in the same one; asked
+                        // again either way.
+                        p.peer_name = None;
                         dirty = true;
+                    }
+                }
+            }
+            if ev.agent == AgentKind::Claude {
+                if let Some(id) = p.session_ref.clone() {
+                    match &ev.kind {
+                        // Claude has finished writing the transcript by now.
+                        crate::proto::AgentEventKind::SessionEnd => {
+                            if ev.session_id.as_deref() == Some(id.as_str()) {
+                                pin = p.peer_name.clone().map(|n| (id, n));
+                            }
+                        }
+                        // Not every tool call: until the registry has caught
+                        // up with the session, a prompt or a turn asks again.
+                        crate::proto::AgentEventKind::SessionStart
+                        | crate::proto::AgentEventKind::PromptSubmit
+                        | crate::proto::AgentEventKind::TurnEnd { .. }
+                            if p.peer_name.is_none() =>
+                        {
+                            look_up = Some(id)
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -1297,6 +1352,26 @@ impl App {
                     deltas.push(AgentDelta::SessionTitle { pane, text: t.clone() });
                 }
             }
+        }
+
+        if let Some(id) = look_up {
+            let name = tokio::task::spawn_blocking({
+                let id = id.clone();
+                move || crate::peer_name::lookup(&id)
+            })
+            .await
+            .ok()
+            .flatten();
+            if let Some(name) = name {
+                let mut tree = self.tree.lock().await;
+                if let Some(p) = tree.pane_mut(pane).filter(|p| p.session_ref.as_deref() == Some(id.as_str())) {
+                    p.peer_name = Some(name);
+                    dirty = true;
+                }
+            }
+        }
+        if let Some((id, name)) = pin {
+            let _ = tokio::task::spawn_blocking(move || crate::peer_name::pin(&id, &name)).await;
         }
 
         // Persist outside the tree lock — commit() takes it again.
@@ -2912,6 +2987,63 @@ mod tests {
 
         let t = a.tree.lock().await;
         assert_eq!(t.pane(pane).unwrap().session_ref.as_deref(), Some("new"));
+    }
+
+    #[tokio::test]
+    async fn a_new_session_forgets_the_peer_name_of_the_last() {
+        let a = app().await;
+        let pane = a.tree.lock().await.workspaces[0].tabs[0].panes[0].id;
+        let ev = |id: &str, at_ms| AgentEvent {
+            agent: AgentKind::Claude,
+            kind: AgentEventKind::PreTool { detail: None, lasting: false },
+            at_ms,
+            session_id: Some(id.into()),
+            session_title: None,
+        };
+        a.apply_agent_event(pane, ev("s-1", 100)).await;
+        a.tree.lock().await.pane_mut(pane).unwrap().peer_name = Some("bee-box-17".into());
+
+        a.apply_agent_event(pane, ev("s-1", 200)).await;
+        assert_eq!(a.tree.lock().await.pane(pane).unwrap().peer_name.as_deref(), Some("bee-box-17"));
+
+        // A different process may have a different name; it is asked for again
+        // rather than written into the new transcript.
+        a.apply_agent_event(pane, ev("s-2", 300)).await;
+        assert_eq!(a.tree.lock().await.pane(pane).unwrap().peer_name, None);
+    }
+
+    #[tokio::test]
+    async fn a_tab_closed_under_claude_still_pins_its_peer_name_on_exit() {
+        let a = app().await;
+        let owner = a.owner_grant().await;
+        let (tab, pane) = {
+            let mut t = a.tree.lock().await;
+            let tab = t.workspaces[0].tabs[0].id;
+            let p = t.workspaces[0].tabs[0].panes.first_mut().unwrap();
+            p.agent = Some(AgentKind::Claude);
+            p.session_ref = Some("s-1".into());
+            p.peer_name = Some("bee-box-17".into());
+            (tab, p.id)
+        };
+        a.handle_host(&owner, In::CloseTab { tab }).await.unwrap();
+        // The pane is gone before Claude says it has ended.
+        assert_eq!(
+            a.closed_pins.lock().unwrap().get(&pane),
+            Some(&("s-1".to_string(), "bee-box-17".to_string()))
+        );
+
+        a.apply_agent_event(
+            pane,
+            AgentEvent {
+                agent: AgentKind::Claude,
+                kind: AgentEventKind::SessionEnd,
+                at_ms: 100,
+                session_id: Some("s-1".into()),
+                session_title: None,
+            },
+        )
+        .await;
+        assert!(a.closed_pins.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

@@ -6,6 +6,7 @@ pub mod hooks;
 pub mod http;
 pub mod images;
 pub mod modes;
+pub mod peer_name;
 pub mod proto;
 pub mod pty;
 pub mod ring;

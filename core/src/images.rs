@@ -193,17 +193,7 @@ impl Files {
 /// the cwd the session started in, mangled; looking in each is cheaper than
 /// reproducing the mangling.
 fn find_claude_transcript(session: &str) -> Option<PathBuf> {
-    if !valid_session_id(session) {
-        return None;
-    }
-    let projects = crate::hooks::claude_data_dir()?.join("projects");
-    let name = format!("{session}.jsonl");
-    std::fs::read_dir(&projects)
-        .ok()?
-        .flatten()
-        .map(|e| e.path().join(&name))
-        .filter(|p| p.is_file())
-        .max_by_key(|p| p.metadata().and_then(|m| m.modified()).ok())
+    crate::peer_name::find_transcript(&crate::hooks::claude_data_dir()?.join("projects"), session)
 }
 
 /// Reads what was appended since last time. A line is parsed only if it
