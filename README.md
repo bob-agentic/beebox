@@ -4,7 +4,7 @@
 
 **A web terminal built for running many agent CLIs in parallel.**
 
-`v0.2.29`
+`v0.2.30`
 
 </div>
 
@@ -166,7 +166,10 @@ someone access — your own phone included — send a **share link**, not this U
   (Today, Yesterday, This week, Earlier); click one to take it back, or drag it
   to another shelf. Without shelving anything, an agent idle for 4 hours (Off,
   2, 4 or 8 under Settings › Advanced) and on no one's screen is put to sleep the
-  same way, its tab dimmed with a moon; opening the tab wakes it.
+  same way, its tab dimmed with a moon; opening the tab wakes it, and so does
+  another Claude messaging it — the message, or a reply to a sender that slept
+  meanwhile, waits the few seconds it takes to resume instead of being lost.
+  The status bar counts Claude and Codex panes running against all of them.
 - **Sharing by link or QR code.** Four scopes — All / Workspace / Tab / Pane. A
   link belongs to the first device that opens it; every paired device is listed
   under Connections until you disconnect it. A scanned code lets the phone set
