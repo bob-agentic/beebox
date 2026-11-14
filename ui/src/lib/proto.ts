@@ -58,6 +58,9 @@ export interface PaneView {
   rows: number;
   /** Its agent was put to sleep after sitting idle; showing it wakes it. */
   asleep: boolean;
+  /** The agent CLI running in its terminal right now — ahead of `agent`
+   *  when another one is started there, until its first hook arrives. */
+  live: AgentKind | null;
 }
 
 /** The two shelves a tab can be filed on, mirroring `proto.rs`. */

@@ -156,6 +156,20 @@
   const frozenCount = $derived(
     store.tree.workspaces.reduce((n, w) => n + w.tabs.filter((t) => t.shelf === 'freezer').length, 0),
   );
+  // Every pane an agent has run in, frozen and asleep ones too, against
+  // those where it is running right now. One running counts as what it is.
+  const agentCounts = $derived.by(() => {
+    const c = { claude: { live: 0, all: 0 }, codex: { live: 0, all: 0 } };
+    for (const w of store.tree.workspaces)
+      for (const t of w.tabs)
+        for (const p of t.panes) {
+          const kind = p.live ?? p.agent;
+          if (kind !== 'claude' && kind !== 'codex') continue;
+          c[kind].all++;
+          if (p.live === kind) c[kind].live++;
+        }
+    return c;
+  });
 
   /** Every shortcut's behaviour, by name.
    *
@@ -500,6 +514,17 @@
           ><Icon name="freezer" size={11} /> {frozenCount}</span
         >
       {/if}
+      {#each [['claude', 'Claude', '#D97757'], ['codex', 'Codex', 'var(--fg)']] as const as [kind, label, color] (kind)}
+        {@const n = agentCounts[kind]}
+        {#if n.all}
+          · <span
+            class="agents"
+            title="{label}: {n.live} running · {n.all - n.live} asleep or exited"
+            ><span class="mark" style:color><Icon name={kind} size={11} /></span>
+            {label} {n.live}/{n.all}</span
+          >
+        {/if}
+      {/each}
     </span>
   {/if}
 
@@ -801,10 +826,14 @@
   .item.off {
     color: var(--wait);
   }
-  .stats .frozen {
+  .stats .frozen,
+  .stats .agents {
     display: inline-flex;
     align-items: center;
     gap: 3px;
+  }
+  .stats .mark {
+    display: inline-flex;
   }
   .live {
     color: #86efac;

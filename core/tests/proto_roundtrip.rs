@@ -108,6 +108,7 @@ fn exited_pane_keeps_its_identity() {
         cols: 96,
         rows: 38,
         asleep: false,
+        live: None,
     };
     let bytes = rmp_serde::to_vec_named(&view).unwrap();
     let back: PaneView = rmp_serde::from_slice(&bytes).unwrap();

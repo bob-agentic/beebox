@@ -1412,6 +1412,18 @@ impl App {
         let _ = self.agent_tx.send(AgentDelta::Cwd { pane, path: cwd, git });
     }
 
+    /// Which agent CLI is running in the pane's terminal, as sampled.
+    pub async fn set_live(&self, pane: PaneId, live: Option<crate::proto::AgentKind>) {
+        let mut tree = self.tree.lock().await;
+        let Some(p) = tree.pane_mut(pane) else { return };
+        if p.live == live {
+            return;
+        }
+        p.live = live;
+        drop(tree);
+        let _ = self.changed.send(TreeChanged);
+    }
+
     /// Registers a live socket and returns its session id, with the receiver
     /// that fires when it is to be closed.
     pub async fn add_conn(

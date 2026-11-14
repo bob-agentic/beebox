@@ -74,6 +74,9 @@ pub struct Pane {
     /// is not a prompt, so `active_at` stays where it was; idle is counted
     /// from whichever is later, or one glance would buy only minutes.
     pub woke_at: Option<i64>,
+    /// The agent CLI in the terminal's foreground right now — not just once
+    /// seen, as `agent` is. Sampled, not persisted.
+    pub live: Option<crate::proto::AgentKind>,
 }
 
 /// A pane taken out of the tree, and the terminal it was running.
@@ -325,6 +328,7 @@ impl SessionTree {
             asleep: false,
             lasting: false,
             woke_at: None,
+            live: None,
         };
         w.tabs.push(Tab {
             id: tab_id,
@@ -420,6 +424,7 @@ impl SessionTree {
             asleep: false,
             lasting: false,
             woke_at: None,
+            live: None,
         };
         tab.panes.push(new_pane);
         insert_beside(&mut tab.layout, pane, new_id, dir, false);
@@ -582,6 +587,7 @@ impl SessionTree {
                                 cols: p.cols,
                                 rows: p.rows,
                                 asleep: p.asleep,
+                                live: p.live.filter(|_| p.pty.is_some()),
                             })
                             .collect();
                         if panes.is_empty() {

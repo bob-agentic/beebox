@@ -168,6 +168,9 @@ pub struct PaneView {
     pub rows: u16,
     /// Its agent was put to sleep after sitting idle; showing it wakes it.
     pub asleep: bool,
+    /// The agent CLI running in its terminal right now. Ahead of `agent` when
+    /// another one is started there, until its first hook arrives.
+    pub live: Option<AgentKind>,
 }
 
 /// Where a tab is filed, when it is not on the strip.

@@ -365,6 +365,7 @@ impl Store {
                             asleep: false,
                             lasting: false,
                             woke_at: None,
+                            live: None,
                         })
                     })?
                     .collect::<rusqlite::Result<_>>()?;

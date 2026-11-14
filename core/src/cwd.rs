@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::app::App;
-use crate::proto::GitInfo;
+use crate::proto::{AgentKind, GitInfo};
 use crate::session::WsGit;
 
 /// How often the foreground cwd is sampled. Cheap (one syscall per pane).
@@ -33,6 +33,27 @@ fn cwd_of(sys: &mut sysinfo::System, pid: u32) -> Option<String> {
     sys.process(target)
         .and_then(|p| p.cwd())
         .map(|p| p.to_string_lossy().into_owned())
+}
+
+/// The agent CLI that is a terminal's foreground process, if any. Judged by
+/// the command line, not the process name: a native Claude runs as its
+/// executable, an npm-installed one as `node <bin>/claude`, and Codex under
+/// our `codex-run` script, which leads its process group.
+fn agent_of(sys: &mut sysinfo::System, leader: i32) -> Option<AgentKind> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, UpdateKind};
+    let target = Pid::from_u32(leader as u32);
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[target]),
+        true,
+        ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
+    );
+    sys.process(target)?.cmd().iter().take(2).find_map(|arg| {
+        match std::path::Path::new(arg).file_stem()?.to_str()? {
+            "claude" => Some(AgentKind::Claude),
+            "codex" | "codex-run" => Some(AgentKind::Codex),
+            _ => None,
+        }
+    })
 }
 
 fn git_info(cwd: &str) -> Option<GitInfo> {
@@ -150,21 +171,28 @@ pub async fn poll_forever(app: Arc<App>) {
     // share one `git status`.
     let mut by_dir: HashMap<String, (std::time::Instant, Option<GitInfo>)> = HashMap::new();
     let mut sys = sysinfo::System::new();
+    // Which agent each pane was running, as last told.
+    let mut lives: HashMap<u64, Option<AgentKind>> = HashMap::new();
     let looking = app.attention();
 
     loop {
         tokio::time::sleep(CWD_EVERY).await;
 
         let live = app.ptys.live_pids();
-        let alive: std::collections::HashSet<u64> = live.iter().map(|(p, _)| *p).collect();
+        let alive: std::collections::HashSet<u64> = live.iter().map(|(p, ..)| *p).collect();
         states.retain(|pane, _| alive.contains(pane));
+        lives.retain(|pane, _| alive.contains(pane));
         // The cwd is sampled regardless — it is persisted, for resuming in the
         // right place. The slow git refresh waits for a window with focus; a
         // folder git has not been asked about yet is asked at once, so the
         // footer never shows the old repository's branch.
         let attended = *looking.borrow();
 
-        for (pane, pid) in live {
+        for (pane, pid, leader) in live {
+            let running = leader.and_then(|l| agent_of(&mut sys, l));
+            if lives.insert(pane, running) != Some(running) {
+                app.set_live(pane, running).await;
+            }
             // The syscall is blocking but sub-millisecond; git is the part
             // that must not run per tick.
             let Some(cwd) = cwd_of(&mut sys, pid) else { continue };

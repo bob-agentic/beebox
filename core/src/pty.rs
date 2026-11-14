@@ -461,11 +461,12 @@ impl Registry {
         ptys.get(&id).and_then(|p| p.child_pid)
     }
 
-    /// Every live (pane, pid) pair, for the cwd poller's sweep.
-    pub fn live_pids(&self) -> Vec<(PaneId, u32)> {
+    /// Every live pane with its shell's pid and its foreground process
+    /// group's leader, for the cwd poller's sweep.
+    pub fn live_pids(&self) -> Vec<(PaneId, u32, Option<i32>)> {
         let ptys = self.ptys.lock().unwrap();
         ptys.values()
-            .filter_map(|p| p.child_pid.map(|pid| (p.pane, pid)))
+            .filter_map(|p| p.child_pid.map(|pid| (p.pane, pid, p.master.process_group_leader())))
             .collect()
     }
 
