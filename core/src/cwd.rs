@@ -173,6 +173,8 @@ pub async fn poll_forever(app: Arc<App>) {
     let mut sys = sysinfo::System::new();
     // Which agent each pane was running, as last told.
     let mut lives: HashMap<u64, Option<AgentKind>> = HashMap::new();
+    // Claude processes whose messaging socket is noted (`App::reach`).
+    let mut noted: std::collections::HashSet<i32> = std::collections::HashSet::new();
     let looking = app.attention();
 
     loop {
@@ -182,6 +184,8 @@ pub async fn poll_forever(app: Arc<App>) {
         let alive: std::collections::HashSet<u64> = live.iter().map(|(p, ..)| *p).collect();
         states.retain(|pane, _| alive.contains(pane));
         lives.retain(|pane, _| alive.contains(pane));
+        let leaders: std::collections::HashSet<i32> = live.iter().filter_map(|(.., l)| *l).collect();
+        noted.retain(|pid| leaders.contains(pid));
         // The cwd is sampled regardless — it is persisted, for resuming in the
         // right place. The slow git refresh waits for a window with focus; a
         // folder git has not been asked about yet is asked at once, so the
@@ -192,6 +196,15 @@ pub async fn poll_forever(app: Arc<App>) {
             let running = leader.and_then(|l| agent_of(&mut sys, l));
             if lives.insert(pane, running) != Some(running) {
                 app.set_live(pane, running).await;
+            }
+            // Its registry entry appears a moment after it starts.
+            if let (Some(AgentKind::Claude), Some(pid)) = (running, leader) {
+                if !noted.contains(&pid) {
+                    if let Some(socket) = crate::peer_name::socket_of(pid) {
+                        app.note_socket(socket, pane);
+                        noted.insert(pid);
+                    }
+                }
             }
             // The syscall is blocking but sub-millisecond; git is the part
             // that must not run per tick.

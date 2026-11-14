@@ -461,6 +461,13 @@ impl Registry {
         ptys.get(&id).and_then(|p| p.child_pid)
     }
 
+    /// The leader of a pty's foreground process group: the agent, while one
+    /// runs there.
+    pub fn leader(&self, id: PtyId) -> Option<i32> {
+        let ptys = self.ptys.lock().unwrap();
+        ptys.get(&id)?.master.process_group_leader()
+    }
+
     /// Every live pane with its shell's pid and its foreground process
     /// group's leader, for the cwd poller's sweep.
     pub fn live_pids(&self) -> Vec<(PaneId, u32, Option<i32>)> {

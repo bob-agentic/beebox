@@ -7,6 +7,7 @@
 //! ```text
 //! hooks/
 //!   send                  POSTs stdin to $BEEBOX_HOOK_URL; 500ms cap; exit 0
+//!   reach                 before SendMessage: wakes the sleeping recipient
 //!   bin/beebox            the `beebox` command (workspaces and tabs)
 //!   claude-settings.json  hooks overlay passed via `claude --settings`
 //!   claude-plugin/        the `beebox` skill, via `claude --plugin-dir`
@@ -77,6 +78,18 @@ printf '%s' "$payload" | curl -s -o /dev/null --max-time 0.5 \
 if [ "$1" = codex ] && [ "$2" = SessionStart ] && [ -f "$BEEBOX_AGENT_HOOKS_DIR/codex-context.json" ]; then
   cat "$BEEBOX_AGENT_HOOKS_DIR/codex-context.json"
 fi
+exit 0
+"#;
+
+/// Run before a Claude's `SendMessage` (`App::reach`). Unlike `send` it
+/// waits, up to the daemon's own limit, and prints what the daemon answers:
+/// the hook's verdict, when the address had to change. Anything going wrong
+/// lets the message through as it was.
+const REACH: &str = r#"#!/bin/sh
+# BeeBox: wakes a sleeping agent before a message is sent to it.
+[ -n "$BEEBOX_HOOK_URL" ] || exit 0
+curl -s --max-time 55 -H 'Content-Type: application/json' --data-binary @- \
+  "${BEEBOX_HOOK_URL%%/hooks/*}/reach/${BEEBOX_HOOK_URL#*/hooks/}" 2>/dev/null
 exit 0
 "#;
 
@@ -626,7 +639,12 @@ fn claude_settings() -> String {
 "#,
         ss = one("SessionStart"),
         ups = one("UserPromptSubmit"),
-        pre = one("PreToolUse"),
+        // `send` for status, as every event; `reach` only before a message.
+        pre = format!(
+            r#"[{{"hooks":[{{"type":"command","command":{}, "timeout":3}}]}},{{"matcher":"SendMessage","hooks":[{{"type":"command","command":{},"timeout":60}}]}}]"#,
+            serde_json::to_string(send).unwrap(),
+            serde_json::to_string(r#""$BEEBOX_AGENT_HOOKS_DIR/reach""#).unwrap()
+        ),
         post = one("PostToolUse"),
         n = one("Notification"),
         stop = one("Stop"),
@@ -646,6 +664,10 @@ pub fn install(home: &Path) -> Result<AdapterAssets> {
     let send = hooks_dir.join("send");
     std::fs::write(&send, SEND)?;
     std::fs::set_permissions(&send, std::fs::Permissions::from_mode(0o755))?;
+
+    let reach = hooks_dir.join("reach");
+    std::fs::write(&reach, REACH)?;
+    std::fs::set_permissions(&reach, std::fs::Permissions::from_mode(0o755))?;
 
     std::fs::write(hooks_dir.join("claude-settings.json"), claude_settings())?;
     std::fs::write(
@@ -761,6 +783,11 @@ mod tests {
         ] {
             assert!(hooks.contains_key(ev), "{ev} not hooked");
         }
+        // A message to a sleeping agent wakes it first, and waits for it.
+        let reach = &hooks["PreToolUse"][1];
+        assert_eq!(reach["matcher"], "SendMessage");
+        assert!(reach["hooks"][0]["command"].as_str().unwrap().ends_with("/reach\""));
+        assert!(a.hooks_dir.join("reach").is_file());
     }
 
     #[test]

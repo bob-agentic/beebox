@@ -42,6 +42,14 @@ pub fn pin(session: &str, name: &str) -> bool {
     }
 }
 
+/// The messaging socket of the Claude process `pid`, from its registry
+/// entry — what other sessions reply to. Only while it runs.
+pub fn socket_of(pid: i32) -> Option<String> {
+    let path = crate::hooks::claude_data_dir()?.join("sessions").join(format!("{pid}.json"));
+    let v: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    v.get("messagingSocketPath").and_then(Value::as_str).map(str::to_string)
+}
+
 fn lookup_in(dir: &Path, session: &str) -> Option<String> {
     if !valid_session_id(session) {
         return None;

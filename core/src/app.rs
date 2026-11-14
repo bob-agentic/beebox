@@ -63,6 +63,10 @@ pub struct Conn {
     close: Option<tokio::sync::oneshot::Sender<Option<CloseReason>>>,
 }
 
+/// How long a `SendMessage` waits for the agent it woke: a resume takes a
+/// few seconds, and the hook running it is given a minute.
+const REACH_WAIT: std::time::Duration = std::time::Duration::from_secs(45);
+
 pub struct App {
     pub tree: Mutex<SessionTree>,
     pub ptys: Arc<Registry>,
@@ -81,6 +85,10 @@ pub struct App {
     /// Peer names to pin for panes closed while Claude ran in them, taken
     /// when its `SessionEnd` arrives. Pane ids are never reused.
     closed_pins: std::sync::Mutex<HashMap<PaneId, (String, String)>>,
+    /// Which pane each Claude messaging socket seen belongs to. A reply goes
+    /// to the socket a message came from, and that process may since have
+    /// been put to sleep and come back on another.
+    peer_sockets: std::sync::Mutex<HashMap<String, PaneId>>,
     changed: broadcast::Sender<TreeChanged>,
     /// Whether any window is looking. Git is only asked while one is: what
     /// the sidebar and pane footers show matters to someone watching, and
@@ -170,6 +178,7 @@ impl App {
             hook_secrets: Mutex::new(HashMap::new()),
             pending_resume: Mutex::new(HashMap::new()),
             closed_pins: std::sync::Mutex::new(HashMap::new()),
+            peer_sockets: std::sync::Mutex::new(HashMap::new()),
             changed,
             attention: tokio::sync::watch::channel(false).0,
             agent_tx,
@@ -1422,6 +1431,84 @@ impl App {
         p.live = live;
         drop(tree);
         let _ = self.changed.send(TreeChanged);
+    }
+
+    /// Notes the messaging socket of the Claude running in `pane`.
+    pub fn note_socket(&self, socket: String, pane: PaneId) {
+        let mut sockets = self.peer_sockets.lock().unwrap();
+        // Bounded: every Claude process ever started adds one.
+        if sockets.len() > 2000 {
+            sockets.clear();
+        }
+        sockets.insert(socket, pane);
+    }
+
+    /// Run before a Claude's `SendMessage`, so a message reaches an agent
+    /// that was put to sleep. Addressed by name — its peer name, kept across
+    /// the resume — the sleeping pane is woken and this waits until its
+    /// Claude is listening. Addressed by a socket that no longer exists —
+    /// a reply to a process since put to sleep or restarted — its pane is
+    /// woken too, and the socket it listens on now is returned to send to
+    /// instead. Anything else is left alone at once. A frozen tab stays
+    /// frozen: filing it was the user's call.
+    pub async fn reach(&self, to: &str) -> Option<String> {
+        let (pane, readdress) = if let Some(path) = to.strip_prefix("uds:") {
+            if std::path::Path::new(path).exists() {
+                return None;
+            }
+            (*self.peer_sockets.lock().unwrap().get(path)?, true)
+        } else {
+            // `name [ref]` when two share a name; the ref is Claude's own.
+            let name = to.split(" [").next().unwrap_or(to).trim();
+            let tree = self.tree.lock().await;
+            let pane = tree
+                .workspaces
+                .iter()
+                .flat_map(|w| &w.tabs)
+                .flat_map(|t| &t.panes)
+                .find(|p| {
+                    p.pty.is_none()
+                        && p.agent == Some(AgentKind::Claude)
+                        && p.session_ref.is_some()
+                        && p.peer_name.as_deref() == Some(name)
+                })?
+                .id;
+            (pane, false)
+        };
+        if self.tree.lock().await.is_frozen(pane) {
+            return None;
+        }
+        if self.pty_of(pane).await.is_none() {
+            self.ensure_running(pane).await.ok()?;
+            // One never started since a restart was not asleep, so its idle
+            // clock was not reset by the start: without this it could be put
+            // back to sleep before the message lands.
+            if let Some(p) = self.tree.lock().await.pane_mut(pane) {
+                p.woke_at = Some(crate::hooks::now_ms());
+            }
+            self.commit().await;
+            self.resume_on_show(pane).await;
+        }
+        // Listening once its registry entry names a socket that exists.
+        let deadline = tokio::time::Instant::now() + REACH_WAIT;
+        loop {
+            let leader = self.pty_of(pane).await.and_then(|pty| self.ptys.leader(pty));
+            if let Some(pid) = leader {
+                let socket = tokio::task::spawn_blocking(move || crate::peer_name::socket_of(pid))
+                    .await
+                    .ok()
+                    .flatten()
+                    .filter(|s| std::path::Path::new(s).exists());
+                if let Some(socket) = socket {
+                    self.note_socket(socket.clone(), pane);
+                    return readdress.then(|| format!("uds:{socket}"));
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return None;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
     }
 
     /// Registers a live socket and returns its session id, with the receiver
@@ -2999,6 +3086,29 @@ mod tests {
 
         let t = a.tree.lock().await;
         assert_eq!(t.pane(pane).unwrap().session_ref.as_deref(), Some("new"));
+    }
+
+    #[tokio::test]
+    async fn a_message_to_no_sleeping_agent_goes_through_at_once() {
+        let a = app().await;
+        let pane = a.tree.lock().await.workspaces[0].tabs[0].panes[0].id;
+        {
+            let mut t = a.tree.lock().await;
+            let p = t.pane_mut(pane).unwrap();
+            p.agent = Some(AgentKind::Claude);
+            p.session_ref = Some("s-1".into());
+            p.peer_name = Some("bee-box-17".into());
+        }
+        // Its name, but it is running: Claude delivers that one itself.
+        assert_eq!(a.reach("bee-box-17").await, None);
+        assert_eq!(a.reach("someone-else").await, None);
+        // A socket nobody noted, and one that still exists.
+        assert_eq!(a.reach("uds:/tmp/beebox-no-such.sock").await, None);
+        let live = std::env::temp_dir().join(format!("beebox-reach-{}.sock", std::process::id()));
+        std::fs::write(&live, b"").unwrap();
+        a.note_socket(live.to_string_lossy().into_owned(), pane);
+        assert_eq!(a.reach(&format!("uds:{}", live.display())).await, None);
+        let _ = std::fs::remove_file(live);
     }
 
     #[tokio::test]

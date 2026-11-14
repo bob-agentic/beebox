@@ -89,6 +89,7 @@ pub fn router(app: Arc<App>, ui: Option<std::path::PathBuf>) -> Router {
                 crate::hooks::MAX_BODY_BYTES,
             )),
         )
+        .route("/reach/{pane}/{secret}", post(reach))
         .route("/cli/{pane}/{secret}", post(cli))
         .route("/{prefix}/{token}", share)
         .route("/", index)
@@ -736,6 +737,51 @@ async fn handle(
         }
     }
     Continue(())
+}
+
+/// A Claude's `SendMessage`, before it runs (`App::reach`): wakes the agent
+/// it is addressed to if that one is asleep, and readdresses a reply whose
+/// socket is gone. Answers in the hook's own output format; empty lets the
+/// call through unchanged.
+async fn reach(
+    State(app): State<Arc<App>>,
+    Path((pane, secret)): Path<(PaneId, String)>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    body: axum::body::Bytes,
+) -> Response {
+    if !addr.ip().is_loopback() {
+        return not_found();
+    }
+    if !app.check_hook_secret(pane, &secret).await {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(&body) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let Some(input) = v.get("tool_input").and_then(serde_json::Value::as_object) else {
+        return StatusCode::NO_CONTENT.into_response();
+    };
+    let Some(to) = input.get("to").and_then(serde_json::Value::as_str) else {
+        return StatusCode::NO_CONTENT.into_response();
+    };
+    let Some(to) = app.reach(to).await else {
+        return StatusCode::NO_CONTENT.into_response();
+    };
+    // Claude adds its own reading of the address (`recipient`, ...) to the
+    // input; given back, that would still name the old socket.
+    let mut input = input.clone();
+    for derived in ["recipient", "recipient_kind", "content"] {
+        input.remove(derived);
+    }
+    input.insert("to".into(), to.into());
+    axum::Json(serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "updatedInput": input,
+        }
+    }))
+    .into_response()
 }
 
 /// Agent hooks. Three gates before anything is parsed: the caller must be on
