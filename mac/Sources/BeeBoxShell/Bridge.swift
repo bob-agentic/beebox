@@ -63,7 +63,10 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
             reply(found.map { ($0 as Any?) ?? NSNull() }, nil)
         case "openFile":
             if let path = body["path"] as? String {
-                FileLinks.open(path, line: body["line"] as? Int, col: body["col"] as? Int)
+                FileLinks.open(
+                    path, line: body["line"] as? Int, col: body["col"] as? Int,
+                    editor: body["editor"] as? String
+                )
             }
             reply(nil, nil)
         case "openUrl":

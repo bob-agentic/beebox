@@ -176,7 +176,7 @@ someone access — your own phone included — send a **share link**, not this U
   the terminal's width, and the code turns into "Connected" — who, and what they
   can see — the moment it is opened.
 - **Open files and links from the terminal.** ⌘-click a path an agent printed to
-  open it in VS Code at that line, or a directory to open it in Finder;
+  open it in VS Code or Zed (Settings → Editor) at that line, or a directory to open it in Finder;
   right-click either to reveal it in Finder. Links appear only over paths that
   exist (macOS app). Web links open in the browser — ⌘-click in the macOS app,
   a plain click elsewhere.
@@ -219,7 +219,7 @@ someone access — your own phone included — send a **share link**, not this U
 | | |
 |---|---|
 | Click `[Image #N]` | Open the image (tap, on a phone) |
-| `⌘`-click a file path | Open it in VS Code (macOS app) |
+| `⌘`-click a file path | Open it in VS Code or Zed (macOS app) |
 | `⌘`-click a directory | Open it in Finder (macOS app) |
 | `⌘`-click a web link | Open it in the browser (a plain click outside the macOS app) |
 | Right-click a file path | Reveal in Finder (macOS app) |

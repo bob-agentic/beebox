@@ -56,6 +56,13 @@ export const FONTS = [
   { name: 'Fira Code', stack: '"Fira Code", ui-monospace, Menlo, monospace' },
 ];
 
+/** Where ⌘-clicking a file path opens it, in the macOS app. */
+export const EDITORS = [
+  { id: 'vscode', name: 'VS Code' },
+  { id: 'zed', name: 'Zed' },
+] as const;
+export type Editor = (typeof EDITORS)[number]['id'];
+
 export interface Settings {
   fontFamily: string;
   fontSize: number;
@@ -69,6 +76,7 @@ export interface Settings {
    *  full 200k is most of a gigabyte. The daemon keeps the full history
    *  regardless; this is only what the browser holds ready to scroll through. */
   scrollback: number;
+  editor: Editor;
 }
 
 /** A sensible starting point out of 600 — and the fallback if a saved theme
@@ -82,6 +90,7 @@ const DEFAULTS: Settings = {
   theme: DEFAULT_THEME.name,
   cursorBlink: true,
   scrollback: 50_000,
+  editor: 'vscode',
 };
 
 function load(): Settings {
@@ -136,8 +145,9 @@ class SettingsStore {
     for (const fn of this.listeners) fn();
   }
 
+  /** Appearance only: the editor is not part of how anything looks. */
   reset() {
-    this.update({ ...DEFAULTS });
+    this.update({ ...DEFAULTS, editor: this.current.editor });
   }
 
   /** Repaints the app chrome to match the terminal theme. */

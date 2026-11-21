@@ -1,12 +1,14 @@
 <script lang="ts">
-  import { FONTS, LINE_HEIGHTS, SCROLLBACKS, SIZES, THEMES, settings } from '../settings.svelte';
+  import { EDITORS, FONTS, LINE_HEIGHTS, SCROLLBACKS, SIZES, THEMES, settings } from '../settings.svelte';
   import { store } from '../state.svelte';
 
   let { onclose }: { onclose: () => void } = $props();
 
   const s = $derived(settings.current);
 
-  let section = $state<'appearance' | 'advanced'>('appearance');
+  let section = $state<'appearance' | 'editor' | 'advanced'>('appearance');
+  // Only the Mac shell opens files: it is the one client whose disk they are on.
+  const macShell = '__BEEBOX__' in window;
   const SLEEP = [
     { hours: 0, label: 'Off' },
     { hours: 2, label: '2h' },
@@ -47,6 +49,9 @@
     <nav class="nav">
       <div class="nav-title">Settings</div>
       <button class:on={section === 'appearance'} onclick={() => (section = 'appearance')}>Appearance</button>
+      {#if macShell}
+        <button class:on={section === 'editor'} onclick={() => (section = 'editor')}>Editor</button>
+      {/if}
       <!-- The daemon's own settings: the owner's alone. -->
       {#if store.caps.host}
         <button class:on={section === 'advanced'} onclick={() => (section = 'advanced')}>Advanced</button>
@@ -75,6 +80,24 @@
           A Claude or Codex pane with nothing sent and nothing finished for this long has its agent ended to free
           memory; it picks the conversation up when you open the tab. Panes on screen are left alone, and so are the
           other panes in its tab.
+        </div>
+      {:else if section === 'editor'}
+        <h3>Editor</h3>
+        <div class="sub">Stored in this app</div>
+
+        <div class="row">
+          <span class="lbl wide">Open files in</span>
+          <div class="seg">
+            {#each EDITORS as ed (ed.id)}
+              <button class:on={s.editor === ed.id} onclick={() => settings.update({ editor: ed.id })}
+                >{ed.name}</button
+              >
+            {/each}
+          </div>
+        </div>
+        <div class="note wide">
+          ⌘-click a file path in a terminal to open it there, at the line it names. Without that editor installed, the
+          file opens in its default app. Directories still open in Finder.
         </div>
       {:else}
         <h3>Appearance</h3>

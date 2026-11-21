@@ -119,11 +119,13 @@ export class PaneTerm {
 
     term.onWriteParsed(() => this.refresh());
 
-    // ⌘-click a file path to open it in VS Code. Only in the Mac shell: it
-    // is the one client on the machine whose disk the paths are on, and it
-    // checks each one — a link appears only over a file that exists.
+    // ⌘-click a file path to open it in the chosen editor. Only in the Mac
+    // shell: it is the one client on the machine whose disk the paths are on,
+    // and it checks each one — a link appears only over a file that exists.
     if (macShell) {
-      term.registerLinkProvider(fileLinkProvider(term, (window as any).__BEEBOX__, wiring.cwd));
+      const shell = (window as any).__BEEBOX__;
+      const opener = { ...shell, openFile: (o: object) => shell.openFile({ ...o, editor: settings.current.editor }) };
+      term.registerLinkProvider(fileLinkProvider(term, opener, wiring.cwd));
     }
 
     // `[Image #N]` opens the image pasted there — only where an agent runs,

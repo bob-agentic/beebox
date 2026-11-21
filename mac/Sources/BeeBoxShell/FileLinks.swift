@@ -19,10 +19,11 @@ enum FileLinks {
         }
     }
 
-    /// Opens in VS Code at the line, or with the file's default app when VS
-    /// Code is not installed. A directory opens in Finder: VS Code would take
-    /// it as a project and open a whole window.
-    static func open(_ path: String, line: Int?, col: Int?) {
+    /// Opens in the chosen editor — VS Code unless Zed is named — at the
+    /// line, or with the file's default app when that editor is not
+    /// installed. A directory opens in Finder: an editor would take it as a
+    /// project and open a whole window.
+    static func open(_ path: String, line: Int?, col: Int?, editor: String?) {
         guard exists(path) else { return }
         let workspace = NSWorkspace.shared
         if !isFile(path) {
@@ -36,7 +37,8 @@ enum FileLinks {
             return
         }
         var url = URLComponents()
-        url.scheme = "vscode"
+        // Both take `<scheme>://file/<path>:<line>:<col>`.
+        url.scheme = editor == "zed" ? "zed" : "vscode"
         url.host = "file"
         url.path = path + (line.map { ":\($0)" + (col.map { ":\($0)" } ?? "") } ?? "")
         if let url = url.url, workspace.urlForApplication(toOpen: url) != nil {

@@ -68,7 +68,7 @@ export function rowText(term: Terminal, y: number): { text: string; cellAt: numb
 /** The desktop shell's side: which paths exist, and opening one. */
 interface Opener {
   resolvePaths(o: { paths: string[]; cwd: string }): Promise<(string | null)[]>;
-  openFile(o: { path: string; line?: number; col?: number }): Promise<void>;
+  openFile(o: { path: string; line?: number; col?: number; editor?: string }): Promise<void>;
   /** The file under the mouse, for the right-click menu to offer. */
   hoverFile(o: { path: string | null }): Promise<void>;
 }
